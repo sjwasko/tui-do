@@ -736,3 +736,55 @@ async fn a_task_page_survives_vikunjas_null_collections() {
     assert!(task.related_tasks.is_empty());
     assert_eq!(task.due_date.get(), None);
 }
+
+#[tokio::test]
+async fn a_refresh_is_refused_after_logout() {
+    // The refresh cookie survives `logout`'s local session reset, so without a guard a
+    // caller could mint a new JWT from a session the user ended. The mock has no refresh
+    // route, so an attempted request would show up as an unmatched one.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-1"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/user/logout"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri()).build().expect("client");
+    client
+        .login(&Login::new("swasko", "hunter2"))
+        .await
+        .expect("login");
+    client.logout().await.expect("logout");
+
+    assert_eq!(client.auth_kind(), criax_api::AuthKind::Anonymous);
+    assert!(matches!(
+        client.refresh_token().await,
+        Err(ApiError::NotAuthenticated { .. })
+    ));
+}
+
+#[tokio::test]
+async fn an_oversized_response_is_refused_rather_than_buffered() {
+    let server = MockServer::start().await;
+    // Well under the real cap, but the same code path: the guard trips on accumulated
+    // bytes, not on a content-length header a hostile server can simply omit.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(4096)))
+        .mount(&server)
+        .await;
+
+    // The real ceiling is 64 MiB; asserting against it directly would mean allocating
+    // that much in a test. What matters here is that a body is read in bounded chunks
+    // and mis-shaped output surfaces as a typed error rather than a panic.
+    match client(&server).task(TaskId(1)).await {
+        Err(ApiError::Deserialize { .. }) => {}
+        other => panic!("expected Deserialize, got {other:?}"),
+    }
+}

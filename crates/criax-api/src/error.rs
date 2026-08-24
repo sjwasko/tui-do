@@ -131,6 +131,18 @@ pub enum ApiError {
         template: String,
     },
 
+    /// The server sent more data than the client is willing to hold in memory.
+    ///
+    /// A guard against a broken or hostile server, not a limit users should ever meet:
+    /// the largest legitimate response here is one page of tasks.
+    #[error("response from {url} exceeded {limit} bytes")]
+    ResponseTooLarge {
+        /// The URL that answered.
+        url: String,
+        /// The cap that was exceeded, in bytes.
+        limit: usize,
+    },
+
     /// A request needs credentials the client does not have.
     ///
     /// Raised before sending, so an unconfigured client fails with something actionable
@@ -156,6 +168,7 @@ impl ApiError {
             | Self::Deserialize { .. }
             | Self::InvalidUrl { .. }
             | Self::UnknownEndpoint { .. }
+            | Self::ResponseTooLarge { .. }
             | Self::NotAuthenticated { .. } => false,
         }
     }
@@ -226,6 +239,7 @@ impl fmt::Display for Brief<'_> {
             ApiError::Deserialize { .. } => write!(f, "spec drift"),
             ApiError::InvalidUrl { .. } => write!(f, "bad url"),
             ApiError::UnknownEndpoint { .. } => write!(f, "unknown endpoint"),
+            ApiError::ResponseTooLarge { .. } => write!(f, "response too large"),
             ApiError::NotAuthenticated { .. } => write!(f, "not logged in"),
         }
     }
