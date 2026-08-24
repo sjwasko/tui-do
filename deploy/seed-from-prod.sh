@@ -12,7 +12,7 @@
 # Flow:  GET  /user/export           -> is one already built?
 #        POST /user/export/request   -> if not, ask for one and wait
 #        POST /user/export/download  -> fetch the zip
-#        POST /migration/vikunja-file/migrate  -> import into dev
+#        PUT  /migration/vikunja-file/migrate  -> import into dev
 
 set -euo pipefail
 
@@ -33,7 +33,8 @@ printf 'Target (written)  : %s\n\n' "$DEV_URL"
 
 read -rp  'Production username: ' PROD_USER
 read -rsp 'Production password: ' PROD_PASS; echo
-read -rsp 'Dev API token (Settings -> API Tokens on the dev instance): ' DEV_TOKEN; echo
+read -rp  'Dev username: ' DEV_USER
+read -rsp 'Dev password: ' DEV_PASS; echo
 echo
 
 # --- authenticate against prod -------------------------------------------------
@@ -43,6 +44,16 @@ login=$(curl -sS -X POST "$PROD_URL/api/v1/login" \
 prod_jwt=$(printf '%s' "$login" | jq -r '.token // empty')
 [ -n "$prod_jwt" ] || die "login to production failed: $(printf '%s' "$login" | jq -r '.message // .' )"
 printf 'authenticated to production as %s\n' "$PROD_USER"
+
+# Authenticate to dev too. A JWT rather than an API token, because the migration
+# routes are not necessarily within an API token's permission scopes, and a JWT
+# unambiguously carries the user's full rights.
+dev_login=$(curl -sS -X POST "$DEV_URL/api/v1/login" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg u "$DEV_USER" --arg p "$DEV_PASS" '{username:$u,password:$p}')")
+dev_jwt=$(printf '%s' "$dev_login" | jq -r '.token // empty')
+[ -n "$dev_jwt" ] || die "login to dev failed: $(printf '%s' "$dev_login" | jq -r '.message // .')"
+printf 'authenticated to dev as %s\n' "$DEV_USER"
 
 # Export status lives at GET /user/export and returns {id, created, expires, size}.
 # `id` is 0 until an export has been built. (Not on GET /user -- user.User has no
@@ -94,21 +105,39 @@ file "$tmp/export.zip" | grep -qi zip \
 printf 'downloaded %s\n' "$(du -h "$tmp/export.zip" | cut -f1)"
 
 # --- import into dev -----------------------------------------------------------
-import=$(curl -sS -X POST "$DEV_URL/api/v1/migration/vikunja-file/migrate" \
-  -H "Authorization: Bearer $DEV_TOKEN" \
+# PUT, not POST. The OpenAPI document declares this operation as `post`, but the
+# server answers 405 with `Allow: OPTIONS, PUT`. The spec is wrong here -- verified
+# against the live v2.5.0 instance -- so the server wins.
+# Capture the HTTP status separately. Polling a submission that was itself rejected
+# is how a 405 turned into ten minutes of cheerful dots on the first attempt.
+http_code=$(curl -sS -o "$tmp/import.json" -w '%{http_code}' \
+  -X PUT "$DEV_URL/api/v1/migration/vikunja-file/migrate" \
+  -H "Authorization: Bearer $dev_jwt" \
   -F "import=@$tmp/export.zip")
-printf 'import submitted: %s\n' "$(printf '%s' "$import" | jq -r '.message // .' )"
+
+if [ "$http_code" != "200" ]; then
+  printf 'response body: %s\n' "$(head -c 400 "$tmp/import.json")" >&2
+  die "import was rejected with HTTP $http_code -- not polling for a migration that never started"
+fi
+printf 'import accepted: %s\n' "$(jq -r '.message // "ok"' "$tmp/import.json")"
 printf 'polling dev for completion'
 
 for _ in $(seq 1 "$POLL_TRIES"); do
   printf '.'
   sleep "$POLL_SECONDS"
   done_at=$(curl -sS "$DEV_URL/api/v1/migration/vikunja-file/status" \
-    -H "Authorization: Bearer $DEV_TOKEN" | jq -r '.finished_at // empty')
+    -H "Authorization: Bearer $dev_jwt" | jq -r '.finished_at // empty')
   case "$done_at" in
     ''|null|0001-01-01*) ;;
     *) printf ' done (%s)\n' "$done_at"; break ;;
   esac
 done
+
+# Verify something actually arrived, rather than trusting the status field.
+projects=$(curl -sS "$DEV_URL/api/v1/projects" -H "Authorization: Bearer $dev_jwt" | jq 'length')
+tasks=$(curl -sS "$DEV_URL/api/v1/tasks?per_page=1" -H "Authorization: Bearer $dev_jwt" -D "$tmp/h" -o /dev/null \
+  && grep -i '^x-pagination-result-count' "$tmp/h" | tr -d '\r' | awk '{print $2}')
+printf '\ndev now has %s projects; first page reports %s task(s)\n' "${projects:-?}" "${tasks:-?}"
+[ "${projects:-0}" -gt 1 ] || printf 'WARNING: only %s project(s) -- the import may not have taken\n' "${projects:-0}" >&2
 
 printf '\nSeeded. Capture this state as the reset baseline:\n  ./snapshot-dev.sh\n'
