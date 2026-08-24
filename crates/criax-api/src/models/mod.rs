@@ -13,13 +13,17 @@
 
 pub mod datetime;
 
+mod auth;
 mod ids;
+mod info;
 mod label;
 mod project;
 mod task;
 mod user;
 
+pub use auth::{Login, Token};
 pub use ids::{LabelId, ProjectId, TaskId, UserId, ViewId};
+pub use info::{ServerInfo, DEFAULT_MAX_ITEMS_PER_PAGE};
 pub use label::Label;
 pub use project::{Project, ProjectView, ViewKind};
 pub use task::{Bucket, RelationKind, RepeatMode, Task, TaskAttachment, TaskComment, TaskReminder};

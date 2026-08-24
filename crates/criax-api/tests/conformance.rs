@@ -26,7 +26,8 @@ use std::path::PathBuf;
 
 use criax_api::endpoints;
 use criax_api::models::{
-    Bucket, Label, Project, ProjectView, Task, TaskAttachment, TaskComment, TaskReminder, User,
+    Bucket, Label, Login, Project, ProjectView, ServerInfo, Task, TaskAttachment, TaskComment,
+    TaskReminder, Token, User,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -149,6 +150,9 @@ fn model_fields_exist_in_the_spec() {
     check_model::<TaskAttachment>(&spec, "models.TaskAttachment");
     check_model::<TaskReminder>(&spec, "models.TaskReminder");
     check_model::<Bucket>(&spec, "models.Bucket");
+    check_model::<ServerInfo>(&spec, "shared.VikunjaInfos");
+    check_model::<Login>(&spec, "user.Login");
+    check_model::<Token>(&spec, "auth.Token");
 }
 
 #[test]
