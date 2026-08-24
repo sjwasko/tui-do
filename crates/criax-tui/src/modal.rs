@@ -14,7 +14,7 @@ use crossterm::event::KeyCode;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-use crate::keymap::{Context, Key};
+use crate::keymap::{Action, Context, Key};
 
 /// A single-line text field.
 ///
@@ -103,13 +103,53 @@ impl TextInput {
     }
 }
 
+/// What choosing a candidate means.
+///
+/// The payload rather than a bare id, so a command picker cannot submit a project and a
+/// project picker cannot submit an action. The alternative -- an `i64` plus the picker's
+/// kind to interpret it -- makes that mistake a runtime possibility for no gain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    /// Show this project.
+    Project(ProjectId),
+    /// Filter by this label.
+    Label(LabelId),
+    /// Run this action, exactly as its key would.
+    Command(Action),
+}
+
 /// One thing a picker can offer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// The identifier submitted when it is chosen.
-    pub id: i64,
+    /// What choosing it does.
+    pub pick: Pick,
     /// What the user reads and types against.
     pub title: String,
+    /// Shown dimmed on the right. The palette puts the key here, so using it by name
+    /// teaches the binding.
+    pub hint: String,
+}
+
+impl Candidate {
+    /// A candidate with no hint.
+    #[must_use]
+    pub fn new(pick: Pick, title: impl Into<String>) -> Self {
+        Self {
+            pick,
+            title: title.into(),
+            hint: String::new(),
+        }
+    }
+
+    /// The same, with a hint on the right.
+    #[must_use]
+    pub fn hinted(pick: Pick, title: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            pick,
+            title: title.into(),
+            hint: hint.into(),
+        }
+    }
 }
 
 /// What a picker picks.
@@ -119,6 +159,8 @@ pub enum PickerKind {
     Project,
     /// A label to filter by.
     Label,
+    /// A command to run.
+    Command,
 }
 
 impl PickerKind {
@@ -128,6 +170,7 @@ impl PickerKind {
         match self {
             Self::Project => "Go to project",
             Self::Label => "Go to label",
+            Self::Command => "Run a command",
         }
     }
 }
@@ -240,10 +283,8 @@ pub enum Outcome {
 pub enum Submission {
     /// Filter the list by this text. Empty clears the search.
     Search(String),
-    /// Show this project.
-    Project(ProjectId),
-    /// Show everything carrying this label.
-    Label(LabelId),
+    /// Do what the chosen candidate says.
+    Picked(Pick),
 }
 
 /// Behaviour every modal has.
@@ -302,13 +343,7 @@ impl ModalView for PickerState {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,
             KeyCode::Enter => match self.current() {
-                Some(candidate) => {
-                    let id = candidate.id;
-                    Outcome::Submit(match self.kind {
-                        PickerKind::Project => Submission::Project(ProjectId(id)),
-                        PickerKind::Label => Submission::Label(LabelId(id)),
-                    })
-                }
+                Some(candidate) => Outcome::Submit(Submission::Picked(candidate.pick)),
                 // Nothing matched what they typed; closing silently would look like the
                 // key was swallowed.
                 None => Outcome::Consumed,
@@ -400,18 +435,9 @@ mod tests {
         let mut picker = PickerState::new(
             PickerKind::Project,
             vec![
-                Candidate {
-                    id: 1,
-                    title: "Personal".into(),
-                },
-                Candidate {
-                    id: 2,
-                    title: "Work".into(),
-                },
-                Candidate {
-                    id: 3,
-                    title: "Weekend work".into(),
-                },
+                Candidate::new(Pick::Project(ProjectId(1)), "Personal"),
+                Candidate::new(Pick::Project(ProjectId(2)), "Work"),
+                Candidate::new(Pick::Project(ProjectId(3)), "Weekend work"),
             ],
         );
         picker.handle(key('w'));
@@ -419,17 +445,17 @@ mod tests {
         assert_eq!(picker.current().unwrap().title, "Work");
 
         let outcome = picker.handle(code(KeyCode::Enter));
-        assert_eq!(outcome, Outcome::Submit(Submission::Project(ProjectId(2))));
+        assert_eq!(
+            outcome,
+            Outcome::Submit(Submission::Picked(Pick::Project(ProjectId(2))))
+        );
     }
 
     #[test]
     fn a_picker_with_no_matches_does_not_submit_something_arbitrary() {
         let mut picker = PickerState::new(
             PickerKind::Label,
-            vec![Candidate {
-                id: 7,
-                title: "urgent".into(),
-            }],
+            vec![Candidate::new(Pick::Label(LabelId(7)), "urgent")],
         );
         for c in "zzz".chars() {
             picker.handle(key(c));
@@ -443,20 +469,14 @@ mod tests {
         let mut picker = PickerState::new(
             PickerKind::Project,
             vec![
-                Candidate {
-                    id: 1,
-                    title: "one".into(),
-                },
-                Candidate {
-                    id: 2,
-                    title: "two".into(),
-                },
+                Candidate::new(Pick::Project(ProjectId(1)), "one"),
+                Candidate::new(Pick::Project(ProjectId(2)), "two"),
             ],
         );
         picker.handle(code(KeyCode::Up));
-        assert_eq!(picker.current().unwrap().id, 2);
+        assert_eq!(picker.current().unwrap().pick, Pick::Project(ProjectId(2)));
         picker.handle(code(KeyCode::Down));
-        assert_eq!(picker.current().unwrap().id, 1);
+        assert_eq!(picker.current().unwrap().pick, Pick::Project(ProjectId(1)));
     }
 
     #[test]

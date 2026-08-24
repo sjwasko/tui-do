@@ -10,9 +10,9 @@ use criax_core::sync::{Phase, Stage};
 use criax_core::SyncEvent;
 
 use crate::effect::Effect;
-use crate::keymap::{resolve, Action, Key, Resolved};
+use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, HelpState, Modal, Outcome, PickerKind, PickerState, Submission, TextInput,
+    Candidate, HelpState, Modal, Outcome, Pick, PickerKind, PickerState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -170,8 +170,11 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             model.query.search = (!text.trim().is_empty()).then(|| text.trim().to_string());
             reload_tasks(model)
         }
-        Submission::Project(id) => show(model, Scope::Project(id)),
-        Submission::Label(id) => show(model, Scope::Label(id)),
+        Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
+        Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
+        // A command chosen by name does exactly what its key does. One implementation,
+        // so the two can never disagree about what "toggle the sidebar" means.
+        Submission::Picked(Pick::Command(action)) => act(model, action),
     }
 }
 
@@ -240,10 +243,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 .projects
                 .iter()
                 .filter(|project| project.id.get() > 0 && !project.is_archived)
-                .map(|project| Candidate {
-                    id: project.id.get(),
-                    title: project.title.clone(),
-                })
+                .map(|project| Candidate::new(Pick::Project(project.id), &project.title))
                 .collect();
             model.modals.push(Modal::Picker(PickerState::new(
                 PickerKind::Project,
@@ -256,10 +256,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 .data
                 .labels
                 .iter()
-                .map(|label| Candidate {
-                    id: label.id.get(),
-                    title: label.title.clone(),
-                })
+                .map(|label| Candidate::new(Pick::Label(label.id), &label.title))
                 .collect();
             model.modals.push(Modal::Picker(PickerState::new(
                 PickerKind::Label,
@@ -272,6 +269,30 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 detail: "starting".to_string(),
             };
             vec![Effect::SyncNow]
+        }
+        Action::CommandPalette => {
+            // Built from the keymap, in the focused pane's context, so the palette and
+            // the help modal list the same things for the same reason.
+            let candidates = KEYMAP
+                .iter()
+                .filter(|binding| {
+                    binding.action.is_command()
+                        && (binding.context == crate::keymap::Context::Global
+                            || binding.context == model.context())
+                })
+                .map(|binding| {
+                    Candidate::hinted(
+                        Pick::Command(binding.action),
+                        binding.doc,
+                        binding.keys_display(),
+                    )
+                })
+                .collect();
+            model.modals.push(Modal::Picker(PickerState::new(
+                PickerKind::Command,
+                candidates,
+            )));
+            Vec::new()
         }
         Action::Help => {
             model.modals.push(Modal::Help(HelpState {

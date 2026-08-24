@@ -218,6 +218,22 @@ fn the_project_picker() {
 }
 
 #[test]
+fn the_command_palette() {
+    let mut model = fixture((120, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE)),
+    );
+    for c in "la".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    golden("120x40-palette.txt", &draw(&model));
+}
+
+#[test]
 fn an_empty_list_says_which_kind_of_empty_it_is() {
     let mut model = fixture((80, 24));
     let id = model.query_id;
