@@ -1,0 +1,515 @@
+//! Client behaviour against a mock Vikunja.
+//!
+//! The responses here are shaped from real captures of the dev instance (see
+//! `md/2026-08-24-1045-continuity.md`): its 3,876 tasks at a 50-item page cap are exactly
+//! 78 pages, and that is the scenario the pagination test reproduces. cria, given the
+//! same server, shows 50 tasks and says nothing about the other 3,826.
+
+// A test reports failure by panicking.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stdout,
+    clippy::panic
+)]
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use criax_api::models::{Login, TaskId};
+use criax_api::{ApiError, Client, Credentials, TaskQuery};
+use serde_json::json;
+use wiremock::matchers::{header, method, path, query_param};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+/// The dev instance's numbers, so the test fails for the same reason production would.
+const DEV_TASK_COUNT: usize = 3876;
+const DEV_PAGE_CAP: usize = 50;
+
+/// Serves a paginated task list the way Vikunja does, including the page cap.
+struct PaginatedTasks {
+    total: usize,
+    cap: usize,
+    /// Whether to send the `x-pagination-*` headers at all.
+    send_headers: bool,
+    requests: Arc<AtomicUsize>,
+    /// The `per_page` values the client actually asked for.
+    requested_per_page: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Respond for PaginatedTasks {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+
+        let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
+        let page: usize = query
+            .get("page")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1)
+            .max(1);
+        let asked = query
+            .get("per_page")
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        self.requested_per_page
+            .lock()
+            .expect("lock")
+            .push(asked.clone());
+
+        // The cap Vikunja applies silently, which is the whole problem.
+        let per_page = asked
+            .parse::<usize>()
+            .unwrap_or(self.cap)
+            .min(self.cap)
+            .max(1);
+
+        let start = (page - 1) * per_page;
+        let items: Vec<_> = (start..self.total.min(start + per_page))
+            .map(|i| json!({"id": i + 1, "title": format!("task {}", i + 1), "project_id": 1}))
+            .collect();
+        let count = items.len();
+
+        let total_pages = self.total.div_ceil(per_page);
+        let mut response = ResponseTemplate::new(200).set_body_json(items);
+        if self.send_headers {
+            response = response
+                .insert_header("x-pagination-total-pages", total_pages.to_string().as_str())
+                .insert_header("x-pagination-result-count", count.to_string().as_str());
+        }
+        response
+    }
+}
+
+/// A client pointed at `server`, authenticated with a static API token.
+fn client(server: &MockServer) -> Client {
+    Client::builder(server.uri())
+        .credentials(Credentials::api_token("tk_test"))
+        .build()
+        .expect("valid mock server url")
+}
+
+#[tokio::test]
+async fn a_full_task_fetch_returns_every_page_not_just_the_first() {
+    let server = MockServer::start().await;
+    let requests = Arc::new(AtomicUsize::new(0));
+    let per_page_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(PaginatedTasks {
+            total: DEV_TASK_COUNT,
+            cap: DEV_PAGE_CAP,
+            send_headers: true,
+            requests: Arc::clone(&requests),
+            requested_per_page: Arc::clone(&per_page_log),
+        })
+        .mount(&server)
+        .await;
+
+    let tasks = client(&server)
+        .all_tasks(&TaskQuery::new())
+        .await
+        .expect("fetch should succeed");
+
+    assert_eq!(
+        tasks.len(),
+        DEV_TASK_COUNT,
+        "the fetch stopped early -- this is cria's data-loss bug"
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        DEV_TASK_COUNT.div_ceil(DEV_PAGE_CAP),
+        "expected one request per page"
+    );
+
+    let ids: std::collections::BTreeSet<i64> = tasks.iter().map(|t| t.id.get()).collect();
+    assert_eq!(ids.len(), DEV_TASK_COUNT, "pages overlapped or repeated");
+    assert_eq!(ids.iter().next_back().copied(), Some(DEV_TASK_COUNT as i64));
+}
+
+#[tokio::test]
+async fn the_page_size_comes_from_the_server_rather_than_a_guess() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"version": "v2.5.0", "max_items_per_page": 25})),
+        )
+        .mount(&server)
+        .await;
+
+    let requests = Arc::new(AtomicUsize::new(0));
+    let per_page_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(PaginatedTasks {
+            total: 60,
+            cap: 25,
+            send_headers: true,
+            requests: Arc::clone(&requests),
+            requested_per_page: Arc::clone(&per_page_log),
+        })
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    assert!(!client.page_size_is_known());
+
+    let info = client.info().await.expect("info should succeed");
+    assert_eq!(info.page_cap(), 25);
+    assert!(client.page_size_is_known());
+    assert_eq!(client.page_size(), 25);
+
+    let tasks = client.all_tasks(&TaskQuery::new()).await.expect("fetch");
+    assert_eq!(tasks.len(), 60);
+    assert_eq!(
+        *per_page_log.lock().expect("lock"),
+        vec!["25", "25", "25"],
+        "the client should ask for the server's own cap"
+    );
+}
+
+#[tokio::test]
+async fn a_collection_without_pagination_headers_is_still_read_to_the_end() {
+    // Not every Vikunja endpoint sends the headers. Falling back to "a full page might
+    // have a successor" costs one extra request and loses nothing.
+    let server = MockServer::start().await;
+    let requests = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(PaginatedTasks {
+            total: 120,
+            cap: DEV_PAGE_CAP,
+            send_headers: false,
+            requests: Arc::clone(&requests),
+            requested_per_page: Arc::new(std::sync::Mutex::new(Vec::new())),
+        })
+        .mount(&server)
+        .await;
+
+    let tasks = client(&server)
+        .all_tasks(&TaskQuery::new())
+        .await
+        .expect("fetch");
+    assert_eq!(tasks.len(), 120);
+    // 50 + 50 + 20: the third page is short, so no fourth request is made.
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn a_pager_reports_progress_page_by_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(PaginatedTasks {
+            total: 130,
+            cap: DEV_PAGE_CAP,
+            send_headers: true,
+            requests: Arc::new(AtomicUsize::new(0)),
+            requested_per_page: Arc::new(std::sync::Mutex::new(Vec::new())),
+        })
+        .mount(&server)
+        .await;
+
+    let mut pager = client(&server).tasks(&TaskQuery::new()).expect("pager");
+    let mut sizes = Vec::new();
+    while let Some(page) = pager.next_page().await.expect("page") {
+        sizes.push(page.items.len());
+        assert_eq!(pager.total_pages(), Some(3));
+    }
+    assert_eq!(sizes, vec![50, 50, 30]);
+}
+
+#[tokio::test]
+async fn query_parameters_reach_the_server() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .and(query_param("filter", "done = false"))
+        .and(query_param("sort_by", "due_date"))
+        .and(query_param("order_by", "asc"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "50"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let query = TaskQuery::new()
+        .filter("done = false")
+        .sort("due_date", criax_api::Order::Asc);
+    client(&server).all_tasks(&query).await.expect("fetch");
+}
+
+#[tokio::test]
+async fn logging_in_stores_the_jwt_and_sends_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-1"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .and(header("authorization", "Bearer jwt-1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": 1, "username": "swasko"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri())
+        .credentials(Credentials::password("swasko", "hunter2"))
+        .build()
+        .expect("client");
+
+    // A password is not a credential the server accepts, so nothing works until login.
+    assert!(matches!(
+        client.current_user().await,
+        Err(ApiError::NotAuthenticated { .. })
+    ));
+
+    client
+        .login(&Login::new("swasko", "hunter2"))
+        .await
+        .expect("login should succeed");
+    assert_eq!(client.auth_kind(), criax_api::AuthKind::Jwt);
+
+    let user = client.current_user().await.expect("user");
+    assert_eq!(user.username, "swasko");
+}
+
+#[tokio::test]
+async fn an_expired_jwt_is_refreshed_and_the_request_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-old"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/user/token/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-new"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The expired token is rejected the way the live server rejects it, code 11 and all.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .and(header("authorization", "Bearer jwt-old"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"code": 11, "message": "missing, malformed, expired or otherwise invalid token provided"}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .and(header("authorization", "Bearer jwt-new"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": 1, "username": "swasko"})),
+        )
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri()).build().expect("client");
+    client
+        .login(&Login::new("swasko", "hunter2"))
+        .await
+        .expect("login");
+
+    let user = client
+        .current_user()
+        .await
+        .expect("the 401 should have been answered by a refresh, not surfaced");
+    assert_eq!(user.username, "swasko");
+}
+
+#[tokio::test]
+async fn a_failed_refresh_surfaces_the_original_rejection() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-old"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/user/token/refresh"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_json(json!({"message": "No refresh token provided."})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"code": 11, "message": "missing, malformed, expired or otherwise invalid token provided"}),
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri()).build().expect("client");
+    client
+        .login(&Login::new("swasko", "hunter2"))
+        .await
+        .expect("login");
+
+    match client.current_user().await {
+        Err(ApiError::Unauthorized { code, .. }) => assert_eq!(
+            code,
+            Some(11),
+            "the user should see why their session died, not why the refresh did"
+        ),
+        other => panic!("expected Unauthorized, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_api_token_session_does_not_attempt_a_refresh() {
+    // Refreshing an API token would resend the same rejected credential. The mock has no
+    // refresh route at all, so an attempt would show up as an unmatched request.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"code": 11, "message": "nope"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = client(&server).current_user().await;
+    assert!(matches!(result, Err(ApiError::Unauthorized { .. })));
+}
+
+#[tokio::test]
+async fn error_bodies_become_typed_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/404"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"code": 4004, "message": "The task does not exist."})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/429"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "17")
+                .set_body_json(json!({"message": "Too many requests."})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/500"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("<html>oh no</html>"))
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+
+    match client.task(TaskId(404)).await {
+        Err(err @ ApiError::Rejected { .. }) => {
+            assert_eq!(err.code(), Some(4004));
+            assert!(!err.is_retryable());
+        }
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+
+    match client.task(TaskId(429)).await {
+        Err(err @ ApiError::RateLimited { .. }) => {
+            assert!(err.is_retryable());
+            assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(17)));
+        }
+        other => panic!("expected RateLimited, got {other:?}"),
+    }
+
+    match client.task(TaskId(500)).await {
+        Err(err @ ApiError::Server { .. }) => {
+            assert!(err.is_retryable());
+            // Non-JSON bodies are surfaced as text rather than a serde complaint.
+            assert!(err.to_string().contains("oh no"));
+        }
+        other => panic!("expected Server, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_response_of_the_wrong_shape_is_reported_as_spec_drift() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "not a number"})))
+        .mount(&server)
+        .await;
+
+    match client(&server).task(TaskId(1)).await {
+        Err(err @ ApiError::Deserialize { .. }) => {
+            assert!(!err.is_retryable(), "retrying will not change the shape");
+        }
+        other => panic!("expected Deserialize, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_unreachable_server_is_a_retryable_transport_error() {
+    // Port 1 is never a Vikunja; the connection is refused before any HTTP happens.
+    let client = Client::builder("http://127.0.0.1:1")
+        .credentials(Credentials::api_token("tk_test"))
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .expect("client");
+
+    match client.task(TaskId(1)).await {
+        Err(err @ ApiError::Transport { .. }) => assert!(err.is_retryable()),
+        other => panic!("expected Transport, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn projects_and_labels_paginate_too() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/projects"))
+        .and(query_param("page", "1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "2")
+                .set_body_json(
+                    (1..=50)
+                        .map(|i| json!({"id": i, "title": "p"}))
+                        .collect::<Vec<_>>(),
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/projects"))
+        .and(query_param("page", "2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "2")
+                .set_body_json(vec![json!({"id": 51, "title": "p"})]),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/labels"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![json!({"id": 1, "title": "urgent"})]),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    assert_eq!(client.all_projects().await.expect("projects").len(), 51);
+    assert_eq!(client.all_labels().await.expect("labels").len(), 1);
+}

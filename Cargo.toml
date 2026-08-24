@@ -18,7 +18,9 @@ criax-tui = { path = "crates/criax-tui" }
 ratatui = "0.30"
 crossterm = "0.29"
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs", "multipart", "stream"] }
+# `cookies` is not optional: `POST /user/token/refresh` answers "No refresh token provided."
+# unless the refresh cookie set by `POST /login` is sent back with the request.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs", "multipart", "stream", "cookies", "query", "http2", "gzip"] }
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
