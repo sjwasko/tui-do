@@ -556,15 +556,31 @@ fn picker_body(picker: &PickerState, frame: &mut Frame, area: Rect, theme: Theme
         let Some(candidate) = picker.candidates.get(*index) else {
             continue;
         };
-        let style = if position == picker.selected {
+        let selected = position == picker.selected;
+        let style = if selected {
             theme.selected(true)
         } else {
             theme.text()
         };
-        lines.push(Line::from(Span::styled(
-            format!(" {}", candidate.title),
-            style,
-        )));
+        // The hint is right-aligned, so the palette reads as "what it does … which key",
+        // and using a command by name teaches the binding for next time.
+        let hint_width = rows::display_width(&candidate.hint);
+        // +3 rather than +2: one for the leading space, one for the gap, and one so the
+        // key does not sit against the border.
+        let room = area.width.saturating_sub(hint_width + 3);
+        let title = rows::truncate(&candidate.title, room);
+        let gap = usize::from(room.saturating_sub(rows::display_width(&title))) + 1;
+        let mut spans = vec![
+            Span::styled(format!(" {title}"), style),
+            Span::styled(" ".repeat(gap), style),
+        ];
+        if hint_width > 0 {
+            spans.push(Span::styled(
+                candidate.hint.clone(),
+                if selected { style } else { theme.muted() },
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     if picker.matches.is_empty() {
         lines.push(Line::from(Span::styled(

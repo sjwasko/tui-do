@@ -203,8 +203,31 @@ pub enum Action {
     SyncNow,
     /// Show the help modal.
     Help,
+    /// Run a command by name.
+    CommandPalette,
     /// Leave criax.
     Quit,
+}
+
+impl Action {
+    /// Whether the command palette offers this action.
+    ///
+    /// Motions are not commands. Typing four letters to move down one row is absurd, and
+    /// six motion entries would crowd out the things actually worth searching for. The
+    /// palette itself is excluded for the obvious reason.
+    #[must_use]
+    pub const fn is_command(self) -> bool {
+        !matches!(
+            self,
+            Self::MoveDown
+                | Self::MoveUp
+                | Self::PageDown
+                | Self::PageUp
+                | Self::Top
+                | Self::Bottom
+                | Self::CommandPalette
+        )
+    }
 }
 
 /// One row of the keymap.
@@ -402,6 +425,13 @@ pub const KEYMAP: &[Binding] = &[
         context: Context::Global,
         group: Group::Application,
         doc: "Sync now",
+    },
+    Binding {
+        keys: &[chord![Key::char(':')]],
+        action: Action::CommandPalette,
+        context: Context::Global,
+        group: Group::Application,
+        doc: "Run a command by name",
     },
     Binding {
         keys: &[chord![Key::char('?')]],
@@ -604,6 +634,30 @@ mod tests {
             .find(|binding| binding.action == Action::MoveDown)
             .unwrap();
         assert_eq!(down.keys_display(), "j / ↓");
+    }
+
+    #[test]
+    fn the_palette_offers_commands_and_not_motions() {
+        let offered: Vec<Action> = KEYMAP
+            .iter()
+            .map(|binding| binding.action)
+            .filter(|action| action.is_command())
+            .collect();
+        assert!(offered.contains(&Action::ToggleSidebar));
+        assert!(offered.contains(&Action::SyncNow));
+        assert!(!offered.contains(&Action::MoveDown));
+        assert!(
+            !offered.contains(&Action::CommandPalette),
+            "the palette must not offer itself"
+        );
+    }
+
+    #[test]
+    fn the_palette_key_is_bound_and_free_of_conflicts() {
+        assert_eq!(
+            resolve(&[], press(':'), Context::List),
+            Resolved::Action(Action::CommandPalette)
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! No terminal is involved, which is the point of keeping the layer pure: every one of
 //! these would need a pty and a screen scrape in the architecture criax replaces.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use chrono::{TimeZone, Utc};
 use criax_core::config::columns::ColumnLayout;
@@ -383,6 +383,106 @@ fn the_label_picker_filters_without_moving_the_sidebar_highlight() {
     assert_eq!(model.query.scope, Scope::Label(LabelId(4)));
     assert_eq!(model.query.filter().label, Some(LabelId(4)));
     assert_eq!(model.sidebar.selected, before);
+}
+
+#[test]
+fn the_command_palette_runs_an_action_by_name() {
+    let mut model = loaded();
+    assert!(model.panes.sidebar_visible(model.size.0));
+
+    press(&mut model, ':');
+    assert!(matches!(model.modals.last(), Some(Modal::Picker(_))));
+
+    for c in "sidebar".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    assert!(model.modals.is_empty());
+    assert_eq!(model.panes.sidebar, PaneState::Hidden);
+    assert_eq!(model.focus, Focus::List, "focus left the pane it hid");
+}
+
+#[test]
+fn a_command_run_by_name_is_the_same_code_path_as_its_key() {
+    // Toggling done tasks through the palette must produce the same effects, and the
+    // same toast, as pressing `t` -- one implementation, not two.
+    let mut by_key = loaded();
+    let key_effects = press(&mut by_key, 't');
+
+    let mut by_name = loaded();
+    press(&mut by_name, ':');
+    for c in "completed".chars() {
+        press(&mut by_name, c);
+    }
+    let name_effects = press_code(&mut by_name, KeyCode::Enter);
+
+    assert_eq!(by_name.query.include_done, by_key.query.include_done);
+    assert_eq!(by_name.status.toast, by_key.status.toast);
+    assert_eq!(name_effects.len(), key_effects.len());
+}
+
+#[test]
+fn the_palette_offers_no_motions_and_shows_the_key_beside_each_command() {
+    let mut model = loaded();
+    press(&mut model, ':');
+    let Some(Modal::Picker(picker)) = model.modals.last() else {
+        panic!("the palette did not open");
+    };
+    let titles: Vec<&str> = picker
+        .candidates
+        .iter()
+        .map(|candidate| candidate.title.as_str())
+        .collect();
+    assert!(titles.contains(&"Sync now"));
+    assert!(!titles.iter().any(|title| title.starts_with("Move ")));
+    assert!(!titles.contains(&"Run a command by name"));
+
+    let sync = picker
+        .candidates
+        .iter()
+        .find(|candidate| candidate.title == "Sync now")
+        .expect("sync is offered");
+    assert_eq!(sync.hint, "r");
+}
+
+#[test]
+fn the_palette_offers_the_focused_panes_commands() {
+    let mut model = loaded();
+    press(&mut model, ':');
+    let Some(Modal::Picker(from_list)) = model.modals.last() else {
+        panic!("the palette did not open");
+    };
+    let list_titles: Vec<String> = from_list
+        .candidates
+        .iter()
+        .map(|candidate| candidate.title.clone())
+        .collect();
+    assert!(list_titles.contains(&"Open the selected task".to_string()));
+    assert!(!list_titles.contains(&"Collapse, or move to the parent".to_string()));
+
+    press_code(&mut model, KeyCode::Esc);
+    press_code(&mut model, KeyCode::BackTab);
+    assert_eq!(model.focus, Focus::Sidebar);
+    press(&mut model, ':');
+    let Some(Modal::Picker(from_sidebar)) = model.modals.last() else {
+        panic!("the palette did not open");
+    };
+    assert!(from_sidebar
+        .candidates
+        .iter()
+        .any(|candidate| candidate.title == "Collapse, or move to the parent"));
+}
+
+#[test]
+fn quitting_from_the_palette_quits() {
+    let mut model = loaded();
+    press(&mut model, ':');
+    for c in "quit".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(!model.running);
+    assert!(effects.contains(&Effect::Quit));
 }
 
 #[test]
