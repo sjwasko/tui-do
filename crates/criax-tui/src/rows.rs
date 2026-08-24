@@ -425,6 +425,102 @@ pub fn wrap(text: &str, width: u16, max_lines: u16) -> Vec<String> {
     lines
 }
 
+/// The elements a description is allowed to contain.
+///
+/// An allowlist rather than "anything that looks like a tag", because a description is
+/// far more often prose than markup — 366 of the 487 non-empty ones on the dev instance
+/// contain no tag at all — and prose contains angle brackets. `<http://ftc.gov>`,
+/// `<mailto:…>` and `CAM_<CAMERA_MAC>_NAME` are all real descriptions there, and a
+/// heuristic of "`<` followed by a letter starts a tag" swallows every one of them up to
+/// the next `>`, losing the URL entirely.
+const ELEMENTS: &[&str] = &[
+    "a",
+    "abbr",
+    "audio",
+    "b",
+    "blockquote",
+    "br",
+    "caption",
+    "code",
+    "col",
+    "colgroup",
+    "dd",
+    "del",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "iframe",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "label",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "script",
+    "small",
+    "source",
+    "span",
+    "strong",
+    "style",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+    "video",
+];
+
+/// Elements after which a line break belongs.
+const BLOCK: &[&str] = &[
+    "p",
+    "div",
+    "br",
+    "li",
+    "tr",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "blockquote",
+    "pre",
+    "ul",
+    "ol",
+    "table",
+    "dl",
+    "dt",
+    "dd",
+    "figure",
+    "hr",
+];
+
+/// Elements whose contents are not prose and are dropped whole.
+const OPAQUE: &[&str] = &["script", "style"];
+
 /// Turn the HTML Vikunja's editor stores into something readable.
 ///
 /// A stopgap, and labelled as one: Phase 5 pipes descriptions through `glow` with a
@@ -432,111 +528,214 @@ pub fn wrap(text: &str, width: u16, max_lines: u16) -> Vec<String> {
 /// the alternative is not "plain text" but `<p><a target="_blank" rel="noopener"` on
 /// screen, which is what the first run against real data actually showed.
 ///
-/// Block-level tags become newlines and list items get a bullet, so the shape of a
-/// description survives even though its formatting does not.
+/// Block-level elements become newlines and list items get a bullet, so the shape of a
+/// description survives even though its formatting does not. HTML whitespace rules apply
+/// — runs collapse to one space — which means `<pre>` loses its indentation. That is a
+/// known limitation rather than an oversight, and it is Phase 5's to fix.
 #[must_use]
 pub fn plain_text(html: &str) -> String {
-    /// Tags after which a line break belongs.
-    const BLOCK: &[&str] = &[
-        "p",
-        "div",
-        "br",
-        "li",
-        "tr",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "blockquote",
-        "pre",
-        "ul",
-        "ol",
-        "table",
-    ];
-
+    let chars: Vec<char> = html.chars().collect();
     let mut out = String::new();
-    let mut tag = String::new();
-    let mut in_tag = false;
-    let mut chars = html.chars().peekable();
+    let mut at = 0;
 
-    while let Some(c) = chars.next() {
-        if in_tag {
-            if c == '>' {
-                in_tag = false;
-                let closing = tag.starts_with('/');
-                let name = tag
-                    .trim_start_matches('/')
-                    .split(|c: char| c.is_whitespace() || c == '/')
-                    .next()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if BLOCK.contains(&name.as_str()) {
-                    // Both `<p>` and `</p>` mean "a line ends here", and a nested
-                    // `</li></ul>` means it twice. One break is what was meant -- and
-                    // real markup puts whitespace between block tags, so the trailing
-                    // spaces have to go before that test means anything.
-                    while out.ends_with(' ') || out.ends_with('\t') {
-                        out.pop();
-                    }
-                    if !out.is_empty() && !out.ends_with('\n') {
-                        out.push('\n');
-                    }
-                    if name == "li" && !closing {
-                        out.push_str("• ");
-                    }
-                }
-                tag.clear();
-            } else {
-                tag.push(c);
-            }
-            continue;
-        }
-        // Only a `<` followed by a name or a slash starts a tag, so prose containing
-        // "a < b" is not silently eaten.
-        if c == '<'
-            && chars
-                .peek()
-                .is_some_and(|next| next.is_ascii_alphabetic() || *next == '/')
-        {
-            in_tag = true;
-            continue;
-        }
-        out.push(c);
-    }
-
-    let out = decode_entities(&out);
-
-    // Collapse the whitespace the markup left behind, but keep paragraph breaks.
-    let mut text = String::new();
-    let mut blank_run = 0;
-    for line in out.lines() {
-        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-        if line.is_empty() {
-            blank_run += 1;
-            if blank_run > 1 || text.is_empty() {
+    while at < chars.len() {
+        if chars[at] == '<' {
+            if let Some(end) = comment_end(&chars, at) {
+                at = end;
                 continue;
             }
-        } else {
-            blank_run = 0;
+            if let Some(tag) = read_tag(&chars, at) {
+                if OPAQUE.contains(&tag.name.as_str()) && !tag.closing {
+                    at = skip_element(&chars, tag.end, &tag.name);
+                    continue;
+                }
+                apply_tag(&mut out, &tag);
+                at = tag.end;
+                continue;
+            }
+            // Not a tag criax recognises, so it is text. `Vec<String>` survives.
         }
-        text.push_str(&line);
-        text.push('\n');
+        if chars[at] == '&' {
+            if let Some((decoded, end)) = read_entity(&chars, at) {
+                push_text(&mut out, decoded);
+                at = end;
+                continue;
+            }
+        }
+        push_text(&mut out, chars[at]);
+        at += 1;
     }
-    text.trim_end().to_string()
+
+    out.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-/// The handful of entities that actually appear in Vikunja descriptions.
-fn decode_entities(text: &str) -> String {
-    text.replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        // Last, so a literal "&amp;lt;" does not decode twice into "<".
-        .replace("&amp;", "&")
+/// One recognised tag.
+struct Tag {
+    name: String,
+    closing: bool,
+    /// Index just past the `>`.
+    end: usize,
+}
+
+/// What a tag does to the text built so far.
+fn apply_tag(out: &mut String, tag: &Tag) {
+    if BLOCK.contains(&tag.name.as_str()) {
+        // Both `<p>` and `</p>` mean "a line ends here", and `</li></ul>` means it twice.
+        // Trailing whitespace goes first, or markup that is merely pretty-printed —
+        // `</p>\n<p>` — reads as an extra blank line that identical unformatted markup
+        // would not produce.
+        while out.ends_with(|c: char| c.is_whitespace()) {
+            out.pop();
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        if tag.name == "li" && !tag.closing {
+            out.push_str("• ");
+        }
+        return;
+    }
+    // Table cells are not blocks -- a newline each would make a three-column row three
+    // lines -- but running them together spells `onetwothree`.
+    if matches!(tag.name.as_str(), "td" | "th") && !tag.closing && !out.is_empty() {
+        push_text(out, ' ');
+    }
+}
+
+/// Append a character of text, collapsing whitespace the way HTML does.
+fn push_text(out: &mut String, c: char) {
+    if c.is_whitespace() {
+        if !out.is_empty() && !out.ends_with(' ') && !out.ends_with('\n') {
+            out.push(' ');
+        }
+        return;
+    }
+    out.push(c);
+}
+
+/// The index past `-->`, if a comment starts at `at`.
+fn comment_end(chars: &[char], at: usize) -> Option<usize> {
+    if chars.get(at..at + 4)? != ['<', '!', '-', '-'] {
+        return None;
+    }
+    let mut i = at + 4;
+    while i + 2 < chars.len() {
+        if chars[i] == '-' && chars[i + 1] == '-' && chars[i + 2] == '>' {
+            return Some(i + 3);
+        }
+        i += 1;
+    }
+    // Unterminated: the rest of the document is comment.
+    Some(chars.len())
+}
+
+/// Read a tag at `at`, if there is a recognised one.
+fn read_tag(chars: &[char], at: usize) -> Option<Tag> {
+    let mut i = at + 1;
+    let closing = chars.get(i) == Some(&'/');
+    if closing {
+        i += 1;
+    }
+    let start = i;
+    while chars.get(i).is_some_and(|c| c.is_ascii_alphanumeric()) {
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
+    let name: String = chars[start..i]
+        .iter()
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if !ELEMENTS.contains(&name.as_str()) {
+        return None;
+    }
+    // The name must actually end the way a tag name ends, or `<pre-release plan>` reads
+    // as a `<pre>`.
+    if !chars
+        .get(i)
+        .is_some_and(|c| c.is_whitespace() || *c == '>' || *c == '/')
+    {
+        return None;
+    }
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        match quote {
+            Some(open) if c == open => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            // Unterminated tags do not exist: text that opens one and never closes it is
+            // text, and eating to end of string would delete it.
+            None if c == '>' => {
+                return Some(Tag {
+                    name,
+                    closing,
+                    end: i + 1,
+                })
+            }
+            None => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The index past `</name>`, for an element whose contents are dropped.
+fn skip_element(chars: &[char], from: usize, name: &str) -> usize {
+    let mut i = from;
+    while i < chars.len() {
+        if chars[i] == '<' {
+            if let Some(tag) = read_tag(chars, i) {
+                if tag.closing && tag.name == name {
+                    return tag.end;
+                }
+            }
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// Read an HTML entity at `at`, returning what it means and where it ends.
+///
+/// Numeric forms are not optional: Go's `html.EscapeString`, which is what Vikunja's
+/// sanitiser escapes text nodes with, emits `&#39;` and `&#34;` rather than the named
+/// forms, and the dev instance's descriptions carry `&#x27;`.
+fn read_entity(chars: &[char], at: usize) -> Option<(char, usize)> {
+    /// Longest entity worth looking for, so unmatched `&` costs a bounded scan.
+    const MAX: usize = 10;
+
+    let end = (at + 1..(at + MAX).min(chars.len())).find(|i| chars[*i] == ';')?;
+    let body: String = chars[at + 1..end].iter().collect();
+    let decoded = if let Some(digits) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
+    {
+        char::from_u32(u32::from_str_radix(digits, 16).ok()?)?
+    } else if let Some(digits) = body.strip_prefix('#') {
+        char::from_u32(digits.parse().ok()?)?
+    } else {
+        match body.as_str() {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            "nbsp" => ' ',
+            "ndash" => '–',
+            "mdash" => '—',
+            "hellip" => '…',
+            "lsquo" => '\u{2018}',
+            "rsquo" => '\u{2019}',
+            "ldquo" => '\u{201c}',
+            "rdquo" => '\u{201d}',
+            _ => return None,
+        }
+    };
+    Some((decoded, end + 1))
 }
 
 /// A due date as a person would say it.
@@ -710,7 +909,9 @@ mod tests {
 
     #[test]
     fn html_from_the_web_editor_reads_as_text() {
-        let html = "<p>The refresh call needs the cookie set by                     <a target=\"_blank\" rel=\"noopener\" href=\"http://x\">POST /login</a>.</p>                    <ul><li>one</li><li>two</li></ul>";
+        let html = "<p>The refresh call needs the cookie set by \
+                    <a target=\"_blank\" rel=\"noopener\" href=\"http://x\">POST /login</a>.</p>\
+                    <ul><li>one</li><li>two</li></ul>";
         assert_eq!(
             plain_text(html),
             "The refresh call needs the cookie set by POST /login.\n• one\n• two"
@@ -718,17 +919,74 @@ mod tests {
     }
 
     #[test]
-    fn entities_decode_once_and_plain_prose_is_left_alone() {
-        assert_eq!(plain_text("Tom &amp; Jerry &lt;3"), "Tom & Jerry <3");
-        assert_eq!(plain_text("&amp;lt; stays escaped"), "&lt; stays escaped");
-        assert_eq!(plain_text("just a note"), "just a note");
-        // Prose, not markup: `<` followed by a space starts no tag.
+    fn prose_that_contains_angle_brackets_is_not_eaten() {
+        // Every one of these is a real description on the dev instance. The obvious
+        // heuristic -- `<` followed by a letter starts a tag -- deletes each of them up
+        // to the next `>`, which loses two URLs and an environment variable.
+        assert_eq!(
+            plain_text("<http://Www.ftc.gov> Report fraud"),
+            "<http://Www.ftc.gov> Report fraud"
+        );
+        assert_eq!(
+            plain_text("# - CAM_<CAMERA_MAC>_NAME=fr"),
+            "# - CAM_<CAMERA_MAC>_NAME=fr"
+        );
+        assert_eq!(plain_text("Use Vec<String> here"), "Use Vec<String> here");
         assert_eq!(plain_text("a < b and b > c"), "a < b and b > c");
     }
 
     #[test]
-    fn paragraph_breaks_survive_but_the_blank_run_does_not() {
+    fn something_that_merely_starts_like_a_tag_is_still_text() {
+        // No closing `>`: text that opens a tag and never closes it is text, and eating
+        // to the end of the string would delete the rest of the description.
+        assert_eq!(plain_text("a <b"), "a <b");
+        // A known element name that is really the start of a word.
+        assert_eq!(plain_text("<pre-release plan>"), "<pre-release plan>");
+    }
+
+    #[test]
+    fn entities_decode_once_including_the_numeric_forms() {
+        assert_eq!(plain_text("Tom &amp; Jerry &lt;3"), "Tom & Jerry <3");
+        assert_eq!(plain_text("&amp;lt; stays escaped"), "&lt; stays escaped");
+        // `&#x27;` is what the dev instance actually stores; `&#39;` and `&#34;` are what
+        // Go's html.EscapeString emits, which is what Vikunja sanitises with.
+        assert_eq!(plain_text("TechHut&#x27;s homelab"), "TechHut's homelab");
+        assert_eq!(plain_text("say &#34;hello&#34;"), "say \"hello\"");
+        assert_eq!(plain_text("an &#8212; dash"), "an — dash");
+        // Not an entity: left alone rather than swallowed.
+        assert_eq!(plain_text("Q&A session"), "Q&A session");
+        assert_eq!(plain_text("just a note"), "just a note");
+    }
+
+    #[test]
+    fn a_paragraph_break_does_not_depend_on_whether_the_markup_was_pretty_printed() {
+        assert_eq!(plain_text("<p>a</p><p>b</p>"), "a\nb");
+        assert_eq!(plain_text("<p>a</p>\n<p>b</p>"), "a\nb");
         assert_eq!(plain_text("<p>one</p><p></p><p></p><p>two</p>"), "one\ntwo");
+    }
+
+    #[test]
+    fn table_cells_are_separated_rather_than_run_together() {
+        assert_eq!(
+            plain_text("<table><tr><td>one</td><td>two</td></tr><tr><td>three</td></tr></table>"),
+            "one two\nthree"
+        );
+    }
+
+    #[test]
+    fn markup_that_is_not_prose_is_dropped_rather_than_shown() {
+        assert_eq!(
+            plain_text("<p>Hello</p><style>.x{color:red}</style>"),
+            "Hello"
+        );
+        assert_eq!(plain_text("<script>alert('x')</script>after"), "after");
+        assert_eq!(plain_text("<!-- a comment -->text"), "text");
+    }
+
+    #[test]
+    fn whitespace_collapses_the_way_html_says_it_does() {
+        assert_eq!(plain_text("one    two\n\tthree"), "one two three");
+        assert_eq!(plain_text("<p>&nbsp;leading</p>"), "leading");
     }
 
     #[test]
