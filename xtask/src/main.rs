@@ -2,8 +2,10 @@
 //!
 //! Run with `cargo xtask <task>` (see `.cargo/config.toml` for the alias).
 //!
-//! - `fetch-spec`      download `/api/v1/docs.json` from a live server into `spec/vikunja.json`
-//! - `generate-models` turn the spec's definitions into serde structs in `criax-api`
+//! - `fetch-spec` download `/api/v1/docs.json` from a live server into `spec/vikunja.json`
+//!
+//! Models are hand-written rather than generated; `criax-api/tests/conformance.rs`
+//! checks them against the spec instead. See `criax-api/src/models/mod.rs` for why.
 
 // xtask is a developer tool: printing to the terminal is its entire output.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -22,12 +24,9 @@ const DEFAULT_SPEC_SOURCE: &str = "https://dev-box.example.net:8443";
 fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("fetch-spec") => fetch_spec(),
-        Some("generate-models") => {
-            bail!("generate-models is not implemented yet (Phase 1)")
-        }
         Some(other) => bail!("unknown task: {other}"),
         None => {
-            println!("usage: cargo xtask <fetch-spec|generate-models>");
+            println!("usage: cargo xtask fetch-spec");
             Ok(())
         }
     }
