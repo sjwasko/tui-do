@@ -37,7 +37,7 @@ pub struct ServerInfo {
     pub max_file_size: String,
 
     /// Import formats this server accepts.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub available_migrators: Vec<String>,
 
     /// Whether task comments are enabled.

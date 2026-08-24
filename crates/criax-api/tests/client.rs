@@ -670,3 +670,69 @@ async fn an_update_sends_the_whole_task_including_cleared_dates() {
     };
     client(&server).update_task(&task).await.expect("update");
 }
+
+#[tokio::test]
+async fn creating_a_task_puts_the_project_in_the_body_as_well_as_the_path() {
+    // Vikunja binds path parameters before the JSON body, so a body carrying
+    // "project_id": 0 silently overwrites the id from the URL. The server then reports
+    // 404 / 3001 "This project does not exist." about a project that does. Found against
+    // the live dev instance; this is the guard.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/projects/31/tasks"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"project_id": 31}),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 1, "project_id": 31})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let created = client(&server)
+        .create_task(
+            criax_api::models::ProjectId(31),
+            // Deliberately left at the default 0, the way a caller building a new task
+            // naturally would.
+            &criax_api::models::Task {
+                title: "new".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create");
+    assert_eq!(created.project_id, criax_api::models::ProjectId(31));
+}
+
+#[tokio::test]
+async fn a_task_page_survives_vikunjas_null_collections() {
+    // Go marshals nil slices as null, and the spec calls all of these arrays. Before the
+    // fix this failed the whole page with "invalid type: null, expected a sequence".
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 1,
+            "title": "real task",
+            "project_id": 3,
+            "reminders": null,
+            "labels": null,
+            "assignees": null,
+            "attachments": null,
+            "related_tasks": null,
+            "due_date": "0001-01-01T00:00:00Z"
+        }])))
+        .mount(&server)
+        .await;
+
+    let tasks = client(&server)
+        .all_tasks(&TaskQuery::new())
+        .await
+        .expect("null collections should read as empty, not fail the page");
+    let task = tasks.first().expect("one task");
+    assert_eq!(task.title, "real task");
+    assert!(task.labels.is_empty());
+    assert!(task.assignees.is_empty());
+    assert!(task.reminders.is_empty());
+    assert!(task.related_tasks.is_empty());
+    assert_eq!(task.due_date.get(), None);
+}

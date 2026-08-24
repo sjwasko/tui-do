@@ -93,11 +93,11 @@ pub struct Task {
     pub hex_color: String,
 
     /// Labels attached to the task.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub labels: Vec<Label>,
 
     /// Users assigned to the task.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub assignees: Vec<User>,
 
     /// Who created it.
@@ -105,15 +105,15 @@ pub struct Task {
     pub created_by: Option<User>,
 
     /// Reminders set on the task.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub reminders: Vec<TaskReminder>,
 
     /// Attachments. Only populated by endpoints that return a full task.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub attachments: Vec<TaskAttachment>,
 
     /// Comments. Only populated by `GET /tasks/{id}`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub comments: Vec<TaskComment>,
 
     /// Number of comments, available on list endpoints where `comments` is not.
@@ -121,7 +121,7 @@ pub struct Task {
     pub comment_count: i64,
 
     /// Related tasks, grouped by how they relate.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub related_tasks: HashMap<RelationKind, Vec<Task>>,
 
     /// The bucket this task sits in, when fetched through a Kanban view.
