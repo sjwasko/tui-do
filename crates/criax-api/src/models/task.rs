@@ -97,6 +97,11 @@ pub struct Task {
     pub labels: Vec<Label>,
 
     /// Users assigned to the task.
+    ///
+    /// List endpoints populate this, verified against dev — so an empty list means
+    /// nobody is assigned, not that the endpoint declined to say. That is what makes it
+    /// safe to pass a listed task straight back to `update_task`, which replaces the
+    /// task from the body and would otherwise unassign everyone.
     #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub assignees: Vec<User>,
 
