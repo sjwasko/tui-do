@@ -375,48 +375,6 @@ async fn a_task_round_trips_through_create_read_update_delete() {
     assert_eq!(read.id, created.id);
     assert_eq!(read.title, "round trip");
 
-    // Update the whole task, the way an optimistic write does: read, mutate, send back.
-    let mut edited = read.clone();
-    edited.title = "round trip, edited".into();
-    edited.done = true;
-    edited.due_date = None.into();
-    let updated = client
-        .update_task(&edited)
-        .await
-        .expect("POST /tasks/{id} should update");
-    assert_eq!(updated.title, "round trip, edited");
-    assert!(updated.done);
-    assert_eq!(
-        updated.due_date.get(),
-        None,
-        "sending the zero time should have cleared the due date, not left it set"
-    );
-    assert!(
-        updated.done_at.get().is_some(),
-        "completing a task should stamp done_at"
-    );
-
-    // Labels attach through their own endpoint, not through the task body.
-    let label = client
-        .create_label(&criax_api::models::Label {
-            title: "criax-live-test".into(),
-            hex_color: "4287f5".into(),
-            ..Default::default()
-        })
-        .await
-        .expect("PUT /labels should create a label");
-    client
-        .add_label_to_task(created.id, label.id)
-        .await
-        .expect("PUT /tasks/{task}/labels should attach");
-    let attached = client.task_labels(created.id).await.expect("task labels");
-    assert!(attached.iter().any(|l| l.id == label.id));
-    client
-        .remove_label_from_task(created.id, label.id)
-        .await
-        .expect("DELETE /tasks/{task}/labels/{label} should detach");
-    client.delete_label(label.id).await.expect("delete label");
-
     // The experiment that settles whether read-mutate-write can lose assignees.
     //
     // A full fetch of the seeded data found zero tasks carrying assignees, which proves
@@ -436,6 +394,11 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         .await
         .expect("project views");
     let view = views.first().expect("a new project has a List view");
+
+    // This runs before the task is marked done, and that ordering is load-bearing:
+    // Vikunja's default List view carries a `done = false` filter, so a completed task
+    // vanishes from it. Asking the view about a done task found nothing and looked like
+    // the assignees had been dropped.
     let listed = client
         .view_tasks(project.id, view.id, &TaskQuery::new())
         .expect("pager")
@@ -462,6 +425,65 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         .unassign_user(created.id, me.id)
         .await
         .expect("DELETE /tasks/{taskID}/assignees/{userID} should unassign");
+
+    // Update the whole task, the way an optimistic write does: read, mutate, send back.
+    let mut edited = read.clone();
+    edited.title = "round trip, edited".into();
+    edited.done = true;
+    edited.due_date = None.into();
+    let updated = client
+        .update_task(&edited)
+        .await
+        .expect("POST /tasks/{id} should update");
+    assert_eq!(updated.title, "round trip, edited");
+    assert!(updated.done);
+    assert_eq!(
+        updated.due_date.get(),
+        None,
+        "sending the zero time should have cleared the due date, not left it set"
+    );
+    assert!(
+        updated.done_at.get().is_some(),
+        "completing a task should stamp done_at"
+    );
+
+    // A project view is not a plain task list: it carries a filter. The default List
+    // view's is `done = false`, so the task just completed drops out of it. Worth a test
+    // rather than a comment -- the Kanban and filter views in Phase 6 are built on these
+    // endpoints, and "the view returned fewer tasks than the project has" is going to
+    // look like a bug the first time it happens.
+    let after_done = client
+        .view_tasks(project.id, view.id, &TaskQuery::new())
+        .expect("pager")
+        .collect_all()
+        .await
+        .expect("view tasks should load");
+    assert!(
+        !after_done.iter().any(|t| t.id == created.id),
+        "the default List view returned a done task, so it no longer filters on \
+         `done = false` -- which changes how Phase 6 has to load a project"
+    );
+
+    // Labels attach through their own endpoint, not through the task body.
+    let label = client
+        .create_label(&criax_api::models::Label {
+            title: "criax-live-test".into(),
+            hex_color: "4287f5".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /labels should create a label");
+    client
+        .add_label_to_task(created.id, label.id)
+        .await
+        .expect("PUT /tasks/{task}/labels should attach");
+    let attached = client.task_labels(created.id).await.expect("task labels");
+    assert!(attached.iter().any(|l| l.id == label.id));
+    client
+        .remove_label_from_task(created.id, label.id)
+        .await
+        .expect("DELETE /tasks/{task}/labels/{label} should detach");
+    client.delete_label(label.id).await.expect("delete label");
 
     // The comment endpoints, including the update the spec declares with no request body.
     let comment = client
