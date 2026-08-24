@@ -10,6 +10,14 @@ pub mod quickadd;
 pub mod store;
 pub mod sync;
 
+/// The wire models, re-exported.
+///
+/// `criax-tui` names `Task`, `Project` and `Label` constantly but must not depend on
+/// `criax-api` directly, because that crate carries `reqwest` and the UI layer's
+/// dependency list *is* the enforcement mechanism for "the render loop never awaits I/O".
+/// Reaching them through here keeps both facts true.
+pub use criax_api::models;
+
 pub use config::Config;
 pub use error::{CoreError, Result};
 pub use store::Store;

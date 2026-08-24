@@ -5,6 +5,8 @@
 //! the API crate's helpers. Every rule that has to hold everywhere is cheapest to enforce
 //! in one function.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use criax_api::models::{ProjectId, Task, TaskId, User};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
@@ -35,6 +37,12 @@ pub struct TaskFilter {
     /// Only tasks carrying this label.
     pub label: Option<criax_api::models::LabelId>,
 
+    /// Only favourited tasks, or only unfavourited. `None` returns both.
+    ///
+    /// Vikunja presents favourites as pseudo-project `-1`, but the tasks themselves keep
+    /// their real `project_id`, so this is a column predicate rather than a project.
+    pub favorite: Option<bool>,
+
     /// Case-insensitive substring of the title.
     pub search: Option<String>,
 
@@ -49,6 +57,40 @@ pub struct ServerApply {
     pub stored: usize,
     /// Tasks left alone because they have unsent local changes.
     pub skipped: usize,
+}
+
+/// How many tasks sit in one place, split by whether they are finished.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskCount {
+    /// Tasks not yet done.
+    pub open: i64,
+    /// Tasks done.
+    pub done: i64,
+}
+
+impl TaskCount {
+    /// Open plus done.
+    #[must_use]
+    pub const fn total(self) -> i64 {
+        self.open + self.done
+    }
+}
+
+/// Counts for every project holding a task, and for favourites.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectCounts {
+    /// Keyed by project. A project with no tasks is absent, not zero.
+    pub by_project: HashMap<ProjectId, TaskCount>,
+    /// Favourited tasks, which cut across projects.
+    pub favorites: TaskCount,
+}
+
+impl ProjectCounts {
+    /// The count for one project, zero when it holds nothing.
+    #[must_use]
+    pub fn for_project(&self, project: ProjectId) -> TaskCount {
+        self.by_project.get(&project).copied().unwrap_or_default()
+    }
 }
 
 /// What to order by.
@@ -66,8 +108,16 @@ pub enum TaskOrder {
     Title,
     /// By the manual position a view assigns.
     Position,
+    /// By start date, with startless tasks last, for the same reason as [`Self::DueDate`].
+    StartDate,
     /// By when the task was created.
     Created,
+    /// By when the task was last modified.
+    Updated,
+    /// By completion, open first.
+    Status,
+    /// By how complete the task is.
+    PercentDone,
     /// By id, which is creation order and always unambiguous.
     Id,
 }
@@ -91,6 +141,14 @@ impl TaskSort {
             // `due_date IS NULL` sorts 0 before 1, putting real dates first either way.
             (TaskOrder::DueDate, false) => "due_date IS NULL, due_date ASC, id ASC",
             (TaskOrder::DueDate, true) => "due_date IS NULL, due_date DESC, id ASC",
+            (TaskOrder::StartDate, false) => "start_date IS NULL, start_date ASC, id ASC",
+            (TaskOrder::StartDate, true) => "start_date IS NULL, start_date DESC, id ASC",
+            (TaskOrder::Updated, false) => "updated ASC, id ASC",
+            (TaskOrder::Updated, true) => "updated DESC, id ASC",
+            (TaskOrder::Status, false) => "done ASC, id ASC",
+            (TaskOrder::Status, true) => "done DESC, id ASC",
+            (TaskOrder::PercentDone, false) => "percent_done ASC, id ASC",
+            (TaskOrder::PercentDone, true) => "percent_done DESC, id ASC",
             (TaskOrder::Priority, false) => "priority ASC, id ASC",
             (TaskOrder::Priority, true) => "priority DESC, id ASC",
             (TaskOrder::Title, false) => "title COLLATE NOCASE ASC, id ASC",
@@ -171,6 +229,10 @@ impl Store {
                 clauses.push(format!("tasks.done = ?{}", values.len() + 1));
                 values.push(i64::from(done).into());
             }
+            if let Some(favorite) = filter.favorite {
+                clauses.push(format!("tasks.is_favorite = ?{}", values.len() + 1));
+                values.push(i64::from(favorite).into());
+            }
             if let Some(search) = &filter.search {
                 clauses.push(format!(
                     "tasks.title LIKE ?{} ESCAPE '\\' COLLATE NOCASE",
@@ -216,6 +278,59 @@ impl Store {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?)
+        })
+        .await
+    }
+
+    /// Open and done counts for every project that holds a task, plus favourites.
+    ///
+    /// One grouped query rather than a count per project: the sidebar redraws whenever
+    /// the store changes, and thirty round trips through `spawn_blocking` to render a
+    /// column of numbers is thirty too many. Projects holding no tasks are absent rather
+    /// than zero -- the caller has the project list and knows what a missing key means.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn project_task_counts(&self) -> Result<ProjectCounts> {
+        self.read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT project_id,
+                        coalesce(sum(done = 0), 0),
+                        coalesce(sum(done = 1), 0)
+                   FROM tasks
+                  GROUP BY project_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    ProjectId(row.get(0)?),
+                    TaskCount {
+                        open: row.get(1)?,
+                        done: row.get(2)?,
+                    },
+                ))
+            })?;
+            let mut by_project = HashMap::new();
+            for row in rows {
+                let (project, count) = row?;
+                by_project.insert(project, count);
+            }
+
+            let favorites = connection.query_row(
+                "SELECT coalesce(sum(done = 0), 0), coalesce(sum(done = 1), 0)
+                   FROM tasks WHERE is_favorite = 1",
+                [],
+                |row| {
+                    Ok(TaskCount {
+                        open: row.get(0)?,
+                        done: row.get(1)?,
+                    })
+                },
+            )?;
+
+            Ok(ProjectCounts {
+                by_project,
+                favorites,
+            })
         })
         .await
     }
@@ -608,6 +723,59 @@ mod tests {
             .unwrap();
         assert_eq!(by_label.len(), 1);
         assert_eq!(by_label[0].title, "tagged");
+    }
+
+    #[tokio::test]
+    async fn favourites_are_a_predicate_not_a_project() {
+        // Vikunja shows favourites as pseudo-project -1, but the tasks keep their real
+        // project. Filtering by project -1 would return nothing at all.
+        let store = Store::in_memory().unwrap();
+        let mut starred = task(1, "starred");
+        starred.is_favorite = true;
+        starred.project_id = ProjectId(7);
+        store
+            .upsert_tasks(vec![starred, task(2, "ordinary")])
+            .await
+            .unwrap();
+
+        let favorites = store
+            .tasks(
+                TaskFilter {
+                    favorite: Some(true),
+                    ..TaskFilter::default()
+                },
+                TaskSort::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(favorites[0].title, "starred");
+        assert_eq!(favorites[0].project_id, ProjectId(7));
+    }
+
+    #[tokio::test]
+    async fn counts_come_back_per_project_split_by_done() {
+        let store = Store::in_memory().unwrap();
+        let mut finished = task(1, "finished");
+        finished.done = true;
+        let mut elsewhere = task(2, "elsewhere");
+        elsewhere.project_id = ProjectId(2);
+        let mut starred = task(3, "starred");
+        starred.is_favorite = true;
+        store
+            .upsert_tasks(vec![finished, elsewhere, starred])
+            .await
+            .unwrap();
+
+        let counts = store.project_task_counts().await.unwrap();
+        assert_eq!(counts.for_project(ProjectId(1)).open, 1);
+        assert_eq!(counts.for_project(ProjectId(1)).done, 1);
+        assert_eq!(counts.for_project(ProjectId(2)).total(), 1);
+        assert_eq!(counts.favorites.open, 1);
+
+        // A project holding nothing is absent rather than zero, and reads as zero anyway.
+        assert!(!counts.by_project.contains_key(&ProjectId(3)));
+        assert_eq!(counts.for_project(ProjectId(3)), TaskCount::default());
     }
 
     #[tokio::test]
