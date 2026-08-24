@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::datetime::Timestamp;
-use super::ids::{ProjectId, TaskId, UserId};
+use super::ids::{AttachmentId, CommentId, ProjectId, TaskId, UserId};
 use super::label::Label;
 use super::user::User;
 
@@ -263,7 +263,7 @@ pub struct TaskReminder {
 pub struct TaskAttachment {
     /// Server-assigned identifier.
     #[serde(default)]
-    pub id: i64,
+    pub id: AttachmentId,
 
     /// The task this is attached to.
     #[serde(default)]
@@ -283,7 +283,7 @@ pub struct TaskAttachment {
 pub struct TaskComment {
     /// Server-assigned identifier.
     #[serde(default)]
-    pub id: i64,
+    pub id: CommentId,
 
     /// Comment body. HTML, like task descriptions.
     #[serde(default)]

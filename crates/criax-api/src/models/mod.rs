@@ -22,9 +22,9 @@ mod task;
 mod user;
 
 pub use auth::{Login, Token};
-pub use ids::{LabelId, ProjectId, TaskId, UserId, ViewId};
+pub use ids::{AttachmentId, CommentId, LabelId, ProjectId, TaskId, UserId, ViewId};
 pub use info::{ServerInfo, DEFAULT_MAX_ITEMS_PER_PAGE};
-pub use label::Label;
+pub use label::{Label, LabelTask};
 pub use project::{Project, ProjectView, ViewKind};
 pub use task::{Bucket, RelationKind, RepeatMode, Task, TaskAttachment, TaskComment, TaskReminder};
-pub use user::User;
+pub use user::{TaskAssignee, User};

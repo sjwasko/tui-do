@@ -27,8 +27,8 @@ use crate::auth::{AuthKind, Credentials, Session};
 use crate::endpoints;
 use crate::error::{ApiError, ErrorBody, Result};
 use crate::models::{
-    Label, Login, Project, ProjectId, ProjectView, ServerInfo, Task, TaskId, Token, User, ViewId,
-    DEFAULT_MAX_ITEMS_PER_PAGE,
+    CommentId, Label, LabelId, LabelTask, Login, Project, ProjectId, ProjectView, ServerInfo, Task,
+    TaskAssignee, TaskComment, TaskId, Token, User, UserId, ViewId, DEFAULT_MAX_ITEMS_PER_PAGE,
 };
 use crate::pagination::Pager;
 use crate::query::TaskQuery;
@@ -458,6 +458,305 @@ impl Client {
     /// Any failure from any page.
     pub async fn all_labels(&self) -> Result<Vec<Label>> {
         self.labels()?.collect_all().await
+    }
+
+    // ---- writes ----------------------------------------------------------------
+    //
+    // Vikunja's verbs are not the REST convention and are not internally consistent:
+    // creation is `PUT`, updates are `POST` -- except for a label, which updates with
+    // `PUT` on its own id. Every method below is taken from `spec/vikunja.json` rather
+    // than from what the shape of the URL suggests, because guessing here is exactly how
+    // `seed-from-prod.sh` ended up sending `POST` to a migration endpoint that answers
+    // `405 Allow: OPTIONS, PUT`.
+
+    /// `PUT /projects/{id}/tasks` — create a task in a project.
+    ///
+    /// The project comes from the path, so `task.project_id` is ignored. Returns the
+    /// server's version of the task, which is what the local store should keep: it
+    /// carries the assigned id, index and identifier.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn create_task(&self, project: ProjectId, task: &Task) -> Result<Task> {
+        self.require_auth("creating a task")?;
+        let call = Call::new(
+            Method::PUT,
+            self.resolve(endpoints::PROJECT_TASKS, &[("id", &project.to_string())])?,
+        )
+        .with_json(task)?;
+        self.send::<Task>(call).await.map(|(task, _)| task)
+    }
+
+    /// `POST /tasks/{id}` — update a task.
+    ///
+    /// Vikunja replaces the task from the body, so send a whole task that was read,
+    /// mutated and passed back — not a sparse one. A missing field is a cleared field.
+    ///
+    /// Labels are not part of this: they are attached and detached through
+    /// [`Client::add_label_to_task`] and [`Client::remove_label_from_task`].
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn update_task(&self, task: &Task) -> Result<Task> {
+        self.require_auth("updating a task")?;
+        let call = Call::new(
+            Method::POST,
+            self.resolve(endpoints::TASK, &[("id", &task.id.to_string())])?,
+        )
+        .with_json(task)?;
+        self.send::<Task>(call).await.map(|(task, _)| task)
+    }
+
+    /// `DELETE /tasks/{id}`.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn delete_task(&self, id: TaskId) -> Result<()> {
+        self.require_auth("deleting a task")?;
+        let call = Call::new(
+            Method::DELETE,
+            self.resolve(endpoints::TASK, &[("id", &id.to_string())])?,
+        );
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `PUT /projects` — create a project.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn create_project(&self, project: &Project) -> Result<Project> {
+        self.require_auth("creating a project")?;
+        let call =
+            Call::new(Method::PUT, self.resolve(endpoints::PROJECTS, &[])?).with_json(project)?;
+        self.send::<Project>(call).await.map(|(project, _)| project)
+    }
+
+    /// `POST /projects/{id}` — update a project.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn update_project(&self, project: &Project) -> Result<Project> {
+        self.require_auth("updating a project")?;
+        let call = Call::new(
+            Method::POST,
+            self.resolve(endpoints::PROJECT, &[("id", &project.id.to_string())])?,
+        )
+        .with_json(project)?;
+        self.send::<Project>(call).await.map(|(project, _)| project)
+    }
+
+    /// `DELETE /projects/{id}` — delete a project and everything in it.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn delete_project(&self, id: ProjectId) -> Result<()> {
+        self.require_auth("deleting a project")?;
+        let call = Call::new(
+            Method::DELETE,
+            self.resolve(endpoints::PROJECT, &[("id", &id.to_string())])?,
+        );
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `PUT /labels` — create a label.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn create_label(&self, label: &Label) -> Result<Label> {
+        self.require_auth("creating a label")?;
+        let call =
+            Call::new(Method::PUT, self.resolve(endpoints::LABELS, &[])?).with_json(label)?;
+        self.send::<Label>(call).await.map(|(label, _)| label)
+    }
+
+    /// `PUT /labels/{id}` — update a label.
+    ///
+    /// Note the verb: every other update in this API is a `POST`, and this one is not.
+    /// The spec says `PUT`, so this says `PUT`.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn update_label(&self, label: &Label) -> Result<Label> {
+        self.require_auth("updating a label")?;
+        let call = Call::new(
+            Method::PUT,
+            self.resolve(endpoints::LABEL, &[("id", &label.id.to_string())])?,
+        )
+        .with_json(label)?;
+        self.send::<Label>(call).await.map(|(label, _)| label)
+    }
+
+    /// `DELETE /labels/{id}`.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn delete_label(&self, id: LabelId) -> Result<()> {
+        self.require_auth("deleting a label")?;
+        let call = Call::new(
+            Method::DELETE,
+            self.resolve(endpoints::LABEL, &[("id", &id.to_string())])?,
+        );
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `GET /tasks/{task}/labels` — the labels attached to a task.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn task_labels(&self, task: TaskId) -> Result<Vec<Label>> {
+        self.require_auth("reading task labels")?;
+        let call = Call::new(
+            Method::GET,
+            self.resolve(endpoints::TASK_LABELS, &[("task", &task.to_string())])?,
+        );
+        Pager::<Label>::new(self.clone(), call, self.page_size())
+            .collect_all()
+            .await
+    }
+
+    /// `PUT /tasks/{task}/labels` — attach an existing label to a task.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn add_label_to_task(&self, task: TaskId, label: LabelId) -> Result<()> {
+        self.require_auth("labelling a task")?;
+        let call = Call::new(
+            Method::PUT,
+            self.resolve(endpoints::TASK_LABELS, &[("task", &task.to_string())])?,
+        )
+        .with_json(&LabelTask { label_id: label })?;
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `DELETE /tasks/{task}/labels/{label}` — detach a label from a task.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn remove_label_from_task(&self, task: TaskId, label: LabelId) -> Result<()> {
+        self.require_auth("unlabelling a task")?;
+        let call = Call::new(
+            Method::DELETE,
+            self.resolve(
+                endpoints::TASK_LABEL,
+                &[("task", &task.to_string()), ("label", &label.to_string())],
+            )?,
+        );
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `PUT /tasks/{taskID}/assignees` — assign a user to a task.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn assign_user(&self, task: TaskId, user: UserId) -> Result<()> {
+        self.require_auth("assigning a task")?;
+        let call = Call::new(
+            Method::PUT,
+            self.resolve(endpoints::TASK_ASSIGNEES, &[("taskID", &task.to_string())])?,
+        )
+        .with_json(&TaskAssignee { user_id: user })?;
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `DELETE /tasks/{taskID}/assignees/{userID}` — unassign a user.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn unassign_user(&self, task: TaskId, user: UserId) -> Result<()> {
+        self.require_auth("unassigning a task")?;
+        let call = Call::new(
+            Method::DELETE,
+            self.resolve(
+                endpoints::TASK_ASSIGNEE,
+                &[("taskID", &task.to_string()), ("userID", &user.to_string())],
+            )?,
+        );
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `GET /tasks/{taskID}/comments` — the comments on a task.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn task_comments(&self, task: TaskId) -> Result<Vec<TaskComment>> {
+        self.require_auth("reading comments")?;
+        let call = Call::new(
+            Method::GET,
+            self.resolve(endpoints::TASK_COMMENTS, &[("taskID", &task.to_string())])?,
+        );
+        Pager::<TaskComment>::new(self.clone(), call, self.page_size())
+            .collect_all()
+            .await
+    }
+
+    /// `PUT /tasks/{taskID}/comments` — post a comment.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn create_comment(
+        &self,
+        task: TaskId,
+        text: impl Into<String>,
+    ) -> Result<TaskComment> {
+        self.require_auth("commenting on a task")?;
+        let body = TaskComment {
+            comment: text.into(),
+            ..TaskComment::default()
+        };
+        let call = Call::new(
+            Method::PUT,
+            self.resolve(endpoints::TASK_COMMENTS, &[("taskID", &task.to_string())])?,
+        )
+        .with_json(&body)?;
+        self.send::<TaskComment>(call)
+            .await
+            .map(|(comment, _)| comment)
+    }
+
+    /// `POST /tasks/{taskID}/comments/{commentID}` — edit a comment.
+    ///
+    /// The spec declares no request body for this operation, which cannot be right: there
+    /// is no other way to say what the comment should now be. Treated as the same kind of
+    /// upstream spec bug as the `PUT`-versus-`POST` on the migration endpoint, and the
+    /// body is sent. The live test is what confirms it.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn update_comment(&self, task: TaskId, comment: &TaskComment) -> Result<TaskComment> {
+        self.require_auth("editing a comment")?;
+        let call = Call::new(
+            Method::POST,
+            self.resolve(
+                endpoints::TASK_COMMENT,
+                &[
+                    ("taskID", &task.to_string()),
+                    ("commentID", &comment.id.to_string()),
+                ],
+            )?,
+        )
+        .with_json(comment)?;
+        self.send::<TaskComment>(call)
+            .await
+            .map(|(comment, _)| comment)
+    }
+
+    /// `DELETE /tasks/{taskID}/comments/{commentID}`.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn delete_comment(&self, task: TaskId, comment: CommentId) -> Result<()> {
+        self.require_auth("deleting a comment")?;
+        let call = Call::new(
+            Method::DELETE,
+            self.resolve(
+                endpoints::TASK_COMMENT,
+                &[
+                    ("taskID", &task.to_string()),
+                    ("commentID", &comment.to_string()),
+                ],
+            )?,
+        );
+        self.send_ignoring_body(call).await.map(|_| ())
     }
 
     // ---- request machinery ------------------------------------------------------

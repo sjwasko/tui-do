@@ -513,3 +513,160 @@ async fn projects_and_labels_paginate_too() {
     assert_eq!(client.all_projects().await.expect("projects").len(), 51);
     assert_eq!(client.all_labels().await.expect("labels").len(), 1);
 }
+
+#[tokio::test]
+async fn writes_use_the_verbs_the_spec_declares() {
+    // Vikunja creates with PUT, updates with POST -- except a label, which updates with
+    // PUT. Each mock matches one exact method and path and expects exactly one hit, so
+    // sending the conventional-but-wrong verb fails the test rather than surfacing as a
+    // 405 at runtime, which is how the same mistake reached production in
+    // `deploy/seed-from-prod.sh`.
+    let server = MockServer::start().await;
+
+    let task = json!({"id": 7, "title": "written", "project_id": 3});
+    let expectations: Vec<(&str, &str, serde_json::Value)> = vec![
+        ("PUT", "/api/v1/projects/3/tasks", task.clone()),
+        ("POST", "/api/v1/tasks/7", task.clone()),
+        ("DELETE", "/api/v1/tasks/7", json!({"message": "ok"})),
+        ("PUT", "/api/v1/projects", json!({"id": 3, "title": "p"})),
+        ("POST", "/api/v1/projects/3", json!({"id": 3, "title": "p"})),
+        ("DELETE", "/api/v1/projects/3", json!({"message": "ok"})),
+        ("PUT", "/api/v1/labels", json!({"id": 5, "title": "l"})),
+        ("PUT", "/api/v1/labels/5", json!({"id": 5, "title": "l"})),
+        ("DELETE", "/api/v1/labels/5", json!({"id": 5, "title": "l"})),
+        ("PUT", "/api/v1/tasks/7/labels", json!({"label_id": 5})),
+        (
+            "DELETE",
+            "/api/v1/tasks/7/labels/5",
+            json!({"message": "ok"}),
+        ),
+        ("PUT", "/api/v1/tasks/7/assignees", json!({"user_id": 1})),
+        (
+            "DELETE",
+            "/api/v1/tasks/7/assignees/1",
+            json!({"message": "ok"}),
+        ),
+        (
+            "PUT",
+            "/api/v1/tasks/7/comments",
+            json!({"id": 9, "comment": "hi"}),
+        ),
+        (
+            "POST",
+            "/api/v1/tasks/7/comments/9",
+            json!({"id": 9, "comment": "edited"}),
+        ),
+        (
+            "DELETE",
+            "/api/v1/tasks/7/comments/9",
+            json!({"message": "ok"}),
+        ),
+    ];
+    for (verb, route, body) in expectations {
+        Mock::given(method(verb))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let client = client(&server);
+    let mut task = criax_api::models::Task {
+        id: TaskId(7),
+        title: "written".into(),
+        ..Default::default()
+    };
+    let project = criax_api::models::ProjectId(3);
+    let label = criax_api::models::LabelId(5);
+
+    task = client
+        .create_task(project, &task)
+        .await
+        .expect("create task");
+    assert_eq!(task.id, TaskId(7));
+    client.update_task(&task).await.expect("update task");
+    client.delete_task(task.id).await.expect("delete task");
+
+    let project_body = criax_api::models::Project {
+        id: project,
+        title: "p".into(),
+        ..Default::default()
+    };
+    client
+        .create_project(&project_body)
+        .await
+        .expect("create project");
+    client
+        .update_project(&project_body)
+        .await
+        .expect("update project");
+    client
+        .delete_project(project)
+        .await
+        .expect("delete project");
+
+    let label_body = criax_api::models::Label {
+        id: label,
+        title: "l".into(),
+        ..Default::default()
+    };
+    client
+        .create_label(&label_body)
+        .await
+        .expect("create label");
+    client
+        .update_label(&label_body)
+        .await
+        .expect("update label");
+    client.delete_label(label).await.expect("delete label");
+
+    client
+        .add_label_to_task(task.id, label)
+        .await
+        .expect("attach label");
+    client
+        .remove_label_from_task(task.id, label)
+        .await
+        .expect("detach label");
+
+    let user = criax_api::models::UserId(1);
+    client.assign_user(task.id, user).await.expect("assign");
+    client.unassign_user(task.id, user).await.expect("unassign");
+
+    let comment = client.create_comment(task.id, "hi").await.expect("comment");
+    assert_eq!(comment.id, criax_api::models::CommentId(9));
+    client
+        .update_comment(task.id, &comment)
+        .await
+        .expect("edit comment");
+    client
+        .delete_comment(task.id, comment.id)
+        .await
+        .expect("delete comment");
+}
+
+#[tokio::test]
+async fn an_update_sends_the_whole_task_including_cleared_dates() {
+    // Vikunja replaces the task from the body, and encodes "no date" as Go's zero time
+    // rather than null. Sending null is rejected; omitting the field leaves the old date
+    // in place. Clearing a due date therefore means sending 0001-01-01T00:00:00Z.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"id": 7, "title": "kept", "due_date": "0001-01-01T00:00:00Z"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7, "title": "kept"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let task = criax_api::models::Task {
+        id: TaskId(7),
+        title: "kept".into(),
+        due_date: None.into(),
+        ..Default::default()
+    };
+    client(&server).update_task(&task).await.expect("update");
+}

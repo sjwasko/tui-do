@@ -26,8 +26,8 @@ use std::path::PathBuf;
 
 use criax_api::endpoints;
 use criax_api::models::{
-    Bucket, Label, Login, Project, ProjectView, ServerInfo, Task, TaskAttachment, TaskComment,
-    TaskReminder, Token, User,
+    Bucket, Label, LabelTask, Login, Project, ProjectView, ServerInfo, Task, TaskAssignee,
+    TaskAttachment, TaskComment, TaskReminder, Token, User,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -153,6 +153,9 @@ fn model_fields_exist_in_the_spec() {
     check_model::<ServerInfo>(&spec, "shared.VikunjaInfos");
     check_model::<Login>(&spec, "user.Login");
     check_model::<Token>(&spec, "auth.Token");
+    check_model::<LabelTask>(&spec, "models.LabelTask");
+    // `TaskAssginee` is upstream's spelling. Correcting it here would fail the lookup.
+    check_model::<TaskAssignee>(&spec, "models.TaskAssginee");
 }
 
 #[test]

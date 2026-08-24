@@ -66,6 +66,17 @@ id_type!(
     /// Identifies a project view (List, Gantt, Table, Kanban).
     ViewId
 );
+id_type!(
+    /// Identifies a comment on a task.
+    ///
+    /// Distinct from [`TaskId`] because `DELETE /tasks/{taskID}/comments/{commentID}`
+    /// takes both, adjacent and both numeric.
+    CommentId
+);
+id_type!(
+    /// Identifies a file attached to a task.
+    AttachmentId
+);
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

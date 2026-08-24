@@ -51,6 +51,16 @@ impl User {
     }
 }
 
+/// The body of `PUT /tasks/{taskID}/assignees` — assigning a user to a task.
+///
+/// The spec calls this definition `models.TaskAssginee`; the typo is upstream's, and the
+/// conformance test spells it that way deliberately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskAssignee {
+    /// The user to assign.
+    pub user_id: UserId,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
