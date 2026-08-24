@@ -76,6 +76,15 @@ Tasks, `-3` Inbox — saved filters and built-ins presented as projects. They re
 so anything offering a project to create in must filter to `id > 0`. It is also why a
 project count from the API does not match the count in the web UI's sidebar.
 
+**An unfiltered `GET /tasks` includes done tasks.** Verified on dev 2026-08-24: of
+3,877 tasks the listing returned 1,942 done, and `filter=done = true` returned exactly
+those same 1,942 with none missing. What filters completed tasks out is a *project
+view* — the default List view carries `done = false` — not the plain collection
+endpoint. The sync engine's pull depends on this: it deletes every local task the
+listing did not mention, so a server that quietly omitted done tasks would erase the
+user's entire completed history in one pass. `tests/live.rs` asserts it differentially,
+and reports "inconclusive" rather than passing quietly if dev holds no done tasks.
+
 **Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
 from the body, and an empty `assignees` clears them. Labels are the opposite: they are
 attached and detached through their own endpoints and the body's `labels` field is ignored.
