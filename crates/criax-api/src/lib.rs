@@ -8,6 +8,8 @@
 
 #![doc(html_no_source)]
 
+pub mod endpoints;
 pub mod error;
+pub mod models;
 
 pub use error::{ApiError, Result};
