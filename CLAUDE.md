@@ -95,6 +95,32 @@ safely, and a `null` assignees field means genuinely nobody rather than "not loa
 is still unsafe is *constructing* a task from partial data and sending it — anything that
 does must fill assignees itself or it will unassign everyone.
 
+**A label change that has already happened answers three different ways**, and only one of
+them is the one you would guess. Measured on dev 2026-08-24, because the spec describes
+none of it:
+
+| asked | answered |
+|---|---|
+| delete a task that is already gone | `404` |
+| attach a label that is already attached | `400`, Vikunja code `8001`, "This label already exists on the task." |
+| detach a label that is already detached | **`403 Forbidden`** — no code, no message beyond the word |
+
+That last one matters because a lost response means a retry, and every one of these is a
+4xx, which `sync::is_permanent` treats as the server's final answer. Without an arm for
+each, a replayed attach rolls the label back off the task and a replayed detach puts it
+back on — undoing, in both cases, exactly what the user asked for. `is_already_done` has
+all three, each with a test that fails when its arm is removed.
+
+Treating *any* `403` on a detach as "already done" does swallow a genuine permission
+failure. That is the deliberate trade: the label is then still on the server's copy, so
+the next pull restores it and the user sees the truth. The alternative rolls back a detach
+the server has already honoured.
+
+**A task write does echo its labels back**, contrary to what `sync::with_labels` was
+written to compensate for: a write carrying one label answered with one label, matching
+the task. The helper stays as belt and braces — one measurement of one shape, guarding a
+silent failure — but it is no longer the load-bearing step its comment claimed.
+
 ## Environment
 
 | | |
