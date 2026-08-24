@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Gating job. Linux is the tier-1 platform through GA.
+  check:
+    name: fmt + clippy + test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+
+  # Ubuntu LTS is the second tier-1 target. Arch and Ubuntu LTS diverge sharply on glibc,
+  # so a green build on the dev workstation does not imply a green build here.
+  ubuntu-lts:
+    name: build + test (ubuntu 26.04)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Install toolchain deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
+  # Non-gating. macOS is a post-GA port; this exists only so the port is not an excavation.
+  macos-drift:
+    name: cargo check (macos, non-gating)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

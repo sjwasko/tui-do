@@ -1,0 +1,18 @@
+/target
+**/*.rs.bk
+
+# Compiled artifacts must never be committed. cria carries a 206 KB .rlib in its
+# history; that is the mistake this line exists to prevent.
+*.rlib
+*.rmeta
+*.so
+*.dylib
+
+# Secrets. Deploy env files live on the host at /opt/stacks/, never in the repo.
+*.env
+!.env.example
+/deploy/*.secret
+
+# Local state
+/spec/*.tmp.json
+.direnv/

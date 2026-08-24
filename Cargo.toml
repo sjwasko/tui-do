@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = ["crates/criax", "crates/criax-api", "crates/criax-core", "crates/criax-tui", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sjwasko/criax"
+authors = ["Steve Wasko"]
+
+[workspace.dependencies]
+criax-api = { path = "crates/criax-api" }
+criax-core = { path = "crates/criax-core" }
+criax-tui = { path = "crates/criax-tui" }
+
+ratatui = "0.30"
+crossterm = "0.29"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs", "multipart", "stream"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-english = "0.2"
+thiserror = "2.0"
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+regex = "1.13"
+aho-corasick = "1.1"
+fuzzy-matcher = "0.3"
+dirs = "6.0"
+pulldown-cmark = { version = "0.13", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+wiremock = "0.6"
+
+# Lints apply to every crate in the workspace. Each crate opts in with `[lints] workspace = true`.
+#
+# The `unwrap`/`panic` denials exist because cria — the project criax replaces — accumulated
+# 67 `unwrap()` calls and 198 `.clone()`s with no CI lint gate at all. Denying them from commit
+# one is cheaper than removing them later. Tests are exempt via `allow` attributes at the
+# module level, not by weakening these.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+redundant_clone = "warn"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
