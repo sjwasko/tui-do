@@ -43,7 +43,13 @@ services:
       POSTGRES_DB: ${CRIAX_DB_NAME:-vikunja}
     volumes:
       # Local disk only. Never an SMB mount -- Postgres on SMB corrupts.
-      - ${CRIAX_DEV_ROOT:-/opt/appdata/criax-dev}/db:/var/lib/postgresql/data
+      #
+      # Mount at /var/lib/postgresql, NOT /var/lib/postgresql/data. Postgres 18+
+      # stores data in a major-version subdirectory (.../18/docker) so that
+      # `pg_upgrade --link` works without crossing a mount boundary; pointing the
+      # mount at the old path makes the image refuse to start. Production uses the
+      # same layout.
+      - ${CRIAX_DEV_ROOT:-/opt/appdata/criax-dev}/db:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${CRIAX_DB_USER:-vikunja} -d ${CRIAX_DB_NAME:-vikunja}"]
       interval: 10s
