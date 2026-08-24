@@ -40,6 +40,14 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long to wait for the connection itself.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The most response body the client will hold in memory.
+///
+/// Not a limit any real response approaches — a full page of fifty tasks is a few hundred
+/// kilobytes — but `text()` on an unbounded body is an out-of-memory kill waiting for a
+/// server that answers wrongly. Attachment downloads will stream to disk rather than come
+/// through this path.
+const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
 /// One prepared request.
 ///
 /// Kept as data rather than a `reqwest::RequestBuilder` so it can be replayed: a 401 that
@@ -308,6 +316,9 @@ impl Client {
     /// [`ApiError::Unauthorized`] when the refresh cookie is missing or expired, which
     /// means the user has to log in again.
     pub async fn refresh_token(&self) -> Result<()> {
+        // The refresh cookie outlives `logout`'s local session reset, so without this a
+        // caller could mint a fresh JWT after logging out.
+        self.require_auth("refreshing the session")?;
         let call = Call::new(Method::POST, self.resolve(endpoints::TOKEN_REFRESH, &[])?);
         // Deliberately `send_once`: a refresh that 401s must not trigger another refresh.
         let (token, _) = self.send_once::<Token>(&call).await?;
@@ -790,9 +801,15 @@ impl Client {
 
         let mut path = template.to_string();
         for (name, value) in params {
-            // Path parameters are ids and short enum words. Anything with URL structure
-            // in it is a bug or an injection attempt, not a value to encode and hope.
-            if value.is_empty() || value.contains(['/', '?', '#', '%', ' ']) {
+            // Every path parameter Vikunja takes is a number or a short enum word, so
+            // allowing exactly that is both sufficient and airtight. An allowlist cannot
+            // be outflanked by the next encoding trick, and it rejects `..` as readily
+            // as `/`.
+            if value.is_empty()
+                || !value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
                 return Err(ApiError::InvalidUrl {
                     url: template.to_string(),
                     reason: format!("path parameter {name} is not a plain value: {value:?}"),
@@ -891,13 +908,7 @@ impl Client {
 
         let status = response.status();
         let headers = response.headers().clone();
-        let body = response
-            .text()
-            .await
-            .map_err(|source| ApiError::Transport {
-                url: call.url.to_string(),
-                source,
-            })?;
+        let body = read_bounded(response, &call.url).await?;
 
         tracing::trace!(method = %call.method, url = %call.url, %status, bytes = body.len(), "vikunja request");
         Ok((status, headers, body))
@@ -948,6 +959,30 @@ impl Client {
     pub fn set_api_token(&self, token: impl Into<Secret>) {
         self.set_session(Session::ApiToken(token.into()));
     }
+}
+
+/// Read a response body with a ceiling on how much is buffered.
+async fn read_bounded(mut response: reqwest::Response, url: &Url) -> Result<String> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|source| ApiError::Transport {
+            url: url.to_string(),
+            source,
+        })?
+    {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(ApiError::ResponseTooLarge {
+                url: url.to_string(),
+                limit: MAX_RESPONSE_BYTES,
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    // Vikunja answers in UTF-8 JSON; anything else is already a failure, and lossy
+    // decoding keeps that failure legible instead of turning it into a transport error.
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 /// Interpret a failing response.
@@ -1009,6 +1044,16 @@ fn normalize_base(raw: &str) -> Result<Url> {
             url: trimmed.to_string(),
             reason: "no host".to_string(),
         });
+    }
+
+    // The bearer token goes on every request, so plaintext is worth saying out loud.
+    // Loopback is exempt: that is the test server, not a network hop.
+    if url.scheme() == "http" && !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
+    {
+        tracing::warn!(
+            %url,
+            "connecting over plaintext HTTP: the API token will cross the network in the clear"
+        );
     }
 
     let path = url.path().trim_end_matches('/').to_string();
@@ -1121,10 +1166,42 @@ mod tests {
     #[test]
     fn a_path_parameter_cannot_smuggle_url_structure() {
         let client = client("https://vikunja.example");
-        assert!(matches!(
-            client.resolve(endpoints::TASK, &[("id", "1/../projects")]),
-            Err(ApiError::InvalidUrl { .. })
-        ));
+        for hostile in [
+            "1/../projects",
+            "..",
+            "1%2F..",
+            "1?filter=x",
+            "1#frag",
+            "1 2",
+            "",
+            "1/",
+        ] {
+            assert!(
+                matches!(
+                    client.resolve(endpoints::TASK, &[("id", hostile)]),
+                    Err(ApiError::InvalidUrl { .. })
+                ),
+                "accepted {hostile:?} as a path parameter"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_path_parameters_still_pass() {
+        // The allowlist has to admit what the API actually uses: numeric ids and the
+        // relation kinds, which are lowercase words.
+        let client = client("https://vikunja.example");
+        assert!(client.resolve(endpoints::TASK, &[("id", "3876")]).is_ok());
+        assert!(client
+            .resolve(
+                endpoints::TASK_RELATION,
+                &[
+                    ("taskID", "1"),
+                    ("relationKind", "subtask"),
+                    ("otherTaskID", "2"),
+                ],
+            )
+            .is_ok());
     }
 
     #[test]
