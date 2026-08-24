@@ -417,6 +417,52 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         .expect("DELETE /tasks/{task}/labels/{label} should detach");
     client.delete_label(label.id).await.expect("delete label");
 
+    // The experiment that settles whether read-mutate-write can lose assignees.
+    //
+    // A full fetch of the seeded data found zero tasks carrying assignees, which proves
+    // nothing: nobody ever assigned anyone on this instance. So assign someone here and
+    // ask a *list* endpoint what it says. If the assignment comes back, list results are
+    // complete and `update_task` can safely round-trip a listed task. If it does not,
+    // every optimistic edit made from a list view would unassign everyone, and
+    // `Task::assignees` has to become `Option<Vec<User>>` to make that unrepresentable.
+    let me = client.current_user().await.expect("GET /user");
+    client
+        .assign_user(created.id, me.id)
+        .await
+        .expect("PUT /tasks/{taskID}/assignees should assign");
+
+    let views = client
+        .project_views(project.id)
+        .await
+        .expect("project views");
+    let view = views.first().expect("a new project has a List view");
+    let listed = client
+        .view_tasks(project.id, view.id, &TaskQuery::new())
+        .expect("pager")
+        .collect_all()
+        .await
+        .expect("view tasks should load");
+    let listed_task = listed
+        .iter()
+        .find(|t| t.id == created.id)
+        .expect("the task we created should be in its project's view");
+    println!(
+        "list endpoint returned {} assignee(s) for a task with one assigned",
+        listed_task.assignees.len()
+    );
+    assert!(
+        !listed_task.assignees.is_empty(),
+        "a list endpoint dropped a task's assignees. update_task sends the whole body \
+         and an empty assignees list clears them, so read-mutate-write from a list view \
+         would unassign everyone. Task::assignees must become Option<Vec<User>> so the \
+         difference between \"not populated\" and \"nobody assigned\" is representable."
+    );
+
+    client
+        .unassign_user(created.id, me.id)
+        .await
+        .expect("DELETE /tasks/{taskID}/assignees/{userID} should unassign");
+
     // The comment endpoints, including the update the spec declares with no request body.
     let comment = client
         .create_comment(created.id, "posted by the live test")
