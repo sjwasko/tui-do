@@ -20,9 +20,11 @@
 //! bookkeeping alongside it rather than inside a copy of it.
 
 mod labels;
+mod outbox;
 mod projects;
 mod schema;
 mod sql;
+mod state;
 mod tasks;
 
 use std::path::{Path, PathBuf};
@@ -33,8 +35,10 @@ use rusqlite::Connection;
 use crate::error::{CoreError, Result};
 
 pub use labels::{LabelFilter, LabelOrder, LabelSort};
+pub use outbox::{is_provisional, Mutation, OutboxEntry};
 pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
-pub use tasks::{TaskFilter, TaskOrder, TaskSort};
+pub use state::{CURRENT_USER, LAST_PULL, PAGE_CAP};
+pub use tasks::{ServerApply, TaskFilter, TaskOrder, TaskSort};
 
 /// A handle to the local store.
 ///

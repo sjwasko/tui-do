@@ -23,6 +23,13 @@ pub enum CoreError {
         reason: String,
     },
 
+    /// A queued mutation could not be encoded or decoded.
+    ///
+    /// The outbox stores mutations as JSON, so this is either a bug in this build or an
+    /// entry written by one that spelled a variant differently.
+    #[error("could not encode a queued change: {0}")]
+    Encoding(#[from] serde_json::Error),
+
     /// An I/O operation outside the store failed.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

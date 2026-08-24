@@ -172,9 +172,10 @@ impl Store {
     /// The cascade takes their `task_labels` rows with them, so a label deleted on
     /// another device disappears from every task here too.
     ///
-    /// Call this only after a *complete* labels pull. A label seen embedded in a task is
-    /// stored, but `GET /labels` returns only labels the current user created, so
-    /// retaining against that listing would delete every label another user owns.
+    /// Call this only after a *complete* labels pull. `GET /labels` answers with
+    /// "all labels which are either created by the user or associated with a task the
+    /// user has at least read-access to" -- which is exactly the set the store should
+    /// hold, so it is safe to retain against. A filtered or searched listing is not.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.

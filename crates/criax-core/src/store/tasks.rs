@@ -42,6 +42,15 @@ pub struct TaskFilter {
     pub limit: Option<u32>,
 }
 
+/// What [`Store::upsert_tasks_from_server`] did with a page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerApply {
+    /// Tasks written.
+    pub stored: usize,
+    /// Tasks left alone because they have unsent local changes.
+    pub skipped: usize,
+}
+
 /// What to order by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TaskOrder {
@@ -211,11 +220,45 @@ impl Store {
         .await
     }
 
+    /// Store tasks a pull returned, leaving anything with unsent local changes alone.
+    ///
+    /// The server's copy of a task the user has just edited is older than what is on
+    /// their screen, and writing it would undo the edit in front of them -- then the
+    /// push would redo it, which is worse than either. Skipping is what makes an
+    /// optimistic write hold until it is settled.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn upsert_tasks_from_server(&self, tasks: Vec<Task>) -> Result<ServerApply> {
+        let now = Utc::now();
+        self.write(move |tx| {
+            let mut applied = ServerApply::default();
+            let mut is_pending =
+                tx.prepare("SELECT exists(SELECT 1 FROM outbox WHERE subject_id = ?1)")?;
+            for task in &tasks {
+                let pending: i64 =
+                    is_pending.query_row(params![task.id.get()], |row| row.get(0))?;
+                if pending == 1 {
+                    applied.skipped += 1;
+                    continue;
+                }
+                upsert_task(tx, task, now)?;
+                applied.stored += 1;
+            }
+            Ok(applied)
+        })
+        .await
+    }
+
     /// Remove tasks that the server no longer has.
     ///
     /// Takes the ids that *do* exist, because that is what a full pull produces. Only
     /// tasks in `projects` are considered, so a pull of one project cannot delete
-    /// another project's tasks.
+    /// another project's tasks; pass an empty `projects` for a pull of everything.
+    ///
+    /// A task with unsent local changes is never removed. The server has not been told
+    /// about it -- a task created offline has an id the server has never seen, and could
+    /// not be in any keep-list -- so its absence proves nothing.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
@@ -228,13 +271,15 @@ impl Store {
 
             if project_ids.is_empty() {
                 removed += tx.execute(
-                    "DELETE FROM tasks WHERE id NOT IN (SELECT id FROM keep_ids)",
+                    "DELETE FROM tasks
+                      WHERE id NOT IN (SELECT id FROM keep_ids) AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL)",
                     [],
                 )?;
             } else {
                 let mut statement = tx.prepare(
                     "DELETE FROM tasks
-                      WHERE project_id = ?1 AND id NOT IN (SELECT id FROM keep_ids)",
+                      WHERE project_id = ?1 AND id NOT IN (SELECT id FROM keep_ids)
+                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL)",
                 )?;
                 for project in &project_ids {
                     removed += statement.execute(params![project])?;
@@ -247,7 +292,7 @@ impl Store {
 }
 
 /// Write one task and its links.
-fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>) -> Result<()> {
+pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>) -> Result<()> {
     tx.execute(
         "INSERT INTO tasks (
             id, project_id, title, description, done, done_at, priority, percent_done,

@@ -236,6 +236,54 @@ async fn a_full_task_fetch_returns_every_page() {
 }
 
 #[tokio::test]
+async fn an_unfiltered_task_listing_includes_done_tasks() {
+    // The premise the sync engine's pull rests on. It stores what `GET /tasks` returns
+    // and then deletes every local task the listing did not mention, so if the server
+    // quietly omits completed tasks, a single pull erases all of them -- and the user
+    // sees their history disappear rather than an error.
+    //
+    // Differential rather than absolute: ask for done tasks explicitly, and check the
+    // unfiltered listing already contained them. That works whatever the seeded data
+    // happens to hold, and says so when it holds nothing conclusive.
+    let Some(client) = connect("an_unfiltered_task_listing_includes_done_tasks").await else {
+        return;
+    };
+
+    let unfiltered = client.all_tasks(&TaskQuery::new()).await.expect("fetch");
+    let done_query = TaskQuery::new().filter("done = true");
+    let done = client.all_tasks(&done_query).await.expect("fetch done");
+
+    println!(
+        "{} tasks unfiltered, of which {} are done; {} returned by `done = true`",
+        unfiltered.len(),
+        unfiltered.iter().filter(|t| t.done).count(),
+        done.len()
+    );
+
+    if done.is_empty() {
+        println!(
+            "inconclusive: the dev instance has no completed tasks. Complete one and \
+             re-run to settle this."
+        );
+        return;
+    }
+
+    let listed: BTreeSet<i64> = unfiltered.iter().map(|t| t.id.get()).collect();
+    let missing: Vec<i64> = done
+        .iter()
+        .map(|t| t.id.get())
+        .filter(|id| !listed.contains(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the unfiltered listing omitted {} completed task(s) that `done = true` returns \
+         ({missing:?}). The sync engine's pull would delete them from the local store; \
+         it must pull done tasks explicitly instead.",
+        missing.len()
+    );
+}
+
+#[tokio::test]
 async fn dateless_tasks_do_not_read_as_two_thousand_years_overdue() {
     // The zero-time bug, checked against real data rather than a fixture: Vikunja sends
     // "0001-01-01T00:00:00Z" for every unset date, and a task with no due date must come
