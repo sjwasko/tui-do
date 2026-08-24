@@ -250,3 +250,126 @@ async fn the_current_user_is_who_we_authenticated_as() {
     assert!(!user.username.is_empty());
     println!("authenticated as {}", user.display_name());
 }
+
+#[tokio::test]
+async fn a_task_round_trips_through_create_read_update_delete() {
+    let Some(client) = connect("a_task_round_trips_through_create_read_update_delete").await else {
+        return;
+    };
+
+    // Everything is created inside a throwaway project and deleted again, so a run leaves
+    // the dev instance as it found it even without `deploy/reset-dev.sh`.
+    let project = client
+        .create_project(&criax_api::models::Project {
+            title: "criax live test".into(),
+            description: "created by cargo test -p criax-api --test live".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /projects should create a project");
+    assert!(project.id.get() > 0);
+    println!("created project {}", project.id);
+
+    let due = chrono::Utc::now() + chrono::Duration::days(3);
+    let created = client
+        .create_task(
+            project.id,
+            &criax_api::models::Task {
+                title: "round trip".into(),
+                description: "written by the live test".into(),
+                priority: 3,
+                due_date: Some(due).into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("PUT /projects/{id}/tasks should create a task");
+    assert!(created.id.get() > 0);
+    assert_eq!(created.title, "round trip");
+    assert_eq!(created.project_id, project.id);
+    assert!(
+        created.due_date.get().is_some(),
+        "the due date did not survive the round trip"
+    );
+
+    let read = client.task(created.id).await.expect("GET /tasks/{id}");
+    assert_eq!(read.id, created.id);
+    assert_eq!(read.title, "round trip");
+
+    // Update the whole task, the way an optimistic write does: read, mutate, send back.
+    let mut edited = read.clone();
+    edited.title = "round trip, edited".into();
+    edited.done = true;
+    edited.due_date = None.into();
+    let updated = client
+        .update_task(&edited)
+        .await
+        .expect("POST /tasks/{id} should update");
+    assert_eq!(updated.title, "round trip, edited");
+    assert!(updated.done);
+    assert_eq!(
+        updated.due_date.get(),
+        None,
+        "sending the zero time should have cleared the due date, not left it set"
+    );
+    assert!(
+        updated.done_at.get().is_some(),
+        "completing a task should stamp done_at"
+    );
+
+    // Labels attach through their own endpoint, not through the task body.
+    let label = client
+        .create_label(&criax_api::models::Label {
+            title: "criax-live-test".into(),
+            hex_color: "4287f5".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /labels should create a label");
+    client
+        .add_label_to_task(created.id, label.id)
+        .await
+        .expect("PUT /tasks/{task}/labels should attach");
+    let attached = client.task_labels(created.id).await.expect("task labels");
+    assert!(attached.iter().any(|l| l.id == label.id));
+    client
+        .remove_label_from_task(created.id, label.id)
+        .await
+        .expect("DELETE /tasks/{task}/labels/{label} should detach");
+    client.delete_label(label.id).await.expect("delete label");
+
+    // The comment endpoints, including the update the spec declares with no request body.
+    let comment = client
+        .create_comment(created.id, "posted by the live test")
+        .await
+        .expect("PUT /tasks/{taskID}/comments should post");
+    assert!(comment.comment.contains("posted by the live test"));
+
+    let mut edited_comment = comment.clone();
+    edited_comment.comment = "edited by the live test".into();
+    let updated_comment = client
+        .update_comment(created.id, &edited_comment)
+        .await
+        .expect("POST /tasks/{taskID}/comments/{commentID} should update");
+    assert!(
+        updated_comment.comment.contains("edited"),
+        "the spec declares no body for a comment update; the server ignored ours, so the \
+         model or the endpoint needs revisiting"
+    );
+
+    client
+        .delete_comment(created.id, comment.id)
+        .await
+        .expect("delete comment");
+    client.delete_task(created.id).await.expect("delete task");
+    client
+        .delete_project(project.id)
+        .await
+        .expect("delete project");
+
+    // The task is gone, and asking for it says so specifically rather than vaguely.
+    match client.task(created.id).await {
+        Err(err) => println!("deleted task now reports: {err}"),
+        Ok(task) => panic!("the deleted task is still readable: {task:?}"),
+    }
+}

@@ -40,6 +40,17 @@ pub struct Label {
     pub updated: Timestamp,
 }
 
+/// The body of `PUT /tasks/{task}/labels` — attaching an existing label to a task.
+///
+/// A whole struct for one field, because that is what the endpoint takes: labels are not
+/// set by sending a task with a `labels` array, they are attached and detached one at a
+/// time through their own endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LabelTask {
+    /// The label to attach.
+    pub label_id: LabelId,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
