@@ -48,6 +48,21 @@ Then open `https://sw-surface.tail9803a5.ts.net:8443`, register the first accoun
 set `VIKUNJA_SERVICE_ENABLEREGISTRATION=false` in `vikunja.env` followed by
 `docker compose up -d` to close registration.
 
+## Where each script runs
+
+All of these live in the criax repo at `deploy/` and are run **from your workstation** —
+only the compose file and the two secret files are copied to the dev host. The ones that
+need Docker reach the host over SSH themselves; they also detect when they are already
+running on it, so either location works.
+
+| Script | What it touches |
+|---|---|
+| `up.sh` | Deploys/redeploys the stack; safe to re-run |
+| `seed-from-prod.sh` | Reads prod over HTTPS, writes dev |
+| `snapshot-dev.sh` | `pg_dump` on the dev host; the dump stays there |
+| `reset-dev.sh` | Restores that dump; refuses to target prod |
+| `test-ubuntu.sh` | Local Docker only; does not touch either server |
+
 ## Seeding from production
 
 ```sh
