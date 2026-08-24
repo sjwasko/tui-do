@@ -12,6 +12,7 @@
 //! what codegen would have, and additionally catches fields we have *stopped* modelling.
 
 pub mod datetime;
+pub mod nullable;
 
 mod auth;
 mod ids;

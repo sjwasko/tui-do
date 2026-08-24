@@ -471,19 +471,29 @@ impl Client {
 
     /// `PUT /projects/{id}/tasks` — create a task in a project.
     ///
-    /// The project comes from the path, so `task.project_id` is ignored. Returns the
-    /// server's version of the task, which is what the local store should keep: it
-    /// carries the assigned id, index and identifier.
+    /// `project` wins over `task.project_id`, and is written into the body before
+    /// sending. That is not belt and braces, it is required: Vikunja binds path
+    /// parameters *first* and the JSON body *second*, so a body carrying
+    /// `"project_id": 0` overwrites the id taken from the URL. The server then looks up
+    /// project 0 and answers `404` with error code `3001`, "This project does not
+    /// exist." — about the project you just successfully created.
+    ///
+    /// Returns the server's version of the task, which is what the local store should
+    /// keep: it carries the assigned id, index and identifier.
     ///
     /// # Errors
     /// Any transport or status failure.
     pub async fn create_task(&self, project: ProjectId, task: &Task) -> Result<Task> {
         self.require_auth("creating a task")?;
+        let body = Task {
+            project_id: project,
+            ..task.clone()
+        };
         let call = Call::new(
             Method::PUT,
             self.resolve(endpoints::PROJECT_TASKS, &[("id", &project.to_string())])?,
         )
-        .with_json(task)?;
+        .with_json(&body)?;
         self.send::<Task>(call).await.map(|(task, _)| task)
     }
 
@@ -492,8 +502,14 @@ impl Client {
     /// Vikunja replaces the task from the body, so send a whole task that was read,
     /// mutated and passed back — not a sparse one. A missing field is a cleared field.
     ///
-    /// Labels are not part of this: they are attached and detached through
-    /// [`Client::add_label_to_task`] and [`Client::remove_label_from_task`].
+    /// Two consequences worth stating plainly:
+    ///
+    /// - **Assignees are part of the body**, and sending an empty list clears them. A
+    ///   task read from a list endpoint that did not populate `assignees` must not be
+    ///   passed straight back here, or the update unassigns everyone.
+    /// - **Labels are not.** They are attached and detached through
+    ///   [`Client::add_label_to_task`] and [`Client::remove_label_from_task`], and the
+    ///   `labels` field on the body is ignored.
     ///
     /// # Errors
     /// Any transport or status failure.

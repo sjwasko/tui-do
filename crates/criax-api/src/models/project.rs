@@ -55,7 +55,7 @@ pub struct Project {
     /// The views defined on this project (List, Gantt, Table, Kanban).
     ///
     /// Only populated by endpoints that return a full project.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub views: Vec<ProjectView>,
 
     /// When it was created.
