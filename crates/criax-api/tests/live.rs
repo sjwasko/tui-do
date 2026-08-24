@@ -19,9 +19,12 @@
 //!
 //! # Prod is not a test target
 //!
-//! [`target`] refuses any URL matching `CRIAX_PROD_DENY` (default: the prod hostname) and
-//! there is no flag to override it. These tests only read, but a read-only test that runs
-//! against prod today is a write test against prod after the next commit.
+//! [`target`] takes an **allow**-list, not a deny-list: the URL must name a known dev
+//! host, and the prod hostname is refused outright with no environment variable that can
+//! switch the check off. A deny-list would have been one empty `CRIAX_PROD_DENY=` away
+//! from running the create/update/delete round-trip against production.
+//!
+//! `CRIAX_DEV_HOST` names *your* dev instance; it cannot be used to permit prod.
 
 #![allow(
     clippy::unwrap_used,
@@ -35,14 +38,24 @@ use std::collections::BTreeSet;
 use criax_api::models::Login;
 use criax_api::{Client, Credentials, TaskQuery};
 
-/// Hosts that are never a test target, unless `CRIAX_PROD_DENY` says otherwise.
-const DEFAULT_PROD_DENY: &str = "sw-hp2";
+/// The dev instance these tests are written against.
+const DEFAULT_DEV_HOST: &str = "sw-surface.tail9803a5.ts.net";
+
+/// Hosts that are never a test target, whatever else is configured.
+///
+/// Not overridable, deliberately. Every environment variable here is one an accident can
+/// set.
+const FORBIDDEN_HOSTS: &[&str] = &["sw-hp2"];
+
+/// Projects the round-trip test creates, and the title it sweeps up before starting.
+const FIXTURE_PROJECT_TITLE: &str = "criax live test";
 
 /// The server under test, or `None` when these tests are not configured to run.
 ///
 /// # Panics
-/// If the configured URL names a production host. That is a misconfiguration to fix, not
-/// a condition to skip past.
+/// If the configured URL is not a known dev host. That is a misconfiguration to fix, not
+/// a condition to skip past — skipping would let a typo mean "ran against something
+/// else", which is the failure mode worth being loud about.
 fn target() -> Option<String> {
     let url = std::env::var("CRIAX_TEST_URL").ok()?;
     let url = url.trim().to_string();
@@ -50,13 +63,54 @@ fn target() -> Option<String> {
         return None;
     }
 
-    let deny = std::env::var("CRIAX_PROD_DENY").unwrap_or_else(|_| DEFAULT_PROD_DENY.to_string());
+    for forbidden in FORBIDDEN_HOSTS {
+        assert!(
+            !url.contains(forbidden),
+            "CRIAX_TEST_URL points at {url}, which is production. There is no way to \
+             override this; point it at the dev instance."
+        );
+    }
+
+    let dev_host = std::env::var("CRIAX_DEV_HOST").unwrap_or_else(|_| DEFAULT_DEV_HOST.to_string());
     assert!(
-        deny.is_empty() || !url.contains(&deny),
-        "CRIAX_TEST_URL points at {url}, which matches the production deny pattern {deny:?}. \
-         Point it at the dev instance instead."
+        !dev_host.is_empty() && url.contains(&dev_host),
+        "CRIAX_TEST_URL is {url}, which is not the dev host {dev_host:?}. These tests \
+         create and delete data; they run against a known dev instance or not at all. \
+         Set CRIAX_DEV_HOST if your dev instance lives somewhere else."
     );
     Some(url)
+}
+
+/// Delete anything a previous run left behind.
+///
+/// The round-trip test cleans up after itself on the happy path, but an assertion failure
+/// between creating a project and deleting it orphans the fixtures — and that is exactly
+/// the case the test exists to produce. Sweeping at the start keeps reruns deterministic
+/// and stops a leftover fixture from being picked as "the first real project" by another
+/// test.
+async fn sweep_fixtures(client: &Client) {
+    let Ok(projects) = client.all_projects().await else {
+        return;
+    };
+    for project in projects
+        .iter()
+        .filter(|p| p.id.get() > 0 && p.title == FIXTURE_PROJECT_TITLE)
+    {
+        match client.delete_project(project.id).await {
+            Ok(()) => println!("swept leftover fixture project {}", project.id),
+            Err(err) => println!("could not sweep project {}: {err}", project.id),
+        }
+    }
+
+    let Ok(labels) = client.all_labels().await else {
+        return;
+    };
+    for label in labels.iter().filter(|l| l.title == "criax-live-test") {
+        match client.delete_label(label.id).await {
+            Ok(()) => println!("swept leftover fixture label {}", label.id),
+            Err(err) => println!("could not sweep label {}: {err}", label.id),
+        }
+    }
 }
 
 /// A client authenticated the way the environment says, or `None` to skip.
@@ -104,6 +158,8 @@ async fn connect(test: &str) -> Option<Client> {
         criax_api::AuthKind::Anonymous,
         "set CRIAX_TEST_TOKEN, or CRIAX_TEST_USERNAME and CRIAX_TEST_PASSWORD"
     );
+
+    sweep_fixtures(&client).await;
     Some(client)
 }
 
@@ -154,6 +210,19 @@ async fn a_full_task_fetch_returns_every_page() {
 
     let ids: BTreeSet<i64> = tasks.iter().map(|t| t.id.get()).collect();
     assert_eq!(ids.len(), tasks.len(), "the same task arrived on two pages");
+
+    // Does a list endpoint populate assignees, or leave them nil? It decides how
+    // dangerous read-mutate-write is: `update_task` sends the whole body and an empty
+    // `assignees` clears them, so if list results omit assignees then every optimistic
+    // edit unassigns everyone. Reported rather than asserted -- seeded data may
+    // legitimately have none, and a zero here means "inconclusive", not "broken".
+    let with_assignees = tasks.iter().filter(|t| !t.assignees.is_empty()).count();
+    let with_labels = tasks.iter().filter(|t| !t.labels.is_empty()).count();
+    println!(
+        "of {} tasks from the list endpoint, {with_assignees} carry assignees and \
+         {with_labels} carry labels",
+        tasks.len()
+    );
 
     // The lower bound implied by the page count: every page but the last was full.
     assert!(tasks.len() >= ((total_pages - 1) * cap + 1) as usize);
@@ -271,7 +340,7 @@ async fn a_task_round_trips_through_create_read_update_delete() {
     // the dev instance as it found it even without `deploy/reset-dev.sh`.
     let project = client
         .create_project(&criax_api::models::Project {
-            title: "criax live test".into(),
+            title: FIXTURE_PROJECT_TITLE.into(),
             description: "created by cargo test -p criax-api --test live".into(),
             ..Default::default()
         })

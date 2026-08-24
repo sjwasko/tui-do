@@ -193,7 +193,8 @@ async fn a_collection_without_pagination_headers_is_still_read_to_the_end() {
         .await
         .expect("fetch");
     assert_eq!(tasks.len(), 120);
-    // 50 + 50 + 20: the third page is short, so no fourth request is made.
+    // 50 + 50 + 20. The first page establishes that this server serves 50 at a time, so
+    // the short third page is conclusively the last and costs no extra request.
     assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
@@ -710,17 +711,22 @@ async fn a_task_page_survives_vikunjas_null_collections() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/tasks"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
-            "id": 1,
-            "title": "real task",
-            "project_id": 3,
-            "reminders": null,
-            "labels": null,
-            "assignees": null,
-            "attachments": null,
-            "related_tasks": null,
-            "due_date": "0001-01-01T00:00:00Z"
-        }])))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .insert_header("x-pagination-result-count", "1")
+                .set_body_json(json!([{
+                    "id": 1,
+                    "title": "real task",
+                    "project_id": 3,
+                    "reminders": null,
+                    "labels": null,
+                    "assignees": null,
+                    "attachments": null,
+                    "related_tasks": null,
+                    "due_date": "0001-01-01T00:00:00Z"
+                }])),
+        )
         .mount(&server)
         .await;
 
@@ -772,19 +778,135 @@ async fn a_refresh_is_refused_after_logout() {
 #[tokio::test]
 async fn an_oversized_response_is_refused_rather_than_buffered() {
     let server = MockServer::start().await;
-    // Well under the real cap, but the same code path: the guard trips on accumulated
-    // bytes, not on a content-length header a hostile server can simply omit.
     Mock::given(method("GET"))
         .and(path("/api/v1/tasks/1"))
         .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(4096)))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 2})))
+        .mount(&server)
+        .await;
 
-    // The real ceiling is 64 MiB; asserting against it directly would mean allocating
-    // that much in a test. What matters here is that a body is read in bounded chunks
-    // and mis-shaped output surfaces as a typed error rather than a panic.
-    match client(&server).task(TaskId(1)).await {
-        Err(ApiError::Deserialize { .. }) => {}
-        other => panic!("expected Deserialize, got {other:?}"),
+    // The ceiling is lowered rather than the body inflated, so the guard itself is under
+    // test: at 64 MiB an assertion would mean allocating that much to prove nothing.
+    let capped = Client::builder(server.uri())
+        .credentials(Credentials::api_token("tk_test"))
+        .max_response_bytes(1024)
+        .build()
+        .expect("client");
+
+    match capped.task(TaskId(1)).await {
+        Err(ApiError::ResponseTooLarge { limit, .. }) => assert_eq!(limit, 1024),
+        other => panic!("expected ResponseTooLarge, got {other:?}"),
+    }
+
+    // And a body under the ceiling still goes through, so the guard is not simply
+    // rejecting everything.
+    capped.task(TaskId(2)).await.expect("a small body is fine");
+}
+
+#[tokio::test]
+async fn a_server_that_ignores_the_page_parameter_fails_loudly() {
+    // Returning the same full page forever is how a broken server turns pagination into
+    // an infinite loop. Stopping quietly would be worse than the loop: it would hand
+    // back a collection that looks complete. It has to be an error.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                (1..=50)
+                    .map(|i| json!({"id": i, "title": "t"}))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .mount(&server)
+        .await;
+
+    match client(&server).all_tasks(&TaskQuery::new()).await {
+        Err(ApiError::TooManyPages { pages, .. }) => assert!(pages >= 1_000),
+        other => panic!("expected TooManyPages, got {:?}", other.map(|t| t.len())),
+    }
+}
+
+#[tokio::test]
+async fn a_401_on_a_delete_is_refreshed_and_retried_like_any_other_request() {
+    // Deletes and label attachments go through a different send path than reads. It
+    // skipped the refresh entirely, so an expired JWT let you edit a task but not delete
+    // it -- and under optimistic writes that surfaces as a rollback and a toast.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-old"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/user/token/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-new"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/tasks/7"))
+        .and(header("authorization", "Bearer jwt-old"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"code": 11, "message": "expired"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/tasks/7"))
+        .and(header("authorization", "Bearer jwt-new"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri()).build().expect("client");
+    client
+        .login(&Login::new("swasko", "hunter2"))
+        .await
+        .expect("login");
+    client
+        .delete_task(TaskId(7))
+        .await
+        .expect("the 401 should have been answered by a refresh, not surfaced");
+}
+
+#[tokio::test]
+async fn a_permission_denial_does_not_spend_a_token_refresh() {
+    // 403 means the credential is fine and the user is not allowed. Refreshing on it
+    // would burn the rate-limited refresh endpoint -- ten requests per window -- on
+    // every read-only project a sync pass touches.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/login"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "jwt-1"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/projects/9"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(
+            json!({"code": 3004, "message": "You don't have the right to see this project."}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri()).build().expect("client");
+    client
+        .login(&Login::new("swasko", "hunter2"))
+        .await
+        .expect("login");
+
+    // No refresh route is mounted, so an attempt would be an unmatched request.
+    match client.project(criax_api::models::ProjectId(9)).await {
+        Err(err @ ApiError::Forbidden { .. }) => {
+            assert_eq!(err.code(), Some(3004));
+            assert!(!err.is_retryable());
+        }
+        other => panic!("expected Forbidden, got {other:?}"),
     }
 }
