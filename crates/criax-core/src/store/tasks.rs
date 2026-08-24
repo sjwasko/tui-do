@@ -6,11 +6,22 @@
 //! in one function.
 
 use chrono::{DateTime, Utc};
-use criax_api::models::{Label, ProjectId, Task, TaskId, User, UserId};
+use criax_api::models::{ProjectId, Task, TaskId, User};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
+use super::labels::{labels_for, upsert_label};
+use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
 use crate::error::Result;
+
+/// The columns a [`Task`] is built from, with its creator joined in. Labels and
+/// assignees are filled separately, since a task has many of each.
+const SELECT: &str = "SELECT tasks.*,
+                             creator.username AS creator_username,
+                             creator.name     AS creator_name,
+                             creator.email    AS creator_email
+                        FROM tasks
+                        LEFT JOIN users AS creator ON creator.id = tasks.created_by_id";
 
 /// Which tasks to return.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -113,7 +124,7 @@ impl Store {
         self.read(move |connection| {
             let Some(mut task) = connection
                 .query_row(
-                    "SELECT * FROM tasks WHERE id = ?1",
+                    &format!("{SELECT} WHERE tasks.id = ?1"),
                     params![id.get()],
                     row_to_task,
                 )
@@ -134,7 +145,7 @@ impl Store {
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn tasks(&self, filter: TaskFilter, sort: TaskSort) -> Result<Vec<Task>> {
         self.read(move |connection| {
-            let mut sql = String::from("SELECT tasks.* FROM tasks");
+            let mut sql = String::from(SELECT);
             let mut clauses: Vec<String> = Vec::new();
             let mut values: Vec<rusqlite::types::Value> = Vec::new();
 
@@ -210,19 +221,10 @@ impl Store {
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn retain_tasks(&self, projects: Vec<ProjectId>, keep: Vec<TaskId>) -> Result<usize> {
         self.write(move |tx| {
-            let keep_ids: Vec<i64> = keep.iter().map(|id| id.get()).collect();
             let project_ids: Vec<i64> = projects.iter().map(|id| id.get()).collect();
             let mut removed = 0;
 
-            // Chunked so a very large keep-list cannot exceed SQLite's parameter limit.
-            tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS keep_ids (id INTEGER PRIMARY KEY)")?;
-            tx.execute("DELETE FROM keep_ids", [])?;
-            {
-                let mut insert = tx.prepare("INSERT OR IGNORE INTO keep_ids (id) VALUES (?1)")?;
-                for id in &keep_ids {
-                    insert.execute(params![id])?;
-                }
-            }
+            keep_ids(tx, keep.iter().map(|id| id.get()))?;
 
             if project_ids.is_empty() {
                 removed += tx.execute(
@@ -304,7 +306,7 @@ fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>) -> Result<
         params![task.id.get()],
     )?;
     for label in &task.labels {
-        upsert_label_row(tx, label, now)?;
+        upsert_label(tx, label, now)?;
         tx.execute(
             "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
             params![task.id.get(), label.id.get()],
@@ -328,66 +330,6 @@ fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>) -> Result<
     }
 
     Ok(())
-}
-
-/// Write a label seen on a task, so a label picker works before labels are pulled.
-fn upsert_label_row(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Result<()> {
-    tx.execute(
-        "INSERT INTO labels (id, title, description, hex_color, created, updated, synced_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT (id) DO UPDATE SET
-            title = excluded.title, description = excluded.description,
-            hex_color = excluded.hex_color, updated = excluded.updated,
-            synced_at = excluded.synced_at",
-        params![
-            label.id.get(),
-            label.title,
-            label.description,
-            label.hex_color,
-            stamp(label.created.get()),
-            stamp(label.updated.get()),
-            now.to_rfc3339(),
-        ],
-    )?;
-    Ok(())
-}
-
-/// Write a user seen on a task.
-fn upsert_user(tx: &Transaction<'_>, user: &User) -> Result<()> {
-    tx.execute(
-        "INSERT INTO users (id, username, name, email) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (id) DO UPDATE SET
-            username = excluded.username, name = excluded.name,
-            -- Only the authenticated user's email is ever populated; an empty one from
-            -- an embedded copy must not erase the real one.
-            email = CASE WHEN excluded.email = '' THEN users.email ELSE excluded.email END",
-        params![user.id.get(), user.username, user.name, user.email],
-    )?;
-    Ok(())
-}
-
-/// The labels attached to a task.
-fn labels_for(connection: &Connection, task: TaskId) -> Result<Vec<Label>> {
-    let mut statement = connection.prepare(
-        "SELECT labels.id, labels.title, labels.description, labels.hex_color
-           FROM labels JOIN task_labels ON task_labels.label_id = labels.id
-          WHERE task_labels.task_id = ?1
-          ORDER BY labels.title COLLATE NOCASE",
-    )?;
-    let rows = statement.query_map(params![task.get()], |row| {
-        Ok(Label {
-            id: row.get::<_, i64>(0)?.into(),
-            title: row.get(1)?,
-            description: row.get(2)?,
-            hex_color: row.get(3)?,
-            ..Label::default()
-        })
-    })?;
-    let mut labels = Vec::new();
-    for label in rows {
-        labels.push(label?);
-    }
-    Ok(labels)
 }
 
 /// The users assigned to a task.
@@ -439,50 +381,16 @@ fn row_to_task(row: &Row<'_>) -> rusqlite::Result<Task> {
         comment_count: row.get("comment_count")?,
         created: instant(row, "created")?.into(),
         updated: instant(row, "updated")?.into(),
-        created_by: match row.get::<_, i64>("created_by_id")? {
-            0 => None,
-            id => Some(User {
-                id: UserId(id),
-                ..User::default()
-            }),
-        },
+        created_by: joined_user(row, "created_by_id", "creator")?,
         ..Task::default()
     })
-}
-
-/// Read a nullable timestamp column.
-fn instant(row: &Row<'_>, column: &str) -> rusqlite::Result<Option<DateTime<Utc>>> {
-    let raw: Option<String> = row.get(column)?;
-    Ok(raw
-        .as_deref()
-        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
-        .map(|dt| dt.with_timezone(&Utc)))
-}
-
-/// Render a timestamp for storage. `None` is `NULL`, not year one.
-fn stamp(value: Option<DateTime<Utc>>) -> Option<String> {
-    value.map(|dt| dt.to_rfc3339())
-}
-
-/// Escape the wildcards in a `LIKE` pattern.
-///
-/// Without this, searching for `100%` matches everything, and `_` matches any character.
-fn escape_like(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use criax_api::models::LabelId;
+    use criax_api::models::{Label, LabelId, User, UserId};
 
     fn task(id: i64, title: &str) -> Task {
         Task {

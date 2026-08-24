@@ -19,7 +19,10 @@
 //! are a standing source of dropped fields. There is one here, and the store adds local
 //! bookkeeping alongside it rather than inside a copy of it.
 
+mod labels;
+mod projects;
 mod schema;
+mod sql;
 mod tasks;
 
 use std::path::{Path, PathBuf};
@@ -29,6 +32,8 @@ use rusqlite::Connection;
 
 use crate::error::{CoreError, Result};
 
+pub use labels::{LabelFilter, LabelOrder, LabelSort};
+pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
 pub use tasks::{TaskFilter, TaskOrder, TaskSort};
 
 /// A handle to the local store.
