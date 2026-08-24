@@ -546,10 +546,47 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         .expect("PUT /tasks/{task}/labels should attach");
     let attached = client.task_labels(created.id).await.expect("task labels");
     assert!(attached.iter().any(|l| l.id == label.id));
+
+    // Three things the sync engine currently assumes, none of them checkable against a
+    // mock, all of them reported rather than asserted -- the point is to learn what the
+    // server does, and a failing test here would only say "it did something else".
+    //
+    // 1. Replaying an attach that already landed. One queued entry is one request now,
+    //    but a lost response still means a retry, and a 4xx would make the engine treat
+    //    the attach as refused and roll the label back off the task.
+    let reattached = client.add_label_to_task(created.id, label.id).await;
+    println!("attaching an already-attached label answers: {reattached:?}");
+
+    // 2. Whether a task write echoes labels. `sync::with_labels` restores the intended
+    //    set onto the server's answer on the belief that it does not -- a belief, not a
+    //    measurement, and if it is wrong the restore is pointless work.
+    let mut relabelled = client.task(created.id).await.expect("re-read for labels");
+    relabelled.title = "round trip, edited".into();
+    let echoed = client
+        .update_task(&relabelled)
+        .await
+        .expect("POST /tasks/{id} should update");
+    let held = client
+        .task_labels(created.id)
+        .await
+        .map(|l| l.len())
+        .unwrap_or_default();
+    println!(
+        "a task write's response carries {} label(s); the task holds {held}",
+        echoed.labels.len()
+    );
+
     client
         .remove_label_from_task(created.id, label.id)
         .await
         .expect("DELETE /tasks/{task}/labels/{label} should detach");
+
+    // 3. That detaching a label that is already gone answers 404. `sync::is_already_done`
+    //    treats exactly that as success rather than as a rejection to roll back; any
+    //    other 4xx here means the engine would undo a detach the user asked for.
+    let redetached = client.remove_label_from_task(created.id, label.id).await;
+    println!("detaching an already-detached label answers: {redetached:?}");
+
     client.delete_label(label.id).await.expect("delete label");
 
     // The comment endpoints, including the update the spec declares with no request body.
