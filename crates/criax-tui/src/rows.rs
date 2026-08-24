@@ -425,6 +425,120 @@ pub fn wrap(text: &str, width: u16, max_lines: u16) -> Vec<String> {
     lines
 }
 
+/// Turn the HTML Vikunja's editor stores into something readable.
+///
+/// A stopgap, and labelled as one: Phase 5 pipes descriptions through `glow` with a
+/// `pulldown-cmark` fallback and gets links, emphasis and code blocks right. Until then
+/// the alternative is not "plain text" but `<p><a target="_blank" rel="noopener"` on
+/// screen, which is what the first run against real data actually showed.
+///
+/// Block-level tags become newlines and list items get a bullet, so the shape of a
+/// description survives even though its formatting does not.
+#[must_use]
+pub fn plain_text(html: &str) -> String {
+    /// Tags after which a line break belongs.
+    const BLOCK: &[&str] = &[
+        "p",
+        "div",
+        "br",
+        "li",
+        "tr",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "pre",
+        "ul",
+        "ol",
+        "table",
+    ];
+
+    let mut out = String::new();
+    let mut tag = String::new();
+    let mut in_tag = false;
+    let mut chars = html.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_tag {
+            if c == '>' {
+                in_tag = false;
+                let closing = tag.starts_with('/');
+                let name = tag
+                    .trim_start_matches('/')
+                    .split(|c: char| c.is_whitespace() || c == '/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if BLOCK.contains(&name.as_str()) {
+                    // Both `<p>` and `</p>` mean "a line ends here", and a nested
+                    // `</li></ul>` means it twice. One break is what was meant -- and
+                    // real markup puts whitespace between block tags, so the trailing
+                    // spaces have to go before that test means anything.
+                    while out.ends_with(' ') || out.ends_with('\t') {
+                        out.pop();
+                    }
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    if name == "li" && !closing {
+                        out.push_str("• ");
+                    }
+                }
+                tag.clear();
+            } else {
+                tag.push(c);
+            }
+            continue;
+        }
+        // Only a `<` followed by a name or a slash starts a tag, so prose containing
+        // "a < b" is not silently eaten.
+        if c == '<'
+            && chars
+                .peek()
+                .is_some_and(|next| next.is_ascii_alphabetic() || *next == '/')
+        {
+            in_tag = true;
+            continue;
+        }
+        out.push(c);
+    }
+
+    let out = decode_entities(&out);
+
+    // Collapse the whitespace the markup left behind, but keep paragraph breaks.
+    let mut text = String::new();
+    let mut blank_run = 0;
+    for line in out.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blank_run += 1;
+            if blank_run > 1 || text.is_empty() {
+                continue;
+            }
+        } else {
+            blank_run = 0;
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text.trim_end().to_string()
+}
+
+/// The handful of entities that actually appear in Vikunja descriptions.
+fn decode_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        // Last, so a literal "&amp;lt;" does not decode twice into "<".
+        .replace("&amp;", "&")
+}
+
 /// A due date as a person would say it.
 #[must_use]
 pub fn relative_date(date: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
@@ -592,6 +706,29 @@ mod tests {
             relative_date(Some(now() + chrono::Duration::days(400)), now()),
             "Sep 28, 27"
         );
+    }
+
+    #[test]
+    fn html_from_the_web_editor_reads_as_text() {
+        let html = "<p>The refresh call needs the cookie set by                     <a target=\"_blank\" rel=\"noopener\" href=\"http://x\">POST /login</a>.</p>                    <ul><li>one</li><li>two</li></ul>";
+        assert_eq!(
+            plain_text(html),
+            "The refresh call needs the cookie set by POST /login.\n• one\n• two"
+        );
+    }
+
+    #[test]
+    fn entities_decode_once_and_plain_prose_is_left_alone() {
+        assert_eq!(plain_text("Tom &amp; Jerry &lt;3"), "Tom & Jerry <3");
+        assert_eq!(plain_text("&amp;lt; stays escaped"), "&lt; stays escaped");
+        assert_eq!(plain_text("just a note"), "just a note");
+        // Prose, not markup: `<` followed by a space starts no tag.
+        assert_eq!(plain_text("a < b and b > c"), "a < b and b > c");
+    }
+
+    #[test]
+    fn paragraph_breaks_survive_but_the_blank_run_does_not() {
+        assert_eq!(plain_text("<p>one</p><p></p><p></p><p>two</p>"), "one\ntwo");
     }
 
     #[test]

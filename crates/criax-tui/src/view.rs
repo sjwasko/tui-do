@@ -406,13 +406,16 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
         lines.push(field(" Assignees", &names.join(", "), theme));
     }
 
-    if !task.description.trim().is_empty() {
+    // Descriptions are HTML from the web editor. Phase 5 renders them properly, through
+    // `glow` with a `pulldown-cmark` fallback; until then the tags are stripped, because
+    // the alternative on screen is `<p><a target="_blank" rel="noopener"`.
+    let description = rows::plain_text(&task.description);
+    if !description.is_empty() {
         lines.push(Line::default());
-        // Descriptions are HTML from the web editor. Phase 5 renders them properly, via
-        // `glow` with a built-in fallback; until then the text is shown as it is stored
-        // rather than pretended to be Markdown.
-        for line in rows::wrap(&task.description, width, 40) {
-            lines.push(Line::from(Span::styled(format!(" {line}"), theme.text())));
+        for paragraph in description.lines() {
+            for line in rows::wrap(paragraph, width, 40) {
+                lines.push(Line::from(Span::styled(format!(" {line}"), theme.text())));
+            }
         }
     }
 
