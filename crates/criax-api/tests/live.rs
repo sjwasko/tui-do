@@ -204,14 +204,24 @@ async fn projects_labels_and_views_load() {
     };
 
     let projects = client.all_projects().await.expect("projects should load");
-    println!("{} projects", projects.len());
+    // Vikunja returns pseudo-projects in this list: -1 is Favorites, and saved filters
+    // appear with negative ids too. They reject writes, so a project picker has to
+    // exclude them -- this is where the count of them gets noticed.
+    let (pseudo, real): (Vec<_>, Vec<_>) = projects.iter().partition(|p| p.id.get() < 0);
+    println!(
+        "{} projects: {} real, {} pseudo ({:?})",
+        projects.len(),
+        real.len(),
+        pseudo.len(),
+        pseudo.iter().map(|p| (p.id, &p.title)).collect::<Vec<_>>()
+    );
     assert!(!projects.is_empty());
 
     // Labels may legitimately be empty on a sparse instance; loading them must still work.
     let labels = client.all_labels().await.expect("labels should load");
     println!("{} labels", labels.len());
 
-    let first = projects.first().expect("at least one project");
+    let first = real.first().copied().expect("at least one real project");
     let views = client
         .project_views(first.id)
         .await
