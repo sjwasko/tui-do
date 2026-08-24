@@ -346,6 +346,9 @@ fn row_lines(row: &rows::RenderedRow, columns: &[MeasuredColumn]) -> Vec<Line<'s
         .collect()
 }
 
+/// The most lines one paragraph of a description may take before it is ellipsised.
+const MAX_PARAGRAPH_LINES: u16 = 40;
+
 /// The selected task, in more detail than a row can hold.
 fn preview(model: &Model, frame: &mut Frame, area: Rect) {
     let theme = model.theme;
@@ -412,8 +415,16 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
     let description = rows::plain_text(&task.description);
     if !description.is_empty() {
         lines.push(Line::default());
+        // Only what can be seen is laid out. Wrapping every paragraph of a long
+        // description on every frame, to draw the dozen lines that fit, is the same
+        // mistake the task list already avoids -- and a per-paragraph cap is no cap at
+        // all, since a description has as many paragraphs as it likes.
+        let budget = usize::from(model.list.preview_scroll) + usize::from(inner.height);
         for paragraph in description.lines() {
-            for line in rows::wrap(paragraph, width, 40) {
+            if lines.len() >= budget {
+                break;
+            }
+            for line in rows::wrap(paragraph, width, MAX_PARAGRAPH_LINES) {
                 lines.push(Line::from(Span::styled(format!(" {line}"), theme.text())));
             }
         }
