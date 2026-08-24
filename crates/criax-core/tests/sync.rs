@@ -749,6 +749,114 @@ async fn detaching_a_label_that_is_already_gone_is_not_undone() {
 }
 
 #[tokio::test]
+async fn detaching_a_label_the_server_answers_403_for_is_not_undone() {
+    // Measured against dev, and the reason this arm exists: detaching a label that is
+    // already detached answers `403 Forbidden` with no code and no message beyond the
+    // word. The obvious reading is 404, and a client that assumes it undoes the detach
+    // the user asked for every time a lost response makes the push replay.
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{API}/tasks/1/labels/9")))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "code": 0, "message": "Forbidden"
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut tagged = task(1, "chores");
+    tagged.labels = vec![label(9, "old")];
+    store.upsert_tasks(vec![tagged]).await.unwrap();
+    store
+        .queue(Mutation::DetachLabel {
+            task: TaskId(1),
+            label: Box::new(label(9, "old")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 0);
+    assert_eq!(
+        store.task(TaskId(1)).await.unwrap().unwrap().labels.len(),
+        0,
+        "a label the user removed was put back"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn attaching_a_label_that_is_already_attached_is_not_undone() {
+    // Also measured: `400` with Vikunja's code 8001. A 4xx is otherwise final, so
+    // without this arm a replayed attach rolls the label back off the task.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/1/labels")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "code": 8001, "message": "This label already exists on the task."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut tagged = task(1, "chores");
+    tagged.labels = vec![label(9, "urgent")];
+    store.upsert_tasks(vec![tagged]).await.unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(1),
+            label: Box::new(label(9, "urgent")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 0);
+    assert_eq!(
+        store.task(TaskId(1)).await.unwrap().unwrap().labels.len(),
+        1,
+        "a label the user added was taken back off"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_different_400_on_an_attach_is_still_a_rejection() {
+    // The arm is keyed on Vikunja's code, not on the status: a 400 that means something
+    // else must still roll back and tell the user.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/1/labels")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "code": 4001, "message": "The label title cannot be empty."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut tagged = task(1, "chores");
+    tagged.labels = vec![label(9, "urgent")];
+    store.upsert_tasks(vec![tagged]).await.unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(1),
+            label: Box::new(label(9, "urgent")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 1);
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn a_create_that_names_a_missing_project_is_still_a_rejection() {
     // The narrow reading of 404: it means the *project* is gone, not that the task is
     // already created, so this one does roll back.

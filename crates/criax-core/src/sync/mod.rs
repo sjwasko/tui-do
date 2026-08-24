@@ -458,33 +458,67 @@ fn is_permanent(error: &ApiError) -> bool {
 
 /// Whether a refusal means the server had already done what was asked.
 ///
-/// Deleting a task another device deleted first answers `404`, and so does detaching a
-/// label that is no longer attached. Both are the outcome the entry wanted. Treating
-/// them as rejections would roll the change back -- resurrecting a task the user
-/// deliberately deleted, and telling them "this task does not exist" while it reappears
-/// in front of them.
+/// Deleting a task another device deleted first answers `404`, and both halves of a label
+/// change have an equivalent. Each is the outcome the entry wanted. Treating them as
+/// rejections would roll the change back — resurrecting a task the user deliberately
+/// deleted, or putting back a label they took off while telling them it failed.
 ///
-/// Deliberately narrow. A `404` creating a task means the *project* is gone, which is a
-/// real rejection, and a `404` updating one means the task is gone, which the user
-/// should hear about.
+/// The three shapes are **measured against the dev instance, not inferred**, because the
+/// spec describes none of them:
+///
+/// | asked | answered |
+/// |---|---|
+/// | delete a task that is already gone | `404` |
+/// | attach a label that is already attached | `400`, Vikunja code `8001`, "This label already exists on the task." |
+/// | detach a label that is already detached | **`403 Forbidden`**, with no code and no message beyond "Forbidden" |
+///
+/// That last one is the surprise, and it is why this function exists in this shape: the
+/// obvious reading of "already detached" is `404`, and a client that assumes it undoes a
+/// detach the user asked for every time a retry replays.
+///
+/// Treating *any* `403` on a detach as "already done" does swallow a genuine permission
+/// failure, and that is the deliberate trade: the label is then still on the server's
+/// copy, so the next pull puts it back — the user sees the label return, which is the
+/// truth. The alternative rolls back a detach the server has already honoured, which
+/// leaves the local row wrong and shows an error for something that worked.
+///
+/// Deliberately narrow otherwise. A `404` creating a task means the *project* is gone,
+/// which is a real rejection, and a `404` updating one means the task is gone, which the
+/// user should hear about.
 fn is_already_done(mutation: &Mutation, error: &ApiError) -> bool {
-    let ApiError::Rejected { status: 404, .. } = error else {
-        return false;
-    };
+    /// Vikunja's code for "this label already exists on the task".
+    const LABEL_ALREADY_ATTACHED: i64 = 8001;
+
     matches!(
-        mutation,
-        Mutation::DeleteTask { .. } | Mutation::DetachLabel { .. }
+        (mutation, error),
+        (
+            Mutation::DeleteTask { .. } | Mutation::DetachLabel { .. },
+            ApiError::Rejected { status: 404, .. },
+        ) | (Mutation::DetachLabel { .. }, ApiError::Forbidden { .. })
+            | (
+                Mutation::AttachLabel { .. },
+                ApiError::Rejected {
+                    status: 400,
+                    code: Some(LABEL_ALREADY_ATTACHED),
+                    ..
+                },
+            )
     )
 }
 
 /// Carry the labels an edit intended onto the server's answer.
 ///
-/// The server does not echo labels in a task write's response -- they are not part of
-/// that body in either direction -- so storing its answer verbatim would drop them from
-/// the local row until the next pull. `decompose` leaves an `UpdateTask` carrying the
-/// labels it is *not* changing, which is exactly the set to restore; anything it is
-/// changing has its own entry, and the caller only stores this answer once none are
-/// left queued.
+/// Written when the server was believed not to echo labels in a task write's response.
+/// Measured since, against dev: **it does** — a write that carried one label answered
+/// with one label, matching the task. So this is belt and braces rather than the load
+/// -bearing step it was documented as.
+///
+/// It stays because the measurement is one shape of one write, and the failure it guards
+/// against is silent: an answer stored verbatim that dropped labels would leave the local
+/// row wrong until the next pull, and the labels it restores are by construction the ones
+/// the server just confirmed. `decompose` leaves an `UpdateTask` carrying the labels it is
+/// *not* changing; anything it is changing has its own entry, and the caller only stores
+/// this answer once none are left queued.
 fn with_labels(mut task: Task, intended: &Task) -> Task {
     task.labels = intended.labels.clone();
     task
