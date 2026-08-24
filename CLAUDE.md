@@ -71,6 +71,11 @@ documents no request body but requires one; `repeat_mode`'s prose says the third
 `3` while the enum in the same document says `2`. Only live integration tests catch this
 class of error.
 
+**`/projects` returns pseudo-projects.** Observed on dev: `-1` Favorites, `-2` My Open
+Tasks, `-3` Inbox — saved filters and built-ins presented as projects. They reject writes,
+so anything offering a project to create in must filter to `id > 0`. It is also why a
+project count from the API does not match the count in the web UI's sidebar.
+
 **Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
 from the body, and an empty `assignees` clears them — so a task read from a list endpoint
 that did not populate assignees must never be passed straight back. Labels are attached and
