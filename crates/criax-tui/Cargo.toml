@@ -1,0 +1,21 @@
+[package]
+name = "criax-tui"
+description = "Pure, synchronous terminal UI layer for criax: Model, Msg, update, view."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+criax-core.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+chrono.workspace = true
+fuzzy-matcher.workspace = true
+pulldown-cmark.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

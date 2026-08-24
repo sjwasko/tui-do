@@ -1,0 +1,52 @@
+# criax development Vikunja instance.
+#
+# Pinned to the SAME image versions as production (sw-hp2) so behaviour differences
+# between dev and prod are never a version artifact. Verified 2026-08-24:
+#   vikunja/vikunja:2.5.0   postgres:18.4
+#
+# Runs on sw-surface. Binds loopback only; the tailnet gets it via `tailscale serve`.
+# See deploy/README.md.
+
+name: criax-dev
+
+services:
+  vikunja:
+    image: vikunja/vikunja:2.5.0
+    container_name: criax-vikunja
+    restart: unless-stopped
+    depends_on:
+      vikunja-db:
+        condition: service_healthy
+    env_file: [./vikunja.env]
+    volumes:
+      # Attachments and uploaded files.
+      - ${CRIAX_DEV_ROOT:-/opt/appdata/criax-dev}/files:/db
+    healthcheck:
+      # The Vikunja image ships no shell and no curl/wget, so an exec-form probe
+      # against its own binary is the only option. `vikunja healthcheck` opens a DB
+      # connection and re-checks the migration table. Same probe production uses.
+      test: ["CMD", "/app/vikunja/vikunja", "healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    ports:
+      - "127.0.0.1:3456:3456"
+
+  vikunja-db:
+    image: postgres:18.4
+    container_name: criax-vikunja-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CRIAX_DB_USER:-vikunja}
+      POSTGRES_PASSWORD: ${CRIAX_DB_PASSWORD:?set CRIAX_DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${CRIAX_DB_NAME:-vikunja}
+    volumes:
+      # Local disk only. Never an SMB mount -- Postgres on SMB corrupts.
+      - ${CRIAX_DEV_ROOT:-/opt/appdata/criax-dev}/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CRIAX_DB_USER:-vikunja} -d ${CRIAX_DB_NAME:-vikunja}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
