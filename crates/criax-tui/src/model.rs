@@ -16,6 +16,7 @@ use crate::keymap::{Context, Key};
 use crate::modal::Modal;
 use crate::query::{Query, QueryId, Scope};
 use crate::sidebar::{SidebarState, SidebarTarget};
+use crate::theme::Theme;
 
 /// Which pane the keyboard is driving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -263,6 +264,9 @@ pub struct Model {
     pub layout_ix: usize,
     /// Sync state and transient messages.
     pub status: Status,
+    /// The colours. Set once by the runtime, which is what knows how much colour the
+    /// terminal can show; `criax-tui` never sniffs a variable.
+    pub theme: Theme,
     /// Terminal size, as columns by rows.
     pub size: (u16, u16),
     /// The last time the runtime told us about. `update` never reads a clock.
@@ -325,6 +329,7 @@ impl Model {
             layouts,
             layout_ix,
             status: Status::default(),
+            theme: Theme::default(),
             size,
             now,
             running: true,

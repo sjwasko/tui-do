@@ -10,8 +10,17 @@ use anyhow::{bail, Context};
 use clap::{Args, Parser, Subcommand};
 use criax_core::config::{migrate, Config};
 
+mod runtime;
+
 /// What a redacted token is replaced with when a config is printed.
 const REDACTED: &str = "<redacted — the real token is written to the file>";
+
+/// Hosts that are the production instance.
+///
+/// Mirrors `criax-api`'s live-test guard deliberately: prod holds real task data, and a
+/// client pointed at it by a stale config would happily write. The flag exists so the
+/// answer is "yes, I meant it" rather than "there was no way to say no".
+const PROD_HOSTS: &[&str] = &["prod-box"];
 
 /// Command-line interface.
 #[derive(Debug, Parser)]
@@ -20,6 +29,10 @@ struct Cli {
     /// Path to a config file, overriding the default lookup.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
+
+    /// Start against the production server anyway.
+    #[arg(long, global = true)]
+    i_know_this_is_prod: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -61,14 +74,44 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Command::Migrate(args)) => run_migrate(&args, cli.config.as_deref()),
-        None => {
-            println!("criax {} (scaffold)", env!("CARGO_PKG_VERSION"));
-            if let Some(path) = cli.config.as_deref() {
-                println!("config: {}", path.display());
-            }
-            Ok(())
-        }
+        None => start(cli),
     }
+}
+
+/// Load the config and hand over to the interface.
+///
+/// The runtime is only started here, so `main` itself stays synchronous and every early
+/// failure -- an unreadable config, the production guard -- is reported to a terminal
+/// that is still in its normal state.
+fn start(cli: Cli) -> anyhow::Result<()> {
+    let path = Config::resolve_path(cli.config.as_deref())?;
+    let config = Config::load(&path).with_context(|| {
+        format!(
+            "could not read {}. Run `criax migrate` to import a cria config, \
+             or write one following the example in the README.",
+            path.display()
+        )
+    })?;
+
+    guard_production(&config.server.url, cli.i_know_this_is_prod)?;
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not start the async runtime")?
+        .block_on(runtime::run(config, path))
+}
+
+/// Refuse to start against production unless it was asked for explicitly.
+fn guard_production(url: &str, acknowledged: bool) -> anyhow::Result<()> {
+    let host = url.to_ascii_lowercase();
+    if !PROD_HOSTS.iter().any(|prod| host.contains(prod)) || acknowledged {
+        return Ok(());
+    }
+    bail!(
+        "{url} is the production server, which is read-only by policy.\n\
+         Point server.url at the dev instance, or pass --i-know-this-is-prod if you mean it."
+    )
 }
 
 /// Translate a cria config and write it as criax's.
