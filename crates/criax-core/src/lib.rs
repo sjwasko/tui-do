@@ -7,6 +7,8 @@
 pub mod config;
 pub mod error;
 pub mod quickadd;
+pub mod store;
 
 pub use config::Config;
 pub use error::{CoreError, Result};
+pub use store::Store;
