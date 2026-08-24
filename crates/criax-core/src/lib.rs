@@ -8,7 +8,9 @@ pub mod config;
 pub mod error;
 pub mod quickadd;
 pub mod store;
+pub mod sync;
 
 pub use config::Config;
 pub use error::{CoreError, Result};
 pub use store::Store;
+pub use sync::{Sync, SyncEvent, SyncReport};
