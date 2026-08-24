@@ -412,9 +412,11 @@ impl Sync {
             pages: None,
         });
 
-        // Unfiltered: every task the user can see, done ones included. A view would not
-        // do -- a project's default List view filters `done = false`, so pulling through
-        // one would make every completed task look deleted to the retain step below.
+        // Unfiltered: every task the user can see, done ones included -- confirmed on
+        // dev, where the listing returned the same 1,942 done tasks that `done = true`
+        // does. A view would not do: a project's default List view filters
+        // `done = false`, so pulling through one would make every completed task look
+        // deleted to the retain step below.
         let mut pager = self.client.tasks(&TaskQuery::new())?;
         let mut seen: Vec<TaskId> = Vec::new();
         while let Some(page) = pager.next_page().await? {

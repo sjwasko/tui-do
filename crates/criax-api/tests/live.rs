@@ -338,6 +338,25 @@ async fn projects_labels_and_views_load() {
     let labels = client.all_labels().await.expect("labels should load");
     println!("{} labels", labels.len());
 
+    // Does `/labels` cover labels that only appear on someone else's task? The spec says
+    // it returns labels "either created by the user or associated with a task the user
+    // has at least read-access to", and the sync engine's pull trusts that: it retains
+    // the stored labels against this listing, and a label dropped there takes its
+    // `task_labels` links with it. Reported rather than asserted -- a seed where every
+    // labelled task uses a listed label is inconclusive, not broken.
+    let tasks = client.all_tasks(&TaskQuery::new()).await.expect("fetch");
+    let listed: BTreeSet<i64> = labels.iter().map(|l| l.id.get()).collect();
+    let on_tasks: BTreeSet<i64> = tasks
+        .iter()
+        .flat_map(|t| t.labels.iter().map(|l| l.id.get()))
+        .collect();
+    let unlisted: Vec<i64> = on_tasks.difference(&listed).copied().collect();
+    println!(
+        "labels seen on tasks: {:?}; listed by /labels: {:?}; on tasks but not listed: \
+         {unlisted:?}",
+        on_tasks, listed
+    );
+
     let first = real.first().copied().expect("at least one real project");
     let views = client
         .project_views(first.id)

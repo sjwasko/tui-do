@@ -174,8 +174,14 @@ impl Store {
     ///
     /// Call this only after a *complete* labels pull. `GET /labels` answers with
     /// "all labels which are either created by the user or associated with a task the
-    /// user has at least read-access to" -- which is exactly the set the store should
-    /// hold, so it is safe to retain against. A filtered or searched listing is not.
+    /// user has at least read-access to", so it is the right listing to retain against.
+    /// A filtered or searched one is not.
+    ///
+    /// A label still attached to a stored task is kept regardless. It demonstrably
+    /// exists -- the task carries it -- and deleting it would cascade the attachment
+    /// away. That matters most for a task with unsent local changes, which the pull
+    /// skips: nothing would put its labels back. The link disappearing is the task
+    /// pull's job to notice, not this one's.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
@@ -183,7 +189,9 @@ impl Store {
         self.write(move |tx| {
             keep_ids(tx, keep.iter().map(|id| id.get()))?;
             Ok(tx.execute(
-                "DELETE FROM labels WHERE id NOT IN (SELECT id FROM keep_ids)",
+                "DELETE FROM labels
+                  WHERE id NOT IN (SELECT id FROM keep_ids)
+                    AND id NOT IN (SELECT label_id FROM task_labels)",
                 [],
             )?)
         })
@@ -427,15 +435,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retaining_removes_dropped_labels_and_their_task_links() {
+    async fn retaining_keeps_a_label_a_stored_task_still_carries() {
+        // A label on a task exists, whatever `/labels` chose to list. Deleting it would
+        // cascade the attachment away -- and for a task the pull skipped because it has
+        // unsent changes, nothing would ever put it back.
         let store = Store::in_memory().unwrap();
         let task = Task {
+            id: TaskId(1),
+            project_id: ProjectId(1),
+            title: "tagged".into(),
+            labels: vec![label(9, "seen only on a task")],
+            ..Task::default()
+        };
+        store.upsert_tasks(vec![task]).await.unwrap();
+
+        // A labels pull that did not mention label 9 at all.
+        let removed = store.retain_labels(vec![LabelId(1)]).await.unwrap();
+
+        assert_eq!(removed, 0);
+        assert!(store.label(LabelId(9)).await.unwrap().is_some());
+        assert_eq!(
+            store.task(TaskId(1)).await.unwrap().unwrap().labels.len(),
+            1,
+            "the task lost a label to a labels pull"
+        );
+    }
+
+    #[tokio::test]
+    async fn retaining_removes_a_label_nothing_refers_to_any_more() {
+        // The ordinary case: a label deleted on another device, on no stored task. The
+        // cascade is asserted through a task that had it and no longer does, because
+        // that is the sequence a pull produces -- the task pass drops the link, the
+        // labels pass then collects the label.
+        let store = Store::in_memory().unwrap();
+        let mut task = Task {
             id: TaskId(1),
             project_id: ProjectId(1),
             title: "tagged".into(),
             labels: vec![label(1, "kept"), label(2, "deleted server-side")],
             ..Task::default()
         };
+        store.upsert_tasks(vec![task.clone()]).await.unwrap();
+
+        // The server's next answer for this task no longer carries label 2.
+        task.labels = vec![label(1, "kept")];
         store.upsert_tasks(vec![task]).await.unwrap();
 
         let removed = store.retain_labels(vec![LabelId(1)]).await.unwrap();
@@ -443,7 +486,13 @@ mod tests {
         assert!(store.label(LabelId(2)).await.unwrap().is_none());
 
         let read = store.task(TaskId(1)).await.unwrap().unwrap();
-        assert_eq!(read.labels.len(), 1, "the cascade left a dangling link");
+        assert_eq!(read.labels.len(), 1);
         assert_eq!(read.labels[0].title, "kept");
+
+        let links: i64 = store
+            .read(|c| Ok(c.query_row("SELECT count(*) FROM task_labels", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        assert_eq!(links, 1, "the cascade left a dangling link");
     }
 }
