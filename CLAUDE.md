@@ -42,6 +42,40 @@ first page without telling anyone.
 sync engine emits `Msg::SyncFailed`, which rolls back and toasts. Undo/redo rides on this
 mechanism rather than a parallel one.
 
+## Wire-format facts the spec does not tell you
+
+The OpenAPI document describes what the server *means*, not what it *emits*. Each of these
+cost a live failure to find; all are handled in `criax-api`, and new code must route
+through the same helpers rather than rediscover them.
+
+**Dates: "unset" is Go's zero time**, `"0001-01-01T00:00:00Z"`, never `null` — the SQL
+columns are `NOT NULL`. Parse naively and every dateless task reads as 2000 years overdue.
+Clearing a date means *sending* that value; `null` is rejected. All date fields go through
+`models::datetime`.
+
+**Collections: "empty" is `null`**, not `[]` — Go marshals a nil slice that way, and
+Vikunja leaves collections nil whenever an endpoint did not populate them. `serde(default)`
+does not save you: it covers an absent field, not a present null, so one `"labels": null`
+fails the whole page. All `Vec`/`HashMap` fields go through `models::nullable`.
+
+**Path parameters lose to the request body.** Vikunja binds the path first and the JSON
+body second, so a body field that shadows a path parameter silently overwrites it. Sending
+a new task with `project_id: 0` to `PUT /projects/31/tasks` makes the server look up
+project 0 and answer `404 / 3001 "This project does not exist."` — about the project you
+just created. Write the path value into the body.
+
+**The spec is authoritative for paths, not for methods or bodies.** Three counts so far,
+all decided in the server's favour: `PUT /migration/vikunja-file/migrate` is documented
+`post` (server: `405 Allow: OPTIONS, PUT`); `POST /tasks/{taskID}/comments/{commentID}`
+documents no request body but requires one; `repeat_mode`'s prose says the third variant is
+`3` while the enum in the same document says `2`. Only live integration tests catch this
+class of error.
+
+**Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
+from the body, and an empty `assignees` clears them — so a task read from a list endpoint
+that did not populate assignees must never be passed straight back. Labels are attached and
+detached through their own endpoints and the body's `labels` field is ignored.
+
 ## Environment
 
 | | |
