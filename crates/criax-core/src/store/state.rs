@@ -1,4 +1,4 @@
-//! `sync_state`: the few facts the sync engine has to remember between runs.
+//! `sync_state`: the few facts that have to survive a restart.
 //!
 //! A key-value table rather than a one-row wide one, because the set of things worth
 //! remembering grows and a schema migration per fact is a poor trade. Values are text;
@@ -21,6 +21,13 @@ pub const PAGE_CAP: &str = "page_cap";
 
 /// The id of the authenticated user.
 pub const CURRENT_USER: &str = "current_user_id";
+
+/// The project the interface was last showing, so a restart lands where the user left.
+///
+/// The UI shares this table rather than owning one of its own: it is a generic key-value
+/// store, and a schema migration to hold a single string would cost more than the `ui.`
+/// prefix that keeps the two namespaces apart.
+pub const LAST_PROJECT: &str = "ui.last_project";
 
 /// Read a stored value.
 pub(super) fn read_state(connection: &Connection, key: &str) -> Result<Option<String>> {
