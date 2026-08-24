@@ -77,9 +77,14 @@ so anything offering a project to create in must filter to `id > 0`. It is also 
 project count from the API does not match the count in the web UI's sidebar.
 
 **Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
-from the body, and an empty `assignees` clears them — so a task read from a list endpoint
-that did not populate assignees must never be passed straight back. Labels are attached and
-detached through their own endpoints and the body's `labels` field is ignored.
+from the body, and an empty `assignees` clears them. Labels are the opposite: they are
+attached and detached through their own endpoints and the body's `labels` field is ignored.
+
+Verified on dev by assigning a user and re-reading through a list endpoint: **list results
+do populate assignees**, so a task fetched from a list can be passed back to `update_task`
+safely, and a `null` assignees field means genuinely nobody rather than "not loaded". What
+is still unsafe is *constructing* a task from partial data and sending it — anything that
+does must fill assignees itself or it will unassign everyone.
 
 ## Environment
 

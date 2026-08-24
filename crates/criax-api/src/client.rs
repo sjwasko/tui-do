@@ -542,9 +542,10 @@ impl Client {
     ///
     /// Two consequences worth stating plainly:
     ///
-    /// - **Assignees are part of the body**, and sending an empty list clears them. A
-    ///   task read from a list endpoint that did not populate `assignees` must not be
-    ///   passed straight back here, or the update unassigns everyone.
+    /// - **Assignees are part of the body**, and sending an empty list clears them.
+    ///   Vikunja's list endpoints do populate assignees — verified against dev — so a
+    ///   listed task can be passed straight back. A task *assembled* from partial data
+    ///   cannot: it will unassign everyone.
     /// - **Labels are not.** They are attached and detached through
     ///   [`Client::add_label_to_task`] and [`Client::remove_label_from_task`], and the
     ///   `labels` field on the body is ignored.
