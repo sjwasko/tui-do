@@ -256,7 +256,9 @@ async fn a_pushed_create_adopts_the_server_id_and_keeps_its_labels() {
     let (sync, _rx) = engine(&server, &store);
     let report = sync.push().await.unwrap();
 
-    assert_eq!(report.sent, 1);
+    // Two entries: the create, and the label attach queued behind it. A task write
+    // cannot carry labels, so one entry could not have done both in one request.
+    assert_eq!(report.sent, 2);
     assert!(store.task(provisional).await.unwrap().is_none());
     let stored = store.task(TaskId(4242)).await.unwrap().expect("the task");
     assert_eq!(stored.title, "buy milk");
@@ -350,7 +352,8 @@ async fn an_edit_that_changes_labels_sends_them_through_their_own_endpoints() {
         .unwrap();
 
     let (sync, _rx) = engine(&server, &store);
-    assert_eq!(sync.push().await.unwrap().sent, 1);
+    // The edit, the attach and the detach: three entries, three requests.
+    assert_eq!(sync.push().await.unwrap().sent, 3);
 
     let stored = store.task(TaskId(1)).await.unwrap().unwrap();
     assert_eq!(stored.labels.len(), 1);
@@ -618,4 +621,164 @@ async fn project_views_are_fetched_on_demand_rather_than_in_every_pull() {
 
     let stored = store.project(ProjectId(1)).await.unwrap().unwrap();
     assert_eq!(stored.views.len(), 2);
+}
+
+#[tokio::test]
+async fn a_create_whose_label_attach_fails_is_not_sent_twice() {
+    // The reason one entry may only ever be one request. If a create attached its own
+    // labels, a transient failure on the attach would leave the entry queued with the
+    // task already on the server, and the retry would create it a second time --
+    // `PUT /projects/{id}/tasks` has no idempotency key to save us.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(4242, "buy milk")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/4242/labels")))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "restarting"})))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut new_task = task(0, "buy milk");
+    new_task.labels = vec![label(7, "errands")];
+    store
+        .queue(Mutation::CreateTask {
+            task: Box::new(new_task),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let first = sync.push().await.unwrap();
+    assert_eq!(first.sent, 1, "the create landed");
+    assert_eq!(first.deferred, 1, "the attach did not");
+
+    // The retry must resume at the attach. `.expect(1)` on the create is the assertion:
+    // wiremock fails the test on drop if it was called twice.
+    let second = sync.push().await.unwrap();
+    assert_eq!(second.sent, 0);
+    assert_eq!(second.deferred, 1);
+
+    let stored = store.task(TaskId(4242)).await.unwrap().expect("the task");
+    assert_eq!(
+        stored.labels.len(),
+        1,
+        "settling the create cascaded away a label attached locally"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_delete_the_server_has_already_done_is_not_undone() {
+    // Another device deleted the same task first, so the DELETE answers 404. That is
+    // the outcome the user asked for. Rolling it back would resurrect the task and toast
+    // "this task does not exist" while it reappeared in front of them.
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "code": 4002, "message": "This task does not exist."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(1, "gone")]).await.unwrap();
+    store
+        .queue(Mutation::DeleteTask {
+            before: Box::new(task(1, "gone")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, mut rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 0);
+    assert_eq!(report.sent, 1);
+    assert!(
+        store.task(TaskId(1)).await.unwrap().is_none(),
+        "a deleted task came back"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    assert!(
+        !events(&mut rx)
+            .iter()
+            .any(|event| matches!(event, SyncEvent::Rejected { .. })),
+        "nothing went wrong, so nothing should be reported as having gone wrong"
+    );
+}
+
+#[tokio::test]
+async fn detaching_a_label_that_is_already_gone_is_not_undone() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{API}/tasks/1/labels/9")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "code": 4004, "message": "This label does not exist."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut tagged = task(1, "chores");
+    tagged.labels = vec![label(9, "old")];
+    store.upsert_tasks(vec![tagged]).await.unwrap();
+    store
+        .queue(Mutation::DetachLabel {
+            task: TaskId(1),
+            label: Box::new(label(9, "old")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 0);
+    assert_eq!(
+        store.task(TaskId(1)).await.unwrap().unwrap().labels.len(),
+        0,
+        "a label the user removed was put back"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_create_that_names_a_missing_project_is_still_a_rejection() {
+    // The narrow reading of 404: it means the *project* is gone, not that the task is
+    // already created, so this one does roll back.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "code": 3001, "message": "This project does not exist."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "orphan")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, mut rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 1);
+    assert!(store
+        .task(created.mutation.subject())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(events(&mut rx)
+        .iter()
+        .any(|event| matches!(event, SyncEvent::Rejected { .. })));
 }

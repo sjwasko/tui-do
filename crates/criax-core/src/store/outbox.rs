@@ -20,12 +20,18 @@
 //! queued entry that still refers to the old id. Negative ids never collide with
 //! Vikunja's, which are positive.
 //!
-//! # What travels in which mutation
+//! # One entry, one request
 //!
 //! Assignees are part of [`Mutation::UpdateTask`], because `POST /tasks/{id}` replaces
-//! them from the task body. Labels are not, because that same body's `labels` field is
-//! ignored: they attach and detach through their own endpoints, so they are their own
-//! mutations. That asymmetry is the server's, and it is recorded in `CLAUDE.md`.
+//! them from the task body. Labels are not: that same body's `labels` field is ignored,
+//! and they attach and detach through their own endpoints. So a caller may hand
+//! [`Store::queue`] a task carrying labels, and it is split here into a task mutation
+//! and one label mutation per change — see [`Mutation::decompose`].
+//!
+//! That split is not tidiness. An entry that took two requests could have the first one
+//! land and the second fail, and the queue has nowhere to record "half done": a retry
+//! replays both, creating a duplicate task or re-deleting a label that is already gone.
+//! One entry, one request, so a retry means exactly what it says.
 
 use chrono::{DateTime, Utc};
 use criax_api::models::{Label, Task, TaskId};
@@ -167,6 +173,63 @@ impl Mutation {
         }
     }
 
+    /// Split this into mutations that each take exactly one request.
+    ///
+    /// A task write cannot carry labels — the server ignores the body's `labels` field —
+    /// so a create or an edit that changes them becomes a task mutation followed by one
+    /// [`Mutation::AttachLabel`] or [`Mutation::DetachLabel`] per change. Callers do not
+    /// have to know that: they set labels on the task and queue it.
+    ///
+    /// The pieces apply in order and their effects compose to the original, so the local
+    /// store ends up exactly where the undivided mutation would have left it.
+    fn decompose(self) -> Vec<Self> {
+        match self {
+            Self::CreateTask { mut task } if !task.labels.is_empty() => {
+                let labels = std::mem::take(&mut task.labels);
+                let id = task.id;
+                let mut parts = vec![Self::CreateTask { task }];
+                parts.extend(labels.into_iter().map(|label| Self::AttachLabel {
+                    task: id,
+                    label: Box::new(label),
+                }));
+                parts
+            }
+            Self::UpdateTask { before, mut after } => {
+                let attached: Vec<Label> = after
+                    .labels
+                    .iter()
+                    .filter(|label| !before.labels.iter().any(|had| had.id == label.id))
+                    .cloned()
+                    .collect();
+                let detached: Vec<Label> = before
+                    .labels
+                    .iter()
+                    .filter(|label| !after.labels.iter().any(|keeps| keeps.id == label.id))
+                    .cloned()
+                    .collect();
+                if attached.is_empty() && detached.is_empty() {
+                    return vec![Self::UpdateTask { before, after }];
+                }
+
+                // The task mutation is left responsible for everything except labels,
+                // so its rollback restores exactly what it changed and no more.
+                let id = after.id;
+                after.labels.clone_from(&before.labels);
+                let mut parts = vec![Self::UpdateTask { before, after }];
+                parts.extend(attached.into_iter().map(|label| Self::AttachLabel {
+                    task: id,
+                    label: Box::new(label),
+                }));
+                parts.extend(detached.into_iter().map(|label| Self::DetachLabel {
+                    task: id,
+                    label: Box::new(label),
+                }));
+                parts
+            }
+            other => vec![other],
+        }
+    }
+
     /// Make this change in the local store.
     fn apply(&self, tx: &Transaction<'_>, now: DateTime<Utc>) -> Result<()> {
         match self {
@@ -236,13 +299,17 @@ pub struct OutboxEntry {
 impl Store {
     /// Apply `mutation` locally and queue it for the server, in one transaction.
     ///
-    /// Returns the queued entry, whose mutation may differ from the one passed in: a
-    /// create is assigned its provisional id here.
+    /// Returns the entry for the change itself. It may not be the only row written: a
+    /// task carrying label changes is split by [`Mutation::decompose`] into one entry
+    /// per request, and the returned entry is the first of them. Its mutation may also
+    /// differ from the one passed in — a create is assigned its provisional id here, and
+    /// its labels move to entries of their own.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure, or
     /// [`crate::CoreError::Encoding`] if the mutation cannot be serialized. Either way
-    /// nothing is written -- the local change and its queue entry stand or fall together.
+    /// nothing is written -- the local change and its queue entries stand or fall
+    /// together.
     pub async fn queue(&self, mutation: Mutation) -> Result<OutboxEntry> {
         let now = Utc::now();
         self.write(move |tx| {
@@ -252,25 +319,33 @@ impl Store {
                     task.id = next_local_id(tx)?;
                 }
             }
-            mutation.apply(tx, now)?;
 
-            let payload = serde_json::to_string(&mutation)?;
-            tx.execute(
-                "INSERT INTO outbox (created, kind, payload, subject_id)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    now.to_rfc3339(),
-                    mutation.kind(),
-                    payload,
-                    mutation.subject().get(),
-                ],
-            )?;
-            Ok(OutboxEntry {
-                id: tx.last_insert_rowid(),
-                created: now,
-                mutation,
-                attempts: 0,
-                last_error: None,
+            let mut first = None;
+            for part in mutation.decompose() {
+                part.apply(tx, now)?;
+                tx.execute(
+                    "INSERT INTO outbox (created, kind, payload, subject_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        now.to_rfc3339(),
+                        part.kind(),
+                        serde_json::to_string(&part)?,
+                        part.subject().get(),
+                    ],
+                )?;
+                let entry = OutboxEntry {
+                    id: tx.last_insert_rowid(),
+                    created: now,
+                    mutation: part,
+                    attempts: 0,
+                    last_error: None,
+                };
+                first.get_or_insert(entry);
+            }
+
+            first.ok_or_else(|| crate::CoreError::Config {
+                path: "<outbox>".to_string(),
+                reason: "a mutation decomposed into nothing".to_string(),
             })
         })
         .await
@@ -365,11 +440,15 @@ impl Store {
 
     /// Replace a locally created task with the one the server assigned an id to.
     ///
-    /// The provisional row is deleted rather than renumbered: `task_labels` and
-    /// `task_assignees` reference it, and SQLite cascades a delete but not an update.
-    /// The server's answer repopulates both. Any entry still queued against the
-    /// provisional id is retargeted, which is why a create must be the first thing
-    /// drained for its task.
+    /// The server's row goes in first, the provisional row's `task_labels` and
+    /// `task_assignees` are re-pointed at it, and only then is the provisional row
+    /// deleted. Order matters twice over: SQLite cascades a delete but not an update, so
+    /// the children have to be moved while both rows exist -- and deleting first would
+    /// cascade away links that only exist locally, such as a label attached by an entry
+    /// still queued behind this create.
+    ///
+    /// Any entry still queued against the provisional id is retargeted, which is why a
+    /// create must be the first thing drained for its task.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure, or
@@ -382,11 +461,21 @@ impl Store {
     ) -> Result<()> {
         let now = Utc::now();
         self.write(move |tx| {
+            upsert_task(tx, &assigned, now)?;
+            // `OR IGNORE` because the server's answer may already carry the same link;
+            // the row is then dropped with the provisional task below.
+            tx.execute(
+                "UPDATE OR IGNORE task_labels SET task_id = ?1 WHERE task_id = ?2",
+                params![assigned.id.get(), provisional.get()],
+            )?;
+            tx.execute(
+                "UPDATE OR IGNORE task_assignees SET task_id = ?1 WHERE task_id = ?2",
+                params![assigned.id.get(), provisional.get()],
+            )?;
             tx.execute(
                 "DELETE FROM tasks WHERE id = ?1",
                 params![provisional.get()],
             )?;
-            upsert_task(tx, &assigned, now)?;
             tx.execute("DELETE FROM outbox WHERE id = ?1", params![entry])?;
 
             let queued: Vec<(i64, String)> = {

@@ -264,7 +264,8 @@ impl Store {
     ///
     /// The tasks go too because they went with the project server-side, and nothing else
     /// would ever remove them: `tasks.project_id` is deliberately not a foreign key, so
-    /// a task can be stored before its project has been pulled.
+    /// a task can be stored before its project has been pulled. A task with unsent local
+    /// changes is spared, exactly as in [`Store::retain_tasks`].
     ///
     /// Call this only after a *complete* projects pull.
     ///
@@ -284,7 +285,21 @@ impl Store {
                 ids
             };
             {
-                let mut delete_tasks = tx.prepare("DELETE FROM tasks WHERE project_id = ?1")?;
+                // Same guard as `retain_tasks`: a task with unsent local changes is
+                // never removed by a pull. Without it, a project the listing dropped --
+                // deleted by someone else, or simply missing from one response -- takes
+                // the user's queued edits with it, and the entry left behind resurrects
+                // the task as a ghost when the server answers 404.
+                //
+                // Only the tasks. `outbox.subject_id` is a *task* id, so the same
+                // subquery against `projects` would keep a project alive whenever its id
+                // happened to match a pending task's.
+                let mut delete_tasks = tx.prepare(
+                    "DELETE FROM tasks
+                      WHERE project_id = ?1
+                        AND id NOT IN (SELECT subject_id FROM outbox
+                                        WHERE subject_id IS NOT NULL)",
+                )?;
                 for id in &orphaned {
                     delete_tasks.execute(params![id])?;
                 }
@@ -770,6 +785,46 @@ mod tests {
         );
         assert!(store.project_named("Favorites").await.unwrap().is_none());
         assert!(store.project_named("nonexistent").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retaining_projects_spares_a_task_with_unsent_changes() {
+        // A project can vanish from one listing -- deleted by someone else, or simply
+        // missing from a response -- and the cascade would take the user's queued edit
+        // with it. The entry left behind then resurrects the task as a ghost when the
+        // server answers 404 for a task it has never heard of.
+        let store = Store::in_memory().unwrap();
+        store
+            .upsert_projects(vec![project(1, "Work")])
+            .await
+            .unwrap();
+        let edited = Task {
+            id: TaskId(10),
+            project_id: ProjectId(1),
+            title: "original".into(),
+            ..Task::default()
+        };
+        store.upsert_tasks(vec![edited.clone()]).await.unwrap();
+        store
+            .queue(crate::store::Mutation::UpdateTask {
+                before: Box::new(edited.clone()),
+                after: Box::new(Task {
+                    title: "edited".into(),
+                    ..edited
+                }),
+            })
+            .await
+            .unwrap();
+
+        store.retain_projects(Vec::new()).await.unwrap();
+
+        assert!(store.project(ProjectId(1)).await.unwrap().is_none());
+        let survivor = store
+            .task(TaskId(10))
+            .await
+            .unwrap()
+            .expect("a queued edit was deleted with its project");
+        assert_eq!(survivor.title, "edited");
     }
 
     #[tokio::test]

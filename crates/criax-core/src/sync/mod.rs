@@ -19,6 +19,14 @@
 //! takes everything queued behind it for the same task with it: those changes were built
 //! on a state the server has refused to have.
 //!
+//! # One entry is one request
+//!
+//! Every queued mutation maps to a single call, which is what makes a retry safe. An
+//! entry that took two -- create the task, then attach its label -- could have the first
+//! land and the second fail, and replaying it would create the task twice. The splitting
+//! happens where the entries are written, in [`crate::store::Mutation::decompose`], so
+//! that this loop never has to ask what has already happened.
+//!
 //! # What counts as permanent
 //!
 //! A 4xx is the server's considered answer and retrying it will get the same one, so the
@@ -223,6 +231,14 @@ impl Sync {
 
             match self.deliver(&entry).await? {
                 Ok(()) => report.sent += 1,
+                Err(error) if is_already_done(&entry.mutation, &error) => {
+                    // The server has nothing to do because it is already in the state
+                    // this entry asked for. Rolling back would undo the user's intent to
+                    // report success at it.
+                    tracing::debug!(kind = entry.mutation.kind(), "already in that state");
+                    self.store.complete(entry.id).await?;
+                    report.sent += 1;
+                }
                 Err(error) if is_permanent(&error) => {
                     let subject = entry.mutation.subject();
                     let message = error.to_string();
@@ -293,20 +309,11 @@ impl Sync {
     /// Make the request, and nothing else.
     async fn transmit(&self, entry: &OutboxEntry) -> std::result::Result<Sent, ApiError> {
         Ok(match &entry.mutation {
-            Mutation::CreateTask { task } => {
-                let assigned = self.client.create_task(task.project_id, task).await?;
-                // The body's `labels` field is ignored by the server, so labels the task
-                // was created with have to be attached one at a time. Doing it here
-                // rather than making callers queue a second mutation is what keeps "I
-                // typed *errands and it vanished" from being a bug report.
-                for label in &task.labels {
-                    self.client.add_label_to_task(assigned.id, label.id).await?;
-                }
-                Sent::Created(Box::new(with_labels(assigned, task)))
-            }
-            Mutation::UpdateTask { before, after } => {
+            Mutation::CreateTask { task } => Sent::Created(Box::new(
+                self.client.create_task(task.project_id, task).await?,
+            )),
+            Mutation::UpdateTask { after, .. } => {
                 let updated = self.client.update_task(after).await?;
-                self.sync_labels(after.id, before, after).await?;
                 Sent::Updated(Box::new(with_labels(updated, after)))
             }
             Mutation::DeleteTask { before } => {
@@ -322,29 +329,6 @@ impl Sync {
                 Sent::Done
             }
         })
-    }
-
-    /// Attach and detach whatever an edit changed about a task's labels.
-    ///
-    /// `POST /tasks/{id}` ignores the body's `labels`, so an edit that added one would
-    /// silently lose it. Assignees need none of this: they *are* the body.
-    async fn sync_labels(
-        &self,
-        task: TaskId,
-        before: &Task,
-        after: &Task,
-    ) -> std::result::Result<(), ApiError> {
-        for label in &after.labels {
-            if !before.labels.iter().any(|had| had.id == label.id) {
-                self.client.add_label_to_task(task, label.id).await?;
-            }
-        }
-        for label in &before.labels {
-            if !after.labels.iter().any(|keeps| keeps.id == label.id) {
-                self.client.remove_label_from_task(task, label.id).await?;
-            }
-        }
-        Ok(())
     }
 
     /// Refresh the store from the server.
@@ -472,11 +456,35 @@ fn is_permanent(error: &ApiError) -> bool {
     )
 }
 
+/// Whether a refusal means the server had already done what was asked.
+///
+/// Deleting a task another device deleted first answers `404`, and so does detaching a
+/// label that is no longer attached. Both are the outcome the entry wanted. Treating
+/// them as rejections would roll the change back -- resurrecting a task the user
+/// deliberately deleted, and telling them "this task does not exist" while it reappears
+/// in front of them.
+///
+/// Deliberately narrow. A `404` creating a task means the *project* is gone, which is a
+/// real rejection, and a `404` updating one means the task is gone, which the user
+/// should hear about.
+fn is_already_done(mutation: &Mutation, error: &ApiError) -> bool {
+    let ApiError::Rejected { status: 404, .. } = error else {
+        return false;
+    };
+    matches!(
+        mutation,
+        Mutation::DeleteTask { .. } | Mutation::DetachLabel { .. }
+    )
+}
+
 /// Carry the labels an edit intended onto the server's answer.
 ///
 /// The server does not echo labels in a task write's response -- they are not part of
 /// that body in either direction -- so storing its answer verbatim would drop them from
-/// the local row until the next pull.
+/// the local row until the next pull. `decompose` leaves an `UpdateTask` carrying the
+/// labels it is *not* changing, which is exactly the set to restore; anything it is
+/// changing has its own entry, and the caller only stores this answer once none are
+/// left queued.
 fn with_labels(mut task: Task, intended: &Task) -> Task {
     task.labels = intended.labels.clone();
     task
