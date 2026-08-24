@@ -1,0 +1,24 @@
+criax  Work › List  Table  Kanban                ⚠ offline — connection refused
+────────────────────────────────────────────────────────────────────────────────
+ Title                              Project          Labels         Due
+ Fix the token refresh that drops   Work              urgent …      2 days ago
+ the cookie
+ Ship the release                   Work                            Tomorrow
+ Renew the passport                 Home              backend       Sep 23
+ A task with no date at all         Work                            —
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+4 tasks · 3 queued                                ?:help  /:search  g:go  q:quit

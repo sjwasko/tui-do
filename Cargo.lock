@@ -485,11 +485,13 @@ name = "criax"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "criax-api",
  "criax-core",
  "criax-tui",
  "crossterm",
+ "ratatui",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -540,6 +542,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "tracing",
+ "unicode-width",
 ]
 
 [[package]]

@@ -38,8 +38,11 @@ pub mod modal;
 pub mod model;
 pub mod msg;
 pub mod query;
+pub mod rows;
 pub mod sidebar;
+pub mod theme;
 pub mod update;
+pub mod view;
 
 pub use effect::Effect;
 pub use keymap::{Action, Binding, Key, KEYMAP};
@@ -48,3 +51,4 @@ pub use model::{Focus, Model, PaneState, Screen};
 pub use msg::Msg;
 pub use query::{Query, QueryId, Scope};
 pub use update::update;
+pub use view::view;

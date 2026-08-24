@@ -82,6 +82,28 @@ impl Store {
             .map_err(join_error)?
     }
 
+    /// Where the database lives when nothing overrides it.
+    ///
+    /// `$CRIAX_DB` wins, so a second instance can be pointed at a scratch database
+    /// without touching the real one; otherwise it is the XDG data directory, which is
+    /// where a cache that can be deleted and rebuilt belongs -- this is not config.
+    ///
+    /// # Errors
+    /// [`CoreError::Config`] when the platform reports no data directory.
+    pub fn default_path() -> Result<PathBuf> {
+        if let Some(from_env) = std::env::var_os("CRIAX_DB") {
+            if !from_env.is_empty() {
+                return Ok(PathBuf::from(from_env));
+            }
+        }
+        dirs::data_dir()
+            .map(|dir| dir.join("criax").join("criax.db"))
+            .ok_or_else(|| crate::CoreError::Config {
+                path: "$XDG_DATA_HOME".to_string(),
+                reason: "no data directory could be determined for this user".to_string(),
+            })
+    }
+
     /// Open a private in-memory store.
     ///
     /// Synchronous, and the one constructor that is: tests want a store without a

@@ -20,6 +20,8 @@ criax-tui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
+ratatui.workspace = true
+chrono.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
