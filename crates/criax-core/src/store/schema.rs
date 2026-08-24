@@ -133,6 +133,26 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX outbox_by_subject ON outbox (subject_id);
     ",
+    // v2 -- labels remember who owns them, and projects remember their views.
+    //
+    // Vikunja only lets a label's creator edit it, so without the owner the UI cannot
+    // tell which labels it may offer to rename. Views are how the web frontend actually
+    // loads tasks (`/projects/{id}/views/{view}/tasks`) and where bucket positions live,
+    // so Phase 6 needs their ids stored rather than re-fetched on every keystroke.
+    r"
+    ALTER TABLE labels ADD COLUMN created_by_id INTEGER NOT NULL DEFAULT 0;
+
+    CREATE TABLE project_views (
+        id         INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+        title      TEXT    NOT NULL,
+        -- The wire spelling ('list', 'kanban', ...), so an unknown kind from a future
+        -- server survives a round trip instead of being flattened to a number.
+        view_kind  TEXT    NOT NULL,
+        position   REAL    NOT NULL DEFAULT 0
+    );
+    CREATE INDEX project_views_by_project ON project_views (project_id);
+    ",
 ];
 
 /// The schema version this build expects.
@@ -226,6 +246,7 @@ mod tests {
             "task_labels",
             "task_assignees",
             "users",
+            "project_views",
         ] {
             assert!(
                 tables.iter().any(|t| t == expected),
@@ -248,6 +269,41 @@ mod tests {
             table_names(&connection).len(),
             table_names(&migrated()).len()
         );
+    }
+
+    #[test]
+    fn an_existing_database_is_upgraded_in_place_rather_than_rebuilt() {
+        // The append-only rule only pays off if a partial database actually migrates,
+        // so run v1 alone, put a row in it, and check the row is still there after v2.
+        let mut connection = Connection::open_in_memory().unwrap();
+        let transaction = connection.transaction().unwrap();
+        apply(&transaction, MIGRATIONS[0], 1).unwrap();
+        transaction.commit().unwrap();
+        connection
+            .execute(
+                "INSERT INTO labels (id, title, synced_at) VALUES (1, 'urgent', 'now')",
+                [],
+            )
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, target_version());
+        let (title, owner): (String, i64) = connection
+            .query_row(
+                "SELECT title, created_by_id FROM labels WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "urgent", "the upgrade lost a row");
+        assert_eq!(owner, 0, "the new column should default rather than fail");
+        assert!(table_names(&connection)
+            .iter()
+            .any(|t| t == "project_views"));
     }
 
     #[test]
