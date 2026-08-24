@@ -75,6 +75,22 @@ pub enum ApiError {
         message: String,
     },
 
+    /// The credential is valid but does not permit this (403).
+    ///
+    /// Kept apart from [`ApiError::Unauthorized`] because the two need opposite
+    /// responses: an expired token should be refreshed and the request replayed, while a
+    /// permission denial should be shown to the user. Folding them together made every
+    /// forbidden resource spend a `POST /user/token/refresh` — against an endpoint
+    /// Vikunja rate limits to ten requests per window, so a sync pass touching a few
+    /// read-only projects could exhaust the budget that genuinely expired sessions need.
+    #[error("not permitted: {message}")]
+    Forbidden {
+        /// Vikunja's own error code, when it sent one.
+        code: Option<i64>,
+        /// Server-supplied message.
+        message: String,
+    },
+
     /// The server is rate limiting us (429).
     ///
     /// Vikunja rate limits the auth endpoints hard — ten requests per window on
@@ -143,6 +159,20 @@ pub enum ApiError {
         limit: usize,
     },
 
+    /// A paginated collection did not end.
+    ///
+    /// Raised instead of stopping quietly, because a collection that stops early and
+    /// reports success is the exact failure this client exists to prevent. Reaching it
+    /// means the server is ignoring the `page` parameter, not that the user has a lot of
+    /// tasks.
+    #[error("{url} did not stop paginating after {pages} pages")]
+    TooManyPages {
+        /// The collection being walked.
+        url: String,
+        /// How many pages were fetched before giving up.
+        pages: u32,
+    },
+
     /// A request needs credentials the client does not have.
     ///
     /// Raised before sending, so an unconfigured client fails with something actionable
@@ -165,10 +195,12 @@ impl ApiError {
             Self::Transport { .. } | Self::Server { .. } | Self::RateLimited { .. } => true,
             Self::Rejected { status, .. } => *status == 429,
             Self::Unauthorized { .. }
+            | Self::Forbidden { .. }
             | Self::Deserialize { .. }
             | Self::InvalidUrl { .. }
             | Self::UnknownEndpoint { .. }
             | Self::ResponseTooLarge { .. }
+            | Self::TooManyPages { .. }
             | Self::NotAuthenticated { .. } => false,
         }
     }
@@ -186,7 +218,9 @@ impl ApiError {
     #[must_use]
     pub fn code(&self) -> Option<i64> {
         match self {
-            Self::Rejected { code, .. } | Self::Unauthorized { code, .. } => *code,
+            Self::Rejected { code, .. }
+            | Self::Unauthorized { code, .. }
+            | Self::Forbidden { code, .. } => *code,
             _ => None,
         }
     }
@@ -202,7 +236,11 @@ impl ApiError {
         retry_after: Option<std::time::Duration>,
     ) -> Self {
         match status {
-            401 | 403 => Self::Unauthorized {
+            401 => Self::Unauthorized {
+                code: body.code,
+                message: body.message.clone(),
+            },
+            403 => Self::Forbidden {
                 code: body.code,
                 message: body.message.clone(),
             },
@@ -235,11 +273,13 @@ impl fmt::Display for Brief<'_> {
                 write!(f, "http {status}")
             }
             ApiError::Unauthorized { .. } => write!(f, "unauthorized"),
+            ApiError::Forbidden { .. } => write!(f, "forbidden"),
             ApiError::RateLimited { .. } => write!(f, "rate limited"),
             ApiError::Deserialize { .. } => write!(f, "spec drift"),
             ApiError::InvalidUrl { .. } => write!(f, "bad url"),
             ApiError::UnknownEndpoint { .. } => write!(f, "unknown endpoint"),
             ApiError::ResponseTooLarge { .. } => write!(f, "response too large"),
+            ApiError::TooManyPages { .. } => write!(f, "runaway pagination"),
             ApiError::NotAuthenticated { .. } => write!(f, "not logged in"),
         }
     }
@@ -283,9 +323,10 @@ mod tests {
             ApiError::from_status(401, &body, None),
             ApiError::Unauthorized { .. }
         ));
+        // 403 is deliberately *not* Unauthorized: only 401 should provoke a refresh.
         assert!(matches!(
             ApiError::from_status(403, &body, None),
-            ApiError::Unauthorized { .. }
+            ApiError::Forbidden { .. }
         ));
         assert!(matches!(
             ApiError::from_status(429, &body, None),

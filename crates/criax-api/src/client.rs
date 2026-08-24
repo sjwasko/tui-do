@@ -40,7 +40,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long to wait for the connection itself.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The most response body the client will hold in memory.
+/// The most response body the client will hold in memory, unless overridden.
 ///
 /// Not a limit any real response approaches — a full page of fifty tasks is a few hundred
 /// kilobytes — but `text()` on an unbounded body is an out-of-memory kill waiting for a
@@ -89,6 +89,12 @@ impl Call {
     fn with_queries(mut self, pairs: Vec<(String, String)>) -> Self {
         self.query.extend(pairs);
         self
+    }
+
+    /// The URL, for an error message. Carries no query string, so filter and search
+    /// text never reaches a log or a toast.
+    pub(crate) fn url_for_error(&self) -> String {
+        self.url.to_string()
     }
 
     /// Attach a JSON body.
@@ -142,6 +148,7 @@ struct Inner {
     base: Url,
     session: RwLock<Session>,
     limits: RwLock<Limits>,
+    max_response_bytes: usize,
 }
 
 /// A client for one Vikunja server.
@@ -158,6 +165,7 @@ pub struct ClientBuilder {
     user_agent: String,
     timeout: Duration,
     connect_timeout: Duration,
+    max_response_bytes: usize,
 }
 
 impl ClientBuilder {
@@ -182,6 +190,16 @@ impl ClientBuilder {
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Override how much response body will be buffered before the request is abandoned.
+    ///
+    /// Exists to be lowered in tests; [`MAX_RESPONSE_BYTES`] is far above any real
+    /// response.
+    #[must_use]
+    pub fn max_response_bytes(mut self, limit: usize) -> Self {
+        self.max_response_bytes = limit;
         self
     }
 
@@ -219,6 +237,7 @@ impl ClientBuilder {
                 base,
                 session: RwLock::new(session),
                 limits: RwLock::new(Limits::default()),
+                max_response_bytes: self.max_response_bytes,
             }),
         })
     }
@@ -237,6 +256,7 @@ impl Client {
             user_agent: concat!("criax/", env!("CARGO_PKG_VERSION")).to_string(),
             timeout: DEFAULT_TIMEOUT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            max_response_bytes: MAX_RESPONSE_BYTES,
         }
     }
 
@@ -316,9 +336,16 @@ impl Client {
     /// [`ApiError::Unauthorized`] when the refresh cookie is missing or expired, which
     /// means the user has to log in again.
     pub async fn refresh_token(&self) -> Result<()> {
-        // The refresh cookie outlives `logout`'s local session reset, so without this a
-        // caller could mint a fresh JWT after logging out.
-        self.require_auth("refreshing the session")?;
+        // Two ways this is reachable when it should not be. The refresh cookie outlives
+        // `logout`'s local session reset, so a caller could mint a JWT for a session the
+        // user ended. And on an API-token session a successful refresh would *replace*
+        // the user's configured long-lived token with a JWT, discarding a credential the
+        // client cannot get back.
+        if !self.session().is_refreshable() {
+            return Err(ApiError::NotAuthenticated {
+                action: "refreshing the session",
+            });
+        }
         let call = Call::new(Method::POST, self.resolve(endpoints::TOKEN_REFRESH, &[])?);
         // Deliberately `send_once`: a refresh that 401s must not trigger another refresh.
         let (token, _) = self.send_once::<Token>(&call).await?;
@@ -836,7 +863,28 @@ impl Client {
 
     /// Send a call, retrying once through a token refresh if it comes back 401.
     pub(crate) async fn send<T: DeserializeOwned>(&self, call: Call) -> Result<(T, HeaderMap)> {
-        match self.send_once::<T>(&call).await {
+        self.with_refresh(&call, |client, call| {
+            Box::pin(async move { client.send_once::<T>(call).await })
+        })
+        .await
+    }
+
+    /// Run `attempt`, and on a 401 from a refreshable session refresh the token and run
+    /// it once more.
+    ///
+    /// Only 401 takes this path. A 403 is a permission denial that a new token will not
+    /// change, and refreshing on it would spend the rate-limited refresh endpoint on
+    /// every forbidden resource a sync pass touches.
+    async fn with_refresh<'a, T, F>(&'a self, call: &'a Call, attempt: F) -> Result<T>
+    where
+        F: for<'b> Fn(
+            &'b Client,
+            &'b Call,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<T>> + Send + 'b>,
+        >,
+    {
+        match attempt(self, call).await {
             Err(ApiError::Unauthorized { code, message })
                 if call.authenticated && self.session().is_refreshable() =>
             {
@@ -848,7 +896,7 @@ impl Client {
                 // tokens are valid. Serialising it would need an async mutex, and so a
                 // tokio dependency, for no benefit.
                 match self.refresh_token().await {
-                    Ok(()) => self.send_once::<T>(&call).await,
+                    Ok(()) => attempt(self, call).await,
                     Err(_) => Err(ApiError::Unauthorized { code, message }),
                 }
             }
@@ -871,13 +919,22 @@ impl Client {
 
     /// Send a call and check the status, discarding the body.
     ///
-    /// For endpoints whose success response is a bare confirmation message.
+    /// For endpoints whose success response is a bare confirmation message. Shares
+    /// [`Client::with_refresh`] with [`Client::send`]: every delete and every
+    /// attach/detach goes through here, and they must survive an expired JWT exactly as
+    /// well as an edit does. They did not, until a review noticed that editing a task
+    /// recovered from expiry while deleting the same task failed.
     async fn send_ignoring_body(&self, call: Call) -> Result<HeaderMap> {
-        let (status, headers, body) = self.dispatch(&call).await?;
-        if !status.is_success() {
-            return Err(classify(status.as_u16(), &headers, &body));
-        }
-        Ok(headers)
+        self.with_refresh(&call, |client, call| {
+            Box::pin(async move {
+                let (status, headers, body) = client.dispatch(call).await?;
+                if !status.is_success() {
+                    return Err(classify(status.as_u16(), &headers, &body));
+                }
+                Ok(headers)
+            })
+        })
+        .await
     }
 
     /// Perform the HTTP request. No status interpretation happens here.
@@ -908,7 +965,7 @@ impl Client {
 
         let status = response.status();
         let headers = response.headers().clone();
-        let body = read_bounded(response, &call.url).await?;
+        let body = read_bounded(response, &call.url, self.inner.max_response_bytes).await?;
 
         tracing::trace!(method = %call.method, url = %call.url, %status, bytes = body.len(), "vikunja request");
         Ok((status, headers, body))
@@ -962,7 +1019,7 @@ impl Client {
 }
 
 /// Read a response body with a ceiling on how much is buffered.
-async fn read_bounded(mut response: reqwest::Response, url: &Url) -> Result<String> {
+async fn read_bounded(mut response: reqwest::Response, url: &Url, limit: usize) -> Result<String> {
     let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = response
         .chunk()
@@ -972,10 +1029,10 @@ async fn read_bounded(mut response: reqwest::Response, url: &Url) -> Result<Stri
             source,
         })?
     {
-        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+        if body.len() + chunk.len() > limit {
             return Err(ApiError::ResponseTooLarge {
                 url: url.to_string(),
-                limit: MAX_RESPONSE_BYTES,
+                limit,
             });
         }
         body.extend_from_slice(&chunk);
@@ -1007,10 +1064,22 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
         .get("x-ratelimit-reset")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<i64>().ok())?;
-    let now = chrono::Utc::now().timestamp();
-    // A window that has already elapsed means "retry now", which is different from
-    // "the server gave no advice" -- so clamp rather than letting the conversion fail.
-    let seconds = reset.saturating_sub(now).max(0);
+
+    // Vikunja sends an absolute unix timestamp here -- observed directly against the dev
+    // instance, which answered `x-ratelimit-reset: 1787583384` on 2026-08-24. The spec
+    // documents neither the header nor its units, so a value too small to be a plausible
+    // timestamp is read as seconds-remaining instead. Guessing wrong in that direction
+    // would clamp to zero and turn an honoured back-off into a retry storm against the
+    // endpoint that just rate-limited us.
+    const EARLIEST_PLAUSIBLE_TIMESTAMP: i64 = 1_000_000_000; // 2001-09-09
+    let seconds = if reset < EARLIEST_PLAUSIBLE_TIMESTAMP {
+        reset.max(0)
+    } else {
+        let now = chrono::Utc::now().timestamp();
+        // A window that has already elapsed means "retry now", which is different from
+        // "the server gave no advice" -- so clamp rather than letting the conversion fail.
+        reset.saturating_sub(now).max(0)
+    };
     u64::try_from(seconds).ok().map(Duration::from_secs)
 }
 
@@ -1065,6 +1134,11 @@ fn normalize_base(raw: &str) -> Result<Url> {
     url.set_path(&format!("{path}/"));
     url.set_query(None);
     url.set_fragment(None);
+    // Credentials in the URL would end up in every error message and trace line, which
+    // is exactly what `Secret` exists to prevent. Vikunja does not use HTTP basic auth
+    // outside CalDAV, so there is nothing to lose by dropping them.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
     Ok(url)
 }
 
@@ -1264,9 +1338,36 @@ mod tests {
 
     #[test]
     fn a_rate_limit_reset_in_the_past_is_a_zero_wait_not_an_underflow() {
+        // A real timestamp, long past: "retry now", not a negative duration and not
+        // "the server gave no advice".
         let mut headers = HeaderMap::new();
-        headers.insert("x-ratelimit-reset", HeaderValue::from_static("1"));
+        headers.insert("x-ratelimit-reset", HeaderValue::from_static("1600000000"));
         assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_rate_limit_reset_reads_as_a_timestamp_the_way_vikunja_sends_it() {
+        // Observed against the dev instance on 2026-08-24. The value is far in the
+        // future relative to `now` only while that date is in the past, so assert the
+        // shape rather than an exact figure: a plausible timestamp must not be read as
+        // a wait of 1.7 billion seconds.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-reset", HeaderValue::from_static("1787583384"));
+        let wait = retry_after(&headers).expect("a wait");
+        assert!(
+            wait < Duration::from_secs(86_400),
+            "an absolute timestamp was read as seconds-remaining: {wait:?}"
+        );
+    }
+
+    #[test]
+    fn a_small_rate_limit_reset_is_read_as_seconds_remaining() {
+        // The spec documents neither the header nor its units. If a proxy or a future
+        // Vikunja sends a duration, reading it as a timestamp would clamp to zero and
+        // turn the back-off into a retry storm.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-reset", HeaderValue::from_static("30"));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(30)));
     }
 
     #[test]
