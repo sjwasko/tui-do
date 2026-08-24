@@ -69,3 +69,9 @@ at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted for
 inclusion in this work by you, as defined in the Apache-2.0 license, shall be dual licensed
 as above, without any additional terms or conditions.
+
+## Copyright
+
+Copyright is held collectively by the project's contributors ("The criax Authors");
+attribution lives in the git history. Contributions are accepted under the dual
+MIT/Apache-2.0 terms above.
