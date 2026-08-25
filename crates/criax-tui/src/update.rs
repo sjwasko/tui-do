@@ -115,6 +115,14 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             model.toast(Toast::error(format!("{kind} rejected: {message}")));
             Vec::new()
         }
+        SyncEvent::Pushed(report) => {
+            // A push can be the whole pass, so this is where "sending" ends. `last_sync`
+            // is deliberately not stamped: nothing was fetched, and "synced just now"
+            // would be a claim about the server's state that this pass never checked.
+            model.status.sync = SyncStatus::Idle;
+            model.status.queued = report.deferred;
+            Vec::new()
+        }
         SyncEvent::Finished(report) => {
             model.status.sync = SyncStatus::Idle;
             model.status.last_sync = Some(model.now);
