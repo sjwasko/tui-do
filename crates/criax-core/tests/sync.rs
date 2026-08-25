@@ -271,6 +271,42 @@ async fn a_pushed_create_adopts_the_server_id_and_keeps_its_labels() {
 }
 
 #[tokio::test]
+async fn a_pushed_create_announces_the_id_it_was_given() {
+    // The store swaps the provisional id in its own rows and in anything still queued.
+    // What it cannot reach is the interface, which holds that id in its list, its
+    // selection and its undo stack. An edit asks for a push-only pass, which ends in
+    // `Pushed` and never reloads -- so without this event the next edit is sent as
+    // `POST /tasks/-1` and answered `404 This task does not exist`.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(4242, "buy milk")))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "buy milk")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject();
+
+    let (sync, mut rx) = engine(&server, &store);
+    sync.push().await.unwrap();
+
+    let seen = events(&mut rx);
+    assert!(
+        seen.contains(&SyncEvent::Adopted {
+            provisional,
+            assigned: TaskId(4242),
+        }),
+        "a create that the server named must say so; saw {seen:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_edit_queued_behind_a_create_reaches_the_real_task() {
     // The user types a task and renames it before the connection comes back. The rename
     // has to arrive at the id the server assigned, not the provisional one.
