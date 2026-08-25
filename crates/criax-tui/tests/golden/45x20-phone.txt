@@ -1,0 +1,20 @@
+criax  Work                  ⟳ synced 2m ago
+─────────────────────────────────────────────
+ Title                  Project     Labels
+ Fix the token refresh  Work         urgent …
+ that drops the cookie
+ Ship the release       Work
+ Renew the passport     Home         backend
+ A task with no date at Work
+ all
+
+
+
+
+
+
+
+
+
+
+4 tasks        ?:help  /:search  g:go  q:quit

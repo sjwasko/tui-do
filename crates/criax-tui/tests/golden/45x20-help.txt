@@ -1,0 +1,20 @@
+┌Keys — j/k scrolls─────────────────────────┐
+│Navigation                                 │
+│  j / ↓       Move down                    │
+│  k / ↑       Move up                      │
+│  C-d / PgDn  Page down                    │
+│  C-u / PgUp  Page up                      │
+│  g g / Home  Jump to the top              │
+│  G / End     Jump to the bottom           │
+│  Tab         Focus the next pane          │
+│  S-Tab       Focus the previous pane      │
+│  Esc         Back to the list, then out of│
+│  g p         Go to a project              │
+│  g l         Go to a label                │
+│  /           Search the current list      │
+│  Enter       Open the selected task       │
+│                                           │
+│View                                       │
+│  z s         Show or hide the sidebar     │
+│  z p         Show or hide the preview pane│
+└───────────────────────────────────────────┘

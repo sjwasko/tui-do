@@ -302,6 +302,43 @@ fn a_filtered_view_says_how_to_leave_it() {
 }
 
 #[test]
+fn a_phone_terminal_still_answers_the_two_questions_the_header_is_for() {
+    // Termux on a phone, portrait. The tabs and the brand give way; which list this is
+    // and whether it is talking to the server do not.
+    let model = fixture((45, 20));
+    let drawn = draw(&model);
+    let header = drawn.lines().next().unwrap_or_default();
+
+    assert!(header.contains("Work"), "the breadcrumb survives: {header}");
+    assert!(header.contains('⟳'), "and the sync state: {header}");
+    assert!(!header.contains("Kanban"), "the tabs gave way: {header}");
+    assert!(
+        header.chars().count() <= 45,
+        "and nothing overflowed: {header}"
+    );
+    // The two halves never abut.
+    assert!(header.contains("  "), "{header}");
+
+    assert!(model.frames().sidebar.is_none());
+    assert!(model.frames().preview.is_none());
+    golden("45x20-phone.txt", &draw(&model));
+}
+
+#[test]
+fn a_phone_terminal_can_still_read_the_help() {
+    let mut model = fixture((45, 20));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    // Too short to hold the whole keymap, so the title says how to see the rest.
+    assert!(drawn.contains("j/k scrolls"), "{drawn}");
+    assert!(drawn.lines().all(|line| line.chars().count() <= 45));
+    golden("45x20-help.txt", &draw(&model));
+}
+
+#[test]
 fn an_empty_list_says_which_kind_of_empty_it_is() {
     let mut model = fixture((80, 24));
     let id = model.query_id;
