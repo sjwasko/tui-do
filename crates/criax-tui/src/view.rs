@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::keymap::{bindings_in, Group};
+use crate::keymap::{help_rows, HelpRow};
 use crate::modal::{Modal, PickerState, TextInput};
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
@@ -480,9 +480,7 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
         }
     };
 
-    let hint = if model.pending.is_empty() {
-        "?:help  /:search  g:go  q:quit".to_string()
-    } else {
+    let hint = if !model.pending.is_empty() {
         // A chord in flight is visible, so a half-pressed `g` is never a mystery.
         model
             .pending
@@ -491,6 +489,12 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
             .collect::<Vec<_>>()
             .join(" ")
             + " …"
+    } else if model.query.search.is_some() {
+        // The way out of a narrowed view belongs where the user looks for it, which is
+        // not the help modal.
+        "Esc:clear filter  ?:help  q:quit".to_string()
+    } else {
+        "?:help  /:search  g:go  q:quit".to_string()
     };
     let right = vec![Span::styled(hint, theme.muted())];
     // The hints are fixed and the message is not, so the message is what gives way.
@@ -508,37 +512,48 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
 /// Draw one modal over whatever is underneath.
 fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
     let theme = model.theme;
+    let rows = match modal {
+        Modal::Help(state) => help_rows(state.context),
+        _ => Vec::new(),
+    };
     let (width, height) = match modal {
-        Modal::Help(_) => (64, 22),
+        // Sized to what it has to say, so adding a binding cannot silently push the last
+        // one off the bottom -- which is exactly what binding Esc did.
+        Modal::Help(_) => (64, rows.len() as u16 + 2),
         Modal::Search(_) => (60, 3),
         Modal::Picker(_) => (60, 16),
     };
     let area = centered(frame.area(), width, height);
-    let block = Block::bordered()
-        .border_style(theme.accent())
-        .title(modal.title());
+    let truncated = matches!(modal, Modal::Help(_)) && area.height < rows.len() as u16 + 2;
+    let title = if truncated {
+        // On a terminal too short to hold it, the title says so rather than leaving the
+        // reader to guess that the list continues.
+        format!("{} — j/k scrolls", modal.title())
+    } else {
+        modal.title()
+    };
+    let block = Block::bordered().border_style(theme.accent()).title(title);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
     match modal {
         Modal::Help(state) => {
-            let mut lines: Vec<Line<'static>> = Vec::new();
-            for group in Group::all() {
-                lines.push(Line::from(Span::styled(
-                    group.heading().to_string(),
-                    theme.heading(),
-                )));
-                for binding in bindings_in(*group, state.context) {
-                    lines.push(Line::from(vec![
+            let lines: Vec<Line<'static>> = rows
+                .into_iter()
+                .skip(state.offset)
+                .map(|row| match row {
+                    HelpRow::Heading(text) => {
+                        Line::from(Span::styled(text.to_string(), theme.heading()))
+                    }
+                    HelpRow::Binding(binding) => Line::from(vec![
                         Span::styled(format!("  {:<12}", binding.keys_display()), theme.accent()),
                         Span::styled(binding.doc.to_string(), theme.text()),
-                    ]));
-                }
-                lines.push(Line::default());
-            }
-            let scrolled: Vec<Line<'static>> = lines.into_iter().skip(state.offset).collect();
-            frame.render_widget(Paragraph::new(scrolled), inner);
+                    ]),
+                    HelpRow::Blank => Line::default(),
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(lines), inner);
         }
         Modal::Search(input) => {
             frame.render_widget(Paragraph::new(input_line(input, theme)), inner);

@@ -175,6 +175,8 @@ pub enum Action {
     FocusNext,
     /// Move focus to the previous visible pane.
     FocusPrevious,
+    /// Back out: to the task list, then out of a search.
+    Back,
     /// Expand the selected project, or open it if already expanded.
     ExpandOrOpen,
     /// Collapse the selected project, or move to its parent.
@@ -339,6 +341,13 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Focus the previous pane",
     },
     Binding {
+        keys: &[chord![Key::plain(KeyCode::Esc)]],
+        action: Action::Back,
+        context: Context::Global,
+        group: Group::Navigation,
+        doc: "Back to the list, then out of a search",
+    },
+    Binding {
         keys: &[chord![Key::char('g'), Key::char('p')]],
         action: Action::GotoProject,
         context: Context::Global,
@@ -448,6 +457,39 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Quit",
     },
 ];
+
+/// One line of the help modal.
+///
+/// Built here rather than in the renderer so the modal's height, its scroll limit and
+/// what it draws are all counted from the same list. Three counts would be three chances
+/// to disagree, which is how a help screen ends up able to scroll past its own end.
+#[derive(Debug, Clone, Copy)]
+pub enum HelpRow {
+    /// A section heading.
+    Heading(&'static str),
+    /// A binding.
+    Binding(&'static Binding),
+    /// A blank line between sections.
+    Blank,
+}
+
+/// The help modal's content, in order, for `context`.
+#[must_use]
+pub fn help_rows(context: Context) -> Vec<HelpRow> {
+    let mut rows = Vec::new();
+    for group in Group::all() {
+        rows.push(HelpRow::Heading(group.heading()));
+        rows.extend(
+            bindings_in(*group, context)
+                .into_iter()
+                .map(HelpRow::Binding),
+        );
+        rows.push(HelpRow::Blank);
+    }
+    // The trailing blank is a separator with nothing after it.
+    rows.pop();
+    rows
+}
 
 /// What looking a key up produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

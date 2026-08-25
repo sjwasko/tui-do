@@ -14,7 +14,7 @@ use crossterm::event::KeyCode;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-use crate::keymap::{Action, Context, Key};
+use crate::keymap::{help_rows, Action, Context, Key};
 
 /// A single-line text field.
 ///
@@ -303,7 +303,10 @@ impl ModalView for HelpState {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.offset += 1;
+                // Bounded by the content, so the last press cannot scroll the text off
+                // the top and leave the reader staring at an empty box.
+                let last = help_rows(self.context).len().saturating_sub(1);
+                self.offset = (self.offset + 1).min(last);
                 Outcome::Consumed
             }
             KeyCode::Char('k') | KeyCode::Up => {

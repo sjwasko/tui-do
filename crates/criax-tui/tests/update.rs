@@ -288,6 +288,61 @@ fn hiding_the_focused_pane_moves_focus_rather_than_stranding_it() {
 }
 
 #[test]
+fn escape_backs_out_of_a_pane_rather_than_doing_nothing() {
+    // Esc is the key everyone reaches for to undo the last narrowing. Bound only inside
+    // modals, it did nothing out here, which reads as the interface being stuck.
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.focus, Focus::Preview);
+    press_code(&mut model, KeyCode::Esc);
+    assert_eq!(model.focus, Focus::List);
+
+    press_code(&mut model, KeyCode::BackTab);
+    assert_eq!(model.focus, Focus::Sidebar);
+    press_code(&mut model, KeyCode::Esc);
+    assert_eq!(model.focus, Focus::List);
+}
+
+#[test]
+fn escape_then_clears_the_search_and_never_quits() {
+    let mut model = loaded();
+    press(&mut model, '/');
+    for c in "bug".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.query.search.as_deref(), Some("bug"));
+
+    let effects = press_code(&mut model, KeyCode::Esc);
+    assert_eq!(model.query.search, None, "the second Esc leaves the search");
+    assert!(
+        loaded_query(&effects).is_some(),
+        "and re-queries without it"
+    );
+
+    // The bottom of the ladder is nothing at all. Esc must never be the key that quits.
+    let effects = press_code(&mut model, KeyCode::Esc);
+    assert!(effects.is_empty());
+    assert!(model.running);
+}
+
+#[test]
+fn escape_closes_a_modal_before_it_touches_focus() {
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.focus, Focus::Preview);
+
+    press(&mut model, '?');
+    press_code(&mut model, KeyCode::Esc);
+    assert!(model.modals.is_empty());
+    assert_eq!(
+        model.focus,
+        Focus::Preview,
+        "the modal took the key, not the pane"
+    );
+}
+
+#[test]
 fn enter_opens_the_preview_and_motion_scrolls_it() {
     let mut model = loaded();
     press_code(&mut model, KeyCode::Enter);
