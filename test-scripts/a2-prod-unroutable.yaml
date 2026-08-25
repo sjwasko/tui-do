@@ -1,0 +1,24 @@
+# MANUAL-CHECKS A2 — trips the production guard without being production.
+#
+# The guard is a case-insensitive substring match on "prod-box" anywhere in the
+# URL (main.rs:128), so this host trips it exactly as the real one does. But
+# `.invalid` is reserved by RFC 6761 and never resolves, so starting with
+# --i-know-this-is-prod proves the flag works without a packet reaching prod
+# — and, more to the point, without a pull.
+#
+# The pull is the reason this file exists. criax keeps one store for every
+# server (~/.local/share/criax/criax.db, from Store::default_path), and a pull
+# deletes every local task the listing did not mention. Starting against real
+# prod would therefore replace the dev-derived cache with prod's tasks, which
+# is both a write to your local state and the end of the warm cache the other
+# checks depend on.
+server:
+  url: https://prod-box.invalid:8443
+  token_file: ~/.config/criax/token
+
+sync:
+  interval_seconds: 300
+  enabled: true
+
+view:
+  active_layout: default
