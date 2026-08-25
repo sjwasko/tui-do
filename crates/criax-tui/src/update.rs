@@ -5,7 +5,8 @@
 //! cannot touch a store — every one of those arrives as a [`Msg`] and leaves as an
 //! [`Effect`]. That is what keeps the render loop from ever blocking.
 
-use criax_core::models::{Project, ProjectId, Task};
+use criax_core::models::{Label, Project, ProjectId, Task};
+use criax_core::quickadd;
 use criax_core::store::Mutation;
 use criax_core::sync::{Phase, Stage};
 use criax_core::SyncEvent;
@@ -14,6 +15,7 @@ use crate::effect::Effect;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
     Candidate, HelpState, Modal, Outcome, Pick, PickerKind, PickerState, SearchState, Submission,
+    TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -184,6 +186,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             model.query.search = (!text.trim().is_empty()).then(|| text.trim().to_string());
             reload_tasks(model)
         }
+        Submission::Add(text) => add_task(model, &text),
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
         // A command chosen by name does exactly what its key does. One implementation,
@@ -289,6 +292,10 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 PickerKind::Label,
                 sorted(candidates),
             )));
+            Vec::new()
+        }
+        Action::AddTask => {
+            model.modals.push(Modal::Add(TextInput::default()));
             Vec::new()
         }
         Action::ToggleDone => match model.selected_task() {
@@ -566,6 +573,180 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     effects.push(Effect::LoadLabels);
     effects.push(Effect::LoadCounts);
     effects
+}
+
+/// A task built from quick-add text, and what could not be honoured.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuickAdd {
+    /// The task itself.
+    pub task: Task,
+    /// Labels named that do not exist. Creating one is its own mutation kind, which
+    /// Phase 4 does not have, so they are reported rather than silently dropped.
+    pub unknown_labels: Vec<String>,
+    /// More than one project answers to the name that was used.
+    ///
+    /// Not hypothetical: the dev instance has three projects called `Inbox` — a
+    /// pseudo-project, an empty one, and the real one — so `+Inbox` genuinely does not
+    /// identify a project, and picking one silently puts tasks somewhere the user is not
+    /// looking.
+    pub ambiguous_project: bool,
+}
+
+/// Build a task from parsed quick-add text, if a project can be found for it.
+///
+/// Shared with `criax add`, so the same syntax means the same thing from the interface
+/// and from a shell.
+#[must_use]
+pub fn quickadd_task(
+    parsed: &quickadd::Parsed,
+    projects: &[Project],
+    labels: &[Label],
+    showing: Option<ProjectId>,
+) -> Option<QuickAdd> {
+    let project = project_for(projects, parsed.project.as_deref(), showing)?;
+    let (found, unknown_labels) = resolve_labels(labels, &parsed.labels);
+    Some(QuickAdd {
+        task: build_task(parsed, project, found),
+        unknown_labels,
+        ambiguous_project: parsed
+            .project
+            .as_deref()
+            .is_some_and(|name| matches_by_name(projects, name).count() > 1),
+    })
+}
+
+/// Real projects answering to `name`.
+fn matches_by_name<'a>(
+    projects: &'a [Project],
+    name: &'a str,
+) -> impl Iterator<Item = &'a Project> {
+    projects.iter().filter(move |project| {
+        project.id.get() > 0
+            && !project.is_archived
+            && project.title.eq_ignore_ascii_case(name.trim())
+    })
+}
+
+/// The task itself, once the project and labels are settled.
+fn build_task(parsed: &quickadd::Parsed, project: ProjectId, labels: Vec<Label>) -> Task {
+    let mut task = Task {
+        // Vikunja binds the path first and the body second, so a body that leaves this
+        // at 0 makes the server look up project 0 and answer 404 about the project you
+        // just named. Writing it here is the fix, and it belongs at the point the task
+        // is built rather than in the client.
+        project_id: project,
+        title: parsed.title.clone(),
+        priority: parsed.priority.map_or(0, i64::from),
+        due_date: parsed.due_date.into(),
+        start_date: parsed.start_date.into(),
+        labels,
+        ..Task::default()
+    };
+    if let Some(repeat) = parsed.repeat {
+        task.repeat_after = repeat.seconds();
+        if repeat.is_monthly() {
+            task.repeat_mode = criax_core::models::RepeatMode::Monthly;
+        }
+    }
+    task
+}
+
+/// Turn quick-add text into a task, and queue it.
+///
+/// The parser is `criax-core`'s, the same one `criax add` uses, so the syntax cannot mean
+/// two things depending on where it was typed.
+fn add_task(model: &mut Model, text: &str) -> Vec<Effect> {
+    let parsed = quickadd::parse(text, &model.now);
+    if parsed.title.trim().is_empty() {
+        model.toast(Toast::info("Nothing to add"));
+        return Vec::new();
+    }
+
+    let showing = match model.query.scope {
+        Scope::Project(id) => Some(id),
+        _ => None,
+    };
+    let Some(built) = quickadd_task(&parsed, &model.data.projects, &model.data.labels, showing)
+    else {
+        model.toast(Toast::error(match parsed.project.as_deref() {
+            Some(name) => format!("No project called \"{name}\""),
+            None => "No project to add to".to_string(),
+        }));
+        return Vec::new();
+    };
+
+    let title = built.task.title.clone();
+    let project = model
+        .project(built.task.project_id)
+        .map_or_else(String::new, |project| project.title.clone());
+    let mut effects = edit(
+        model,
+        Mutation::CreateTask {
+            task: Box::new(built.task),
+        },
+    );
+
+    let mut notes = Vec::new();
+    if !built.unknown_labels.is_empty() {
+        notes.push(format!(
+            "no label called {}",
+            built.unknown_labels.join(", ")
+        ));
+    }
+    if built.ambiguous_project {
+        notes.push(format!("more than one project is called {project}"));
+    }
+    model.toast(if notes.is_empty() {
+        Toast::info(format!("Added \"{title}\""))
+    } else {
+        Toast::warning(format!("Added \"{title}\" — {}", notes.join("; ")))
+    });
+    effects.push(Effect::LoadCounts);
+    effects
+}
+
+/// Which project a new task belongs to.
+///
+/// A named project wins; otherwise the one being shown; otherwise the Inbox, which is
+/// where Vikunja itself puts a task with nowhere else to go.
+fn project_for(
+    projects: &[Project],
+    named: Option<&str>,
+    showing: Option<ProjectId>,
+) -> Option<ProjectId> {
+    let real = || {
+        projects
+            .iter()
+            .filter(|project| project.id.get() > 0 && !project.is_archived)
+    };
+    if let Some(name) = named {
+        return real()
+            .find(|project| project.title.eq_ignore_ascii_case(name.trim()))
+            .map(|project| project.id);
+    }
+    if let Some(id) = showing {
+        return Some(id);
+    }
+    real()
+        .find(|project| project.title.eq_ignore_ascii_case("inbox"))
+        .or_else(|| real().next())
+        .map(|project| project.id)
+}
+
+/// Match label names against the ones that exist, and report the ones that do not.
+fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut missing = Vec::new();
+    for name in wanted {
+        match known
+            .iter()
+            .find(|label| label.title.eq_ignore_ascii_case(name.trim()))
+        {
+            Some(label) => found.push(label.clone()),
+            None => missing.push(name.clone()),
+        }
+    }
+    (found, missing)
 }
 
 /// Make a change: apply it, and remember how to take it back.

@@ -1,23 +1,23 @@
 criax  Work › List  Table  Kanban                                                                       ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  All tasks          4 │ Title                   Project    Labels   Due        │ Fix the token refresh that drops the
-  Favorites          2 │ Fix┌Keys──────────────────────────────────────────────────────────┐
-Projects               │ tha│Navigation                                                    │────────────────────────────
-▾ Home               1 │ Shi│  j / ↓       Move down                                       │ork
-    Errands            │ Ren│  k / ↑       Move up                                         │ORK-42
-  Work               3 │ A t│  C-d / PgDn  Page down                                       │ days ago
-                       │ all│  C-u / PgUp  Page up                                         │5
-                       │    │  g g / Home  Jump to the top                                 │urgent  backend
-                       │    │  G / End     Jump to the bottom                              │
-                       │    │  Tab         Focus the next pane                             │h call needs the cookie set
-                       │    │  S-Tab       Focus the previous pane                         │ogin.
-                       │    │  Esc         Back to the list, then out of a search          │
+  All tasks          4 │ Tit┌Keys──────────────────────────────────────────────────────────┐ken refresh that drops the
+  Favorites          2 │ Fix│Navigation                                                    │
+Projects               │ tha│  j / ↓       Move down                                       │────────────────────────────
+▾ Home               1 │ Shi│  k / ↑       Move up                                         │ork
+    Errands            │ Ren│  C-d / PgDn  Page down                                       │ORK-42
+  Work               3 │ A t│  C-u / PgUp  Page up                                         │ days ago
+                       │ all│  g g / Home  Jump to the top                                 │5
+                       │    │  G / End     Jump to the bottom                              │urgent  backend
+                       │    │  Tab         Focus the next pane                             │
+                       │    │  S-Tab       Focus the previous pane                         │h call needs the cookie set
+                       │    │  Esc         Back to the list, then out of a search          │ogin.
                        │    │  g p         Go to a project                                 │
                        │    │  g l         Go to a label                                   │
                        │    │  /           Search the current list                         │
                        │    │  Enter       Open the selected task                          │
                        │    │                                                              │
                        │    │Tasks                                                         │
+                       │    │  a           Add a task                                      │
                        │    │  d           Mark done, or not done                          │
                        │    │  u           Undo the last change                            │
                        │    │  C-r         Redo                                            │

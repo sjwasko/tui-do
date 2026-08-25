@@ -204,6 +204,8 @@ pub enum Action {
     GotoProject,
     /// Jump to a label by name.
     GotoLabel,
+    /// Add a task, typed in quick-add syntax.
+    AddTask,
     /// Mark the selected task done, or not done.
     ToggleDone,
     /// Take back the last change.
@@ -436,6 +438,13 @@ pub const KEYMAP: &[Binding] = &[
         context: Context::Global,
         group: Group::View,
         doc: "Previous column layout",
+    },
+    Binding {
+        keys: &[chord![Key::char('a')]],
+        action: Action::AddTask,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Add a task",
     },
     Binding {
         keys: &[chord![Key::char('d')]],
