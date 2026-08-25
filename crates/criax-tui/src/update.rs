@@ -12,7 +12,7 @@ use criax_core::SyncEvent;
 use crate::effect::Effect;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, HelpState, Modal, Outcome, Pick, PickerKind, PickerState, Submission, TextInput,
+    Candidate, HelpState, Modal, Outcome, Pick, PickerKind, PickerState, SearchState, Submission,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -144,6 +144,10 @@ fn on_key(model: &mut Model, key: Key) -> Vec<Effect> {
                 model.modals.pop();
                 on_submit(model, submission)
             }
+            // Applied without closing. The re-query is safe to fire on every keystroke
+            // precisely because of `QueryId`: answers to the text the user has already
+            // typed past are dropped rather than raced into the list.
+            Outcome::Update(submission) => on_submit(model, submission),
         };
     }
 
@@ -234,8 +238,9 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         Action::NextLayout => switch_layout(model, 1),
         Action::PreviousLayout => switch_layout(model, -1),
         Action::Search => {
-            let existing = model.query.search.clone().unwrap_or_default();
-            model.modals.push(Modal::Search(TextInput::new(existing)));
+            model
+                .modals
+                .push(Modal::Search(SearchState::new(model.query.search.clone())));
             Vec::new()
         }
         Action::GotoProject => {

@@ -378,29 +378,64 @@ fn switching_layout_re_queries_with_the_layouts_own_sort() {
 }
 
 #[test]
-fn searching_filters_the_query_and_escape_abandons_it() {
+fn the_list_narrows_while_the_search_is_still_being_typed() {
     let mut model = loaded();
     press(&mut model, '/');
     assert!(matches!(model.modals.last(), Some(Modal::Search(_))));
 
+    // Each keystroke re-queries, and the prompt stays open.
+    let after_b = press(&mut model, 'b');
+    assert!(loaded_query(&after_b).is_some());
+    assert_eq!(model.query.search.as_deref(), Some("b"));
+    assert_eq!(model.modals.len(), 1, "the prompt is still up");
+
+    let after_u = press(&mut model, 'u');
+    assert_eq!(model.query.search.as_deref(), Some("bu"));
+    assert_eq!(model.query.filter().search.as_deref(), Some("bu"));
+
+    // Every one of those queries has its own id, which is what makes firing them per
+    // keystroke safe: the answer to "b" cannot land after the answer to "bu".
+    assert_ne!(loaded_query(&after_b), loaded_query(&after_u));
+
+    // `q` is text here, not a quit.
+    press(&mut model, 'q');
+    assert!(model.running);
+    assert_eq!(model.query.search.as_deref(), Some("buq"));
+
+    press_code(&mut model, KeyCode::Enter);
+    assert!(model.modals.is_empty(), "Enter puts the prompt away");
+    assert_eq!(
+        model.query.search.as_deref(),
+        Some("buq"),
+        "and keeps the filter"
+    );
+}
+
+#[test]
+fn abandoning_a_search_puts_back_the_list_it_started_from() {
+    let mut model = loaded();
+    press(&mut model, '/');
     for c in "bug".chars() {
         press(&mut model, c);
     }
-    // `q` under a modal is text, not a quit.
-    assert!(model.running);
-
-    let effects = press_code(&mut model, KeyCode::Enter);
-    assert!(model.modals.is_empty());
+    press_code(&mut model, KeyCode::Enter);
     assert_eq!(model.query.search.as_deref(), Some("bug"));
-    assert_eq!(
-        loaded_query(&effects).map(|_| model.query.filter().search),
-        Some(Some("bug".to_string()))
-    );
 
+    // A second search, abandoned, leaves the first one in place rather than clearing it.
     press(&mut model, '/');
-    press(&mut model, 'x');
-    press_code(&mut model, KeyCode::Esc);
-    assert_eq!(model.query.search.as_deref(), Some("bug"), "unchanged");
+    for c in "zzz".chars() {
+        press(&mut model, c);
+    }
+    assert_eq!(model.query.search.as_deref(), Some("bugzzz"));
+
+    let effects = press_code(&mut model, KeyCode::Esc);
+    assert!(model.modals.is_empty());
+    assert_eq!(
+        model.query.search.as_deref(),
+        Some("bug"),
+        "restored, not cleared"
+    );
+    assert!(loaded_query(&effects).is_some());
 }
 
 #[test]

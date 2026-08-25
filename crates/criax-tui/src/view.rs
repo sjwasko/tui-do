@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::keymap::{help_rows, HelpRow};
-use crate::modal::{Modal, PickerState, TextInput};
+use crate::modal::{Modal, PickerState, SearchState, TextInput};
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
 use crate::rows::{self, MeasuredColumn, RowContext};
@@ -512,6 +512,14 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
 /// Draw one modal over whatever is underneath.
 fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
     let theme = model.theme;
+
+    // The search is a prompt, not a box. It filters as it is typed, so a panel in the
+    // middle of the screen would cover the very list the user is watching change.
+    if let Modal::Search(state) = modal {
+        search_prompt(model, state, frame);
+        return;
+    }
+
     let rows = match modal {
         Modal::Help(state) => help_rows(state.context),
         _ => Vec::new(),
@@ -555,14 +563,50 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
                 .collect();
             frame.render_widget(Paragraph::new(lines), inner);
         }
-        Modal::Search(input) => {
-            frame.render_widget(Paragraph::new(input_line(input, theme)), inner);
-            place_cursor(frame, inner, input, 2);
-        }
+        // Drawn as a prompt above, never as a box.
+        Modal::Search(_) => {}
         Modal::Picker(picker) => {
             picker_body(picker, frame, inner, theme);
         }
     }
+}
+
+/// The search prompt, along the status line, with a live count of what matches.
+fn search_prompt(model: &Model, state: &SearchState, frame: &mut Frame) {
+    let theme = model.theme;
+    let area = model.frames().status;
+    if area.height == 0 {
+        return;
+    }
+
+    let left = vec![
+        Span::styled("/", theme.accent()),
+        Span::styled(state.input.value().to_string(), theme.text()),
+    ];
+    let count = if model.data.loading {
+        String::new()
+    } else if state.input.value().is_empty() {
+        format!("{} tasks", model.data.tasks.len())
+    } else if model.data.tasks.len() == 1 {
+        "1 match".to_string()
+    } else {
+        format!("{} matches", model.data.tasks.len())
+    };
+    let right = vec![Span::styled(
+        format!("{count}  Enter:keep  Esc:cancel"),
+        theme.muted(),
+    )];
+    let padding = usize::from(
+        area.width
+            .saturating_sub(line_width(&left) + line_width(&right)),
+    );
+
+    let mut spans = fit(left, area.width.saturating_sub(line_width(&right) + 1));
+    spans.push(Span::raw(" ".repeat(padding)));
+    spans.extend(right);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    place_cursor(frame, area, &state.input, 1);
 }
 
 fn input_line(input: &TextInput, theme: Theme) -> Line<'static> {

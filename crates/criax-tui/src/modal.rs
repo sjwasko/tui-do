@@ -247,6 +247,30 @@ impl PickerState {
     }
 }
 
+/// An incremental search.
+///
+/// Holds what the list was filtered by *before* the search opened, because the results
+/// update as the user types: without it, `Esc` could only clear the filter, never restore
+/// the one they started from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchState {
+    /// What has been typed.
+    pub input: TextInput,
+    /// The filter to restore if the search is abandoned.
+    pub original: Option<String>,
+}
+
+impl SearchState {
+    /// A search that starts from `original`, prefilled with it.
+    #[must_use]
+    pub fn new(original: Option<String>) -> Self {
+        Self {
+            input: TextInput::new(original.clone().unwrap_or_default()),
+            original,
+        }
+    }
+}
+
 /// Help, rendered from the keymap table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HelpState {
@@ -261,8 +285,8 @@ pub struct HelpState {
 pub enum Modal {
     /// The key reference.
     Help(HelpState),
-    /// Searching the current list.
-    Search(TextInput),
+    /// Searching the current list, incrementally.
+    Search(SearchState),
     /// Choosing a project or a label.
     Picker(PickerState),
 }
@@ -276,6 +300,8 @@ pub enum Outcome {
     Dismiss,
     /// Close me and do this.
     Submit(Submission),
+    /// Do this, but stay open. What makes a search filter as it is typed.
+    Update(Submission),
 }
 
 /// What a modal asks `update` to do when it closes.
@@ -324,14 +350,22 @@ impl ModalView for HelpState {
     }
 }
 
-impl ModalView for TextInput {
+impl ModalView for SearchState {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
-            KeyCode::Esc => Outcome::Dismiss,
-            KeyCode::Enter => Outcome::Submit(Submission::Search(self.value().to_string())),
+            // Abandoning restores what was showing before, which is not the same as
+            // clearing: a search opened over an existing filter has one to go back to.
+            KeyCode::Esc => Outcome::Submit(Submission::Search(
+                self.original.clone().unwrap_or_default(),
+            )),
+            // The results are already filtered; Enter just gets the prompt out of the way.
+            KeyCode::Enter => Outcome::Dismiss,
             _ => {
-                self.press(key);
-                Outcome::Consumed
+                if self.input.press(key) {
+                    Outcome::Update(Submission::Search(self.input.value().to_string()))
+                } else {
+                    Outcome::Consumed
+                }
             }
         }
     }
@@ -483,18 +517,39 @@ mod tests {
     }
 
     #[test]
-    fn search_submits_its_text_and_escape_abandons_it() {
-        let mut modal = Modal::Search(TextInput::default());
-        modal.handle(key('b'));
-        modal.handle(key('u'));
-        modal.handle(key('g'));
+    fn a_search_filters_as_it_is_typed_and_enter_only_puts_the_prompt_away() {
+        let mut modal = Modal::Search(SearchState::new(None));
+        // Every keystroke asks for the narrower list, without closing.
         assert_eq!(
-            modal.handle(code(KeyCode::Enter)),
-            Outcome::Submit(Submission::Search("bug".to_string()))
+            modal.handle(key('b')),
+            Outcome::Update(Submission::Search("b".to_string()))
+        );
+        assert_eq!(
+            modal.handle(key('u')),
+            Outcome::Update(Submission::Search("bu".to_string()))
+        );
+        // The results are already filtered, so Enter has nothing left to apply.
+        assert_eq!(modal.handle(code(KeyCode::Enter)), Outcome::Dismiss);
+    }
+
+    #[test]
+    fn abandoning_a_search_restores_the_filter_it_opened_over() {
+        // Not the same as clearing: a search started over an existing filter has
+        // something to go back to, and typing has already replaced it.
+        let mut modal = Modal::Search(SearchState::new(Some("urgent".to_string())));
+        modal.handle(code(KeyCode::Backspace));
+        assert_eq!(
+            modal.handle(code(KeyCode::Esc)),
+            Outcome::Submit(Submission::Search("urgent".to_string()))
         );
 
-        let mut abandoned = Modal::Search(TextInput::default());
-        assert_eq!(abandoned.handle(code(KeyCode::Esc)), Outcome::Dismiss);
+        let mut fresh = Modal::Search(SearchState::new(None));
+        fresh.handle(key('x'));
+        assert_eq!(
+            fresh.handle(code(KeyCode::Esc)),
+            Outcome::Submit(Submission::Search(String::new())),
+            "an empty string clears the filter"
+        );
     }
 
     #[test]
