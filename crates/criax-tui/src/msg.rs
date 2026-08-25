@@ -45,6 +45,12 @@ pub enum Msg {
     /// The store answered with per-project task counts.
     CountsLoaded(ProjectCounts),
 
+    /// Something changed underneath the model; read it all again.
+    ///
+    /// Sent by the runtime after a write lands, so the list shows what was actually
+    /// stored rather than what the model optimistically drew.
+    Reload,
+
     /// A store read failed. The interface stays usable and says so.
     StoreFailed(String),
 

@@ -5,12 +5,16 @@
 //! runtime decides nothing — it looks up no state and makes no choice about what to load.
 
 use criax_core::models::ProjectId;
-use criax_core::store::{TaskFilter, TaskSort};
+use criax_core::store::{Mutation, TaskFilter, TaskSort};
 
 use crate::query::QueryId;
 
 /// A side effect requested by `update`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Eq` is deliberately absent: a `Mutation` carries a `Task`, and a task carries
+/// `percent_done`, which is a float. Tests compare these with `assert_eq!` on
+/// `PartialEq`, which is all they need.
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Effect {
     /// Read tasks, and answer with [`crate::Msg::TasksLoaded`] carrying `id`.
@@ -34,6 +38,14 @@ pub enum Effect {
 
     /// Remember the project to open on next launch. `None` means "everything".
     RememberProject(Option<ProjectId>),
+
+    /// Apply a change locally and queue it for the server.
+    ///
+    /// One effect for every kind of write, because `Store::queue` already does both
+    /// halves in a single transaction. The model has *already* applied it to its own
+    /// snapshot by the time this runs — a task list that waits for SQLite before showing
+    /// a tick is the lag this project exists to remove.
+    Apply(Mutation),
 
     /// Run a sync pass now rather than waiting for the timer.
     SyncNow,
