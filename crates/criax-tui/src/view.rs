@@ -450,15 +450,22 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
     if area.height == 0 {
         return;
     }
+    // A toast takes the whole line. The hints are always true and one `?` away; a
+    // transient message is neither, and cutting it in half loses exactly the part that
+    // tells the user what to do about it.
+    if let Some(toast) = &model.status.toast {
+        let style = match toast.level {
+            Level::Info => theme.accent(),
+            Level::Warning => theme.warning(),
+            Level::Error => theme.error(),
+        };
+        let text = rows::truncate(&toast.text, area.width);
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
+        return;
+    }
+
     let left = match &model.status.toast {
-        Some(toast) => vec![Span::styled(
-            toast.text.clone(),
-            match toast.level {
-                Level::Info => theme.accent(),
-                Level::Warning => theme.warning(),
-                Level::Error => theme.error(),
-            },
-        )],
+        Some(_) => Vec::new(),
         None => {
             let mut spans = vec![Span::styled(
                 format!("{} tasks", model.data.tasks.len()),

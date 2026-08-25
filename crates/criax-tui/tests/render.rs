@@ -320,7 +320,7 @@ fn an_unreachable_server_is_a_status_line_not_a_dead_screen() {
 }
 
 #[test]
-fn a_message_longer_than_the_terminal_does_not_walk_over_the_key_hints() {
+fn a_long_message_is_cut_to_the_line_rather_than_corrupting_it() {
     let mut model = fixture((80, 24));
     model.status.toast = Some(Toast::error(
         "Not syncing: config error in /home/swasko/.config/criax/token: could not read \
@@ -328,18 +328,27 @@ fn a_message_longer_than_the_terminal_does_not_walk_over_the_key_hints() {
     ));
     let drawn = draw(&model);
     let status = drawn.lines().last().unwrap_or_default();
-    assert!(
-        status.ends_with("?:help  /:search  g:go  q:quit"),
-        "{status}"
-    );
     assert!(status.chars().count() <= 80, "{status}");
+    assert!(status.ends_with('…'), "{status}");
     golden("80x24-long-message.txt", &draw(&model));
 }
 
 #[test]
-fn a_toast_takes_the_left_of_the_status_line() {
+fn a_toast_takes_the_whole_status_line() {
+    // The hints are always true and one `?` away. A message telling the user what to do
+    // about something is neither, and sharing the line cut it off mid-advice -- which is
+    // exactly how "hide it with z s" disappeared on a 70-column terminal.
     let mut model = fixture((80, 24));
-    model.status.toast = Some(Toast::info("compact: Just the title and when it is due"));
+    model.status.toast = Some(Toast::info(
+        "No room beside the sidebar at 70 columns — hide it with z s",
+    ));
+    let drawn = draw(&model);
+    let status = drawn.lines().last().unwrap_or_default();
+    assert!(status.contains("hide it with z s"), "{status}");
+    assert!(
+        !status.contains("?:help"),
+        "the hints stood aside: {status}"
+    );
     golden("80x24-toast.txt", &draw(&model));
 }
 

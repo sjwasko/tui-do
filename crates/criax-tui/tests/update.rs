@@ -251,19 +251,80 @@ fn collapsing_a_project_hides_its_children_and_expanding_restores_them() {
 #[test]
 fn a_resize_moves_an_auto_pane_but_leaves_a_pinned_one_alone() {
     let mut model = loaded();
-    assert!(model.panes.sidebar_visible(model.size.0));
+    assert!(model.sidebar_showing());
 
     update(&mut model, Msg::Resize(80, 30));
-    assert!(!model.panes.sidebar_visible(80), "auto follows the width");
+    assert!(!model.sidebar_showing(), "auto follows the width");
 
     press(&mut model, 'z');
     press(&mut model, 's');
     assert_eq!(model.panes.sidebar, PaneState::Shown);
-    assert!(model.panes.sidebar_visible(80));
+    assert!(model.sidebar_showing());
 
     update(&mut model, Msg::Resize(160, 40));
     update(&mut model, Msg::Resize(80, 30));
-    assert!(model.panes.sidebar_visible(80), "a pin survives a resize");
+    assert!(model.sidebar_showing(), "a pin survives a resize");
+}
+
+#[test]
+fn a_pane_that_cannot_fit_says_so_instead_of_doing_nothing() {
+    // The bug this exists for: on a narrow terminal `z p` set the pane to Shown, a second
+    // width rule kept it off screen, and nothing on screen explained why. Pressing a key
+    // and getting no response at all is indistinguishable from a broken keyboard.
+    let mut model = loaded();
+    update(&mut model, Msg::Resize(50, 30));
+    assert!(!model.preview_showing());
+
+    press(&mut model, 'z');
+    press(&mut model, 'p');
+    assert_eq!(
+        model.panes.preview,
+        PaneState::Shown,
+        "the intent is recorded"
+    );
+    assert!(!model.preview_showing(), "but there is genuinely no room");
+    let toast = model.status.toast.as_ref().expect("the user is told why");
+    assert!(toast.text.contains("No room"), "{}", toast.text);
+    assert!(toast.text.contains("50 columns"), "{}", toast.text);
+
+    // And widening honours the pin that was recorded while it could not be shown.
+    update(&mut model, Msg::Resize(120, 40));
+    assert!(model.preview_showing());
+}
+
+#[test]
+fn when_the_sidebar_is_what_is_in_the_way_the_message_says_so() {
+    // At 80 columns there is room for a preview, but not beside a sidebar -- which is
+    // laid out first. "Widen the terminal" would be true and useless.
+    let mut model = loaded();
+    update(&mut model, Msg::Resize(80, 30));
+    press(&mut model, 'z');
+    press(&mut model, 's');
+    assert!(model.sidebar_showing(), "pinned on at 80");
+
+    press(&mut model, 'z');
+    press(&mut model, 'p');
+    let toast = model.status.toast.as_ref().expect("the user is told why");
+    assert!(toast.text.contains("hide it with z s"), "{}", toast.text);
+
+    // And taking that advice works, without having to ask for the preview again.
+    press(&mut model, 'z');
+    press(&mut model, 's');
+    assert!(model.preview_showing());
+}
+
+#[test]
+fn a_pin_is_honoured_below_the_auto_breakpoint() {
+    // 90 columns is under the preview's auto minimum but has room for one, so asking for
+    // it works rather than being silently overruled.
+    let mut model = loaded();
+    update(&mut model, Msg::Resize(90, 30));
+    assert!(!model.preview_showing(), "auto keeps it off at this width");
+
+    press(&mut model, 'z');
+    press(&mut model, 'p');
+    assert!(model.preview_showing(), "asking for it works");
+    assert!(model.status.toast.is_none(), "and says nothing about room");
 }
 
 #[test]
@@ -278,12 +339,13 @@ fn hiding_the_focused_pane_moves_focus_rather_than_stranding_it() {
     assert_eq!(model.focus, Focus::List);
 
     // And a resize does the same -- even to a pinned sidebar, once the terminal is too
-    // narrow to honour the pin.
+    // narrow to lay one out at all. (50 columns still fits a 20-wide sidebar beside a
+    // 30-wide list; 45 does not.)
     press(&mut model, 'z');
     press(&mut model, 's');
     press_code(&mut model, KeyCode::BackTab);
     assert_eq!(model.focus, Focus::Sidebar);
-    update(&mut model, Msg::Resize(50, 30));
+    update(&mut model, Msg::Resize(45, 30));
     assert_eq!(model.focus, Focus::List);
 }
 
@@ -478,7 +540,7 @@ fn the_label_picker_filters_without_moving_the_sidebar_highlight() {
 #[test]
 fn the_command_palette_runs_an_action_by_name() {
     let mut model = loaded();
-    assert!(model.panes.sidebar_visible(model.size.0));
+    assert!(model.sidebar_showing());
 
     press(&mut model, ':');
     assert!(matches!(model.modals.last(), Some(Modal::Picker(_))));

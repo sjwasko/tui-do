@@ -21,4 +21,4 @@ criax  Work › List  Table  Kanban                               ⟳ synced 2m 
 
 
 
-Not syncing: config error in /home/swasko/.confi… ?:help  /:search  g:go  q:quit
+Not syncing: config error in /home/swasko/.config/criax/token: could not read t…
