@@ -40,30 +40,56 @@ pub fn view(model: &Model, frame: &mut Frame) {
 }
 
 /// Breadcrumb, view tabs and the sync indicator.
+///
+/// Everything here is optional except the breadcrumb and the sync state. On a phone
+/// terminal — Termux at 45 columns is the case this was written against — the tabs and
+/// the brand are the first things to go, in that order, because "which list am I looking
+/// at" and "is it talking to the server" are the only two questions the header answers
+/// that the rest of the screen does not.
 fn header(model: &Model, frame: &mut Frame, area: Rect) {
     if area.height == 0 {
         return;
     }
     let theme = model.theme;
-    let mut left = vec![
-        Span::styled("criax", theme.accent().add_modifier(Modifier::BOLD)),
-        Span::styled("  ", theme.text()),
-        Span::styled(breadcrumb(model), theme.text().add_modifier(Modifier::BOLD)),
-        Span::styled(" ", theme.text()),
-    ];
+    let right = sync_indicator(model);
+    // At least one column of gap, so the two halves never abut.
+    let room = area.width.saturating_sub(line_width(&right) + 1);
+
+    let brand = || {
+        vec![
+            Span::styled("criax", theme.accent().add_modifier(Modifier::BOLD)),
+            Span::styled("  ", theme.text()),
+        ]
+    };
+    let crumb = || {
+        vec![Span::styled(
+            breadcrumb(model),
+            theme.text().add_modifier(Modifier::BOLD),
+        )]
+    };
     // Only List is reachable today; Table and Kanban arrive with the views API, and the
     // strip is here from the start so they land in a place rather than a redesign.
-    left.push(Span::styled("› ", theme.muted()));
-    left.push(Span::styled(
-        "List",
-        theme.text().add_modifier(Modifier::UNDERLINED),
-    ));
-    left.push(Span::styled("  Table  Kanban", theme.muted()));
+    let tabs = || {
+        vec![
+            Span::styled(" › ", theme.muted()),
+            Span::styled("List", theme.text().add_modifier(Modifier::UNDERLINED)),
+            Span::styled("  Table  Kanban", theme.muted()),
+        ]
+    };
 
-    let right = sync_indicator(model);
-    let left = fit(left, area.width.saturating_sub(line_width(&right)));
-    let used = line_width(&left) + line_width(&right);
-    let padding = usize::from(area.width.saturating_sub(used));
+    let mut left: Vec<Span<'static>> = [brand(), crumb(), tabs()].concat();
+    if line_width(&left) > room {
+        left = [brand(), crumb()].concat();
+    }
+    if line_width(&left) > room {
+        left = crumb();
+    }
+    let left = fit(left, room);
+
+    let padding = usize::from(
+        area.width
+            .saturating_sub(line_width(&left) + line_width(&right)),
+    );
     let mut spans = left;
     spans.push(Span::raw(" ".repeat(padding)));
     spans.extend(right);
