@@ -138,6 +138,14 @@ pub enum SyncEvent {
         message: String,
     },
 
+    /// The push half finished, whether or not a pull follows.
+    ///
+    /// Separate from [`Self::Finished`] because a push can be asked for on its own — an
+    /// edit wants its one request sent, not seventy-eight pages fetched — and without
+    /// this the interface would have no way to learn that the sending it was told about
+    /// had ended.
+    Pushed(PushReport),
+
     /// A pass finished.
     Finished(SyncReport),
 
@@ -272,6 +280,7 @@ impl Sync {
             }
         }
 
+        self.emit(SyncEvent::Pushed(report));
         Ok(report)
     }
 

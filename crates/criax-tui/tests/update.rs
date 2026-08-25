@@ -782,6 +782,30 @@ fn a_modal_swallows_every_key_except_quit() {
 }
 
 #[test]
+fn a_push_on_its_own_ends_the_sending_it_started() {
+    // An edit asks for a push, not a full pass. Without its own event the header would
+    // sit on "sending" for ever and the queued count would never move.
+    let mut model = loaded();
+    update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Push)));
+    assert!(matches!(model.status.sync, SyncStatus::Working { .. }));
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Pushed(PushReport {
+            sent: 1,
+            rejected: 0,
+            deferred: 2,
+        })),
+    );
+    assert_eq!(model.status.sync, SyncStatus::Idle);
+    assert_eq!(model.status.queued, 2, "what is still waiting is visible");
+    assert_eq!(
+        model.status.last_sync, None,
+        "a push fetched nothing, so it cannot claim the list is current"
+    );
+}
+
+#[test]
 fn a_finished_sync_reloads_what_the_screen_is_showing() {
     let mut model = loaded();
     update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Pull)));
