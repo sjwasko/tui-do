@@ -234,6 +234,47 @@ fn the_command_palette() {
 }
 
 #[test]
+fn the_search_prompt_sits_on_the_status_line_and_counts_as_it_goes() {
+    // A panel in the middle of the screen would cover the list it is filtering.
+    let mut model = fixture((80, 24));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+    );
+    for c in "renew".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    // The store answers the narrowed query.
+    let id = model.query_id;
+    let matching: Vec<_> = model
+        .data
+        .tasks
+        .iter()
+        .filter(|task| task.title.to_lowercase().contains("renew"))
+        .cloned()
+        .collect();
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id,
+            tasks: matching,
+        },
+    );
+
+    let drawn = draw(&model);
+    let status = drawn.lines().last().unwrap_or_default();
+    assert!(status.starts_with("/renew"), "{status}");
+    assert!(status.contains("1 match"), "{status}");
+    assert!(status.contains("Esc:cancel"), "{status}");
+    // The list is still visible, which is the whole point.
+    assert!(drawn.contains("Renew the passport"));
+    golden("80x24-search.txt", &draw(&model));
+}
+
+#[test]
 fn a_filtered_view_says_how_to_leave_it() {
     // Finding your way out of a narrowed list should not require opening the help modal.
     let mut model = fixture((80, 24));
