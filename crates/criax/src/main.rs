@@ -41,12 +41,31 @@ struct Cli {
 /// Subcommands. Without one, criax starts the interface.
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Add a task, in quick-add syntax, without opening the interface.
+    ///
+    /// Applies locally and queues for the server, exactly as the interface does. If the
+    /// server cannot be reached the task is queued and the next run sends it, which is
+    /// the point: `criax add` works on a plane.
+    Add(AddArgs),
+
     /// Import a cria configuration into criax's own format.
     ///
     /// criax is a clean break rather than a drop-in replacement, so this is a one-way
     /// translation: it reads cria's config, writes criax's, and says what did not carry
     /// across.
     Migrate(MigrateArgs),
+}
+
+/// Options for `criax add`.
+#[derive(Debug, Args)]
+struct AddArgs {
+    /// The task, in quick-add syntax: `Call the VA *urgent !3 +Legal tomorrow`.
+    #[arg(required = true, num_args = 1.., value_name = "TEXT")]
+    text: Vec<String>,
+
+    /// Queue the task without trying to send it.
+    #[arg(long)]
+    offline: bool,
 }
 
 /// Options for `criax migrate`.
@@ -73,6 +92,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Command::Add(args)) => run_add(&args, cli.config.as_deref(), cli.i_know_this_is_prod),
         Some(Command::Migrate(args)) => run_migrate(&args, cli.config.as_deref()),
         None => start(cli),
     }
@@ -112,6 +132,29 @@ fn guard_production(url: &str, acknowledged: bool) -> anyhow::Result<()> {
         "{url} is the production server, which is read-only by policy.\n\
          Point server.url at the dev instance, or pass --i-know-this-is-prod if you mean it."
     )
+}
+
+/// Add a task from the command line.
+fn run_add(
+    args: &AddArgs,
+    config_override: Option<&Path>,
+    acknowledged: bool,
+) -> anyhow::Result<()> {
+    let path = Config::resolve_path(config_override)?;
+    let config =
+        Config::load(&path).with_context(|| format!("could not read {}", path.display()))?;
+    guard_production(&config.server.url, acknowledged)?;
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not start the async runtime")?
+        .block_on(runtime::add(
+            &config,
+            &path,
+            &args.text.join(" "),
+            args.offline,
+        ))
 }
 
 /// Translate a cria config and write it as criax's.

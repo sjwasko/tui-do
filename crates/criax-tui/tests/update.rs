@@ -645,6 +645,89 @@ fn applied(effects: &[Effect]) -> Option<&Mutation> {
 }
 
 #[test]
+fn quick_add_builds_the_task_the_syntax_describes() {
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![Label {
+            id: LabelId(4),
+            title: "urgent".to_string(),
+            ..Label::default()
+        }]),
+    );
+
+    press(&mut model, 'a');
+    for c in "Call the VA *urgent !3 +Personal".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    match applied(&effects).expect("a task was queued") {
+        Mutation::CreateTask { task } => {
+            assert_eq!(task.title, "Call the VA");
+            assert_eq!(task.priority, 3);
+            assert_eq!(task.project_id, ProjectId(3), "+Personal named it");
+            assert_eq!(task.labels.len(), 1);
+            assert_eq!(task.labels[0].id, LabelId(4));
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    // And it is on screen before the store has been told.
+    assert_eq!(model.data.tasks.first().unwrap().title, "Call the VA");
+    assert!(model.undo.len() == 1, "and it can be taken back");
+}
+
+#[test]
+fn a_task_with_no_project_named_lands_where_you_are_looking() {
+    let mut model = loaded();
+    press(&mut model, ':');
+    for c in "project".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    for c in "personal".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.query.scope, Scope::Project(ProjectId(3)));
+
+    press(&mut model, 'a');
+    for c in "Something".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("a task was queued") {
+        Mutation::CreateTask { task } => assert_eq!(task.project_id, ProjectId(3)),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
+    let mut model = loaded();
+    press(&mut model, 'a');
+    for c in "Thing *nosuchlabel".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the task was still created") {
+        Mutation::CreateTask { task } => assert!(task.labels.is_empty()),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("nosuchlabel"), "{}", toast.text);
+}
+
+#[test]
+fn an_empty_quick_add_creates_nothing() {
+    let mut model = loaded();
+    press(&mut model, 'a');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(applied(&effects).is_none());
+    assert!(model.undo.is_empty());
+}
+
+#[test]
 fn marking_done_shows_before_it_is_stored() {
     let mut model = loaded();
     assert!(!model.selected_task().unwrap().done);

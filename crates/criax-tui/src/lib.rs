@@ -50,5 +50,5 @@ pub use modal::{Modal, ModalView};
 pub use model::{Focus, Model, PaneState, Screen};
 pub use msg::Msg;
 pub use query::{Query, QueryId, Scope};
-pub use update::update;
+pub use update::{quickadd_task, update, QuickAdd};
 pub use view::view;

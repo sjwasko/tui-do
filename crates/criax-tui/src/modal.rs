@@ -287,6 +287,8 @@ pub enum Modal {
     Help(HelpState),
     /// Searching the current list, incrementally.
     Search(SearchState),
+    /// Typing a new task in quick-add syntax.
+    Add(TextInput),
     /// Choosing a project or a label.
     Picker(PickerState),
 }
@@ -311,6 +313,8 @@ pub enum Submission {
     Search(String),
     /// Do what the chosen candidate says.
     Picked(Pick),
+    /// Create a task from this quick-add text.
+    Add(String),
 }
 
 /// Behaviour every modal has.
@@ -347,6 +351,23 @@ impl ModalView for HelpState {
 
     fn title(&self) -> String {
         "Keys".to_string()
+    }
+}
+
+impl ModalView for TextInput {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            KeyCode::Esc => Outcome::Dismiss,
+            KeyCode::Enter => Outcome::Submit(Submission::Add(self.value().to_string())),
+            _ => {
+                self.press(key);
+                Outcome::Consumed
+            }
+        }
+    }
+
+    fn title(&self) -> String {
+        "Add a task".to_string()
     }
 }
 
@@ -420,6 +441,7 @@ impl Modal {
         match self {
             Self::Help(state) => state,
             Self::Search(state) => state,
+            Self::Add(state) => state,
             Self::Picker(state) => state,
         }
     }
@@ -435,6 +457,7 @@ impl Modal {
         match self {
             Self::Help(state) => state.title(),
             Self::Search(state) => state.title(),
+            Self::Add(state) => state.title(),
             Self::Picker(state) => state.title(),
         }
     }

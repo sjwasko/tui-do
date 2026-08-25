@@ -411,3 +411,102 @@ fn color_depth() -> ColorDepth {
     }
     ColorDepth::Ansi16
 }
+
+/// Add a task from the command line.
+///
+/// Shares everything that matters with the interface: the same parser, the same
+/// `Store::queue`, the same outbox. The only difference is that there is no screen to
+/// show it on, so it says what it did.
+///
+/// # Errors
+/// An unreadable store or config. A server that cannot be reached is **not** an error —
+/// the task is queued and the next run sends it, which is the whole point.
+pub async fn add(
+    config: &Config,
+    config_path: &std::path::Path,
+    text: &str,
+    offline: bool,
+) -> anyhow::Result<()> {
+    let store_path = Store::default_path().context("could not decide where to keep the store")?;
+    let store = Store::open(&store_path)
+        .await
+        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+
+    let parsed = criax_core::quickadd::parse(text, &chrono::Utc::now());
+    if parsed.title.trim().is_empty() {
+        anyhow::bail!("nothing to add");
+    }
+
+    let projects = store
+        .projects(ProjectFilter::default(), ProjectSort::default())
+        .await
+        .context("could not read the project list")?;
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap_or_default();
+
+    let built =
+        criax_tui::quickadd_task(&parsed, &projects, &labels, None).ok_or_else(|| match parsed
+            .project
+            .as_deref()
+        {
+            Some(name) => anyhow::anyhow!(
+                "no project called \"{name}\". criax has {} cached — run criax once to sync",
+                projects.len()
+            ),
+            None => anyhow::anyhow!("no project to add to; run criax once to sync the list"),
+        })?;
+
+    let title = built.task.title.clone();
+    let project_id = built.task.project_id;
+    let project = projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .map_or_else(|| project_id.to_string(), |project| project.title.clone());
+    store
+        .queue(criax_core::store::Mutation::CreateTask {
+            task: Box::new(built.task),
+        })
+        .await
+        .context("could not queue the task")?;
+
+    // Named with its id when the name is ambiguous, because a task added to the wrong
+    // Inbox is a task the user will not find.
+    if built.ambiguous_project {
+        println!(
+            "Added \"{title}\" to {project} (#{project_id}) — more than one project has that name"
+        );
+    } else {
+        println!("Added \"{title}\" to {project}");
+    }
+    if !built.unknown_labels.is_empty() {
+        println!(
+            "No label called {} — criax cannot create labels yet, so it was left off.",
+            built.unknown_labels.join(", ")
+        );
+    }
+
+    if offline {
+        println!("Queued. The next run will send it.");
+        return Ok(());
+    }
+
+    let (sync, problem) = build_sync(config, config_path, &store);
+    let Some(sync) = sync else {
+        println!(
+            "Queued. {}",
+            problem.unwrap_or_else(|| "Not syncing.".to_string())
+        );
+        return Ok(());
+    };
+    match sync.push().await {
+        Ok(report) if report.is_complete() => println!("Sent."),
+        // Not an error: the local store has it, the outbox has it, and the next run --
+        // interface or `criax add` -- sends it. Failing here would throw away a task the
+        // user has already been told was added.
+        Ok(report) => println!("Queued — {} still waiting to be sent.", report.deferred),
+        Err(error) => println!("Queued — could not reach the server: {error}"),
+    }
+    Ok(())
+}

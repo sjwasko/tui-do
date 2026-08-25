@@ -552,6 +552,10 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         search_prompt(model, state, frame);
         return;
     }
+    if let Modal::Add(input) = modal {
+        add_prompt(model, input, frame);
+        return;
+    }
 
     let rows = match modal {
         Modal::Help(state) => help_rows(state.context),
@@ -561,7 +565,9 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         // Sized to what it has to say, so adding a binding cannot silently push the last
         // one off the bottom -- which is exactly what binding Esc did.
         Modal::Help(_) => (64, rows.len() as u16 + 2),
-        Modal::Search(_) => (60, 3),
+        // Both draw as prompts and return before this is reached; the arm exists so
+        // adding a modal is a compile error until it has been given a size.
+        Modal::Search(_) | Modal::Add(_) => (60, 3),
         Modal::Picker(_) => (60, 16),
     };
     let area = centered(frame.area(), width, height);
@@ -596,12 +602,66 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
                 .collect();
             frame.render_widget(Paragraph::new(lines), inner);
         }
-        // Drawn as a prompt above, never as a box.
-        Modal::Search(_) => {}
+        // Drawn as prompts above, never as boxes.
+        Modal::Search(_) | Modal::Add(_) => {}
         Modal::Picker(picker) => {
             picker_body(picker, frame, inner, theme);
         }
     }
+}
+
+/// The quick-add prompt, with what the parser made of it shown as it is typed.
+///
+/// The syntax is only worth having if it is visible before the task exists. Typing
+/// `*urgent !3 +Legal tomorrow` and finding out afterwards what it meant is how magic
+/// syntax gets a bad name.
+fn add_prompt(model: &Model, input: &TextInput, frame: &mut Frame) {
+    let theme = model.theme;
+    let area = model.frames().status;
+    if area.height == 0 {
+        return;
+    }
+
+    let parsed = criax_core::quickadd::parse(input.value(), &model.now);
+    let mut summary: Vec<String> = Vec::new();
+    if let Some(project) = &parsed.project {
+        summary.push(format!("+{project}"));
+    }
+    for label in &parsed.labels {
+        summary.push(format!("*{label}"));
+    }
+    if let Some(priority) = parsed.priority {
+        summary.push(format!("P{priority}"));
+    }
+    if let Some(due) = parsed.due_date {
+        summary.push(format!("due {}", rows::relative_date(Some(due), model.now)));
+    }
+    if parsed.repeat.is_some() {
+        summary.push("repeats".to_string());
+    }
+
+    let right = if summary.is_empty() {
+        vec![Span::styled("Enter:add  Esc:cancel", theme.muted())]
+    } else {
+        vec![
+            Span::styled(summary.join(" · "), theme.accent()),
+            Span::styled("  Enter:add  Esc:cancel", theme.muted()),
+        ]
+    };
+    let left = vec![
+        Span::styled("+ ", theme.accent()),
+        Span::styled(input.value().to_string(), theme.text()),
+    ];
+    let padding = usize::from(
+        area.width
+            .saturating_sub(line_width(&left) + line_width(&right)),
+    );
+    let mut spans = fit(left, area.width.saturating_sub(line_width(&right) + 1));
+    spans.push(Span::raw(" ".repeat(padding)));
+    spans.extend(right);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    place_cursor(frame, area, input, 2);
 }
 
 /// The search prompt, along the status line, with a live count of what matches.

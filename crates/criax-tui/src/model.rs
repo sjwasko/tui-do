@@ -163,6 +163,16 @@ impl Toast {
         }
     }
 
+    /// A toast at [`Level::Warning`].
+    #[must_use]
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            level: Level::Warning,
+            ticks: Self::LIFETIME,
+        }
+    }
+
     /// A toast at [`Level::Error`].
     #[must_use]
     pub fn error(text: impl Into<String>) -> Self {
