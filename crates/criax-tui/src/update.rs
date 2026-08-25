@@ -5,7 +5,8 @@
 //! cannot touch a store — every one of those arrives as a [`Msg`] and leaves as an
 //! [`Effect`]. That is what keeps the render loop from ever blocking.
 
-use criax_core::models::{Project, ProjectId};
+use criax_core::models::{Project, ProjectId, Task};
+use criax_core::store::Mutation;
 use criax_core::sync::{Phase, Stage};
 use criax_core::SyncEvent;
 
@@ -71,6 +72,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.data.counts = counts;
             Vec::new()
         }
+        Msg::Reload => reload_everything(model),
         Msg::StoreFailed(message) => {
             model.data.loading = false;
             model.data.error = Some(message.clone());
@@ -281,6 +283,50 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             )));
             Vec::new()
         }
+        Action::ToggleDone => match model.selected_task() {
+            Some(task) => {
+                let mut after = task.clone();
+                after.done = !after.done;
+                // Vikunja stamps this itself, but the local row has to look right until
+                // the pull confirms it. A *repeating* task is the exception: the server
+                // advances its due date instead of marking it done, so the reload after
+                // the push is what makes that case true rather than this line.
+                after.done_at = if after.done {
+                    Some(model.now).into()
+                } else {
+                    None.into()
+                };
+                let text = if after.done { "Done" } else { "Not done" };
+                let mutation = Mutation::UpdateTask {
+                    before: Box::new(task.clone()),
+                    after: Box::new(after),
+                };
+                model.toast(Toast::info(text));
+                edit(model, mutation)
+            }
+            None => Vec::new(),
+        },
+        Action::Undo => match model.undo.pop() {
+            Some(mutation) => {
+                model.redo.push(mutation.inverse());
+                model.toast(Toast::info(undo_text(&mutation)));
+                apply(model, mutation)
+            }
+            None => {
+                model.toast(Toast::info("Nothing to undo"));
+                Vec::new()
+            }
+        },
+        Action::Redo => match model.redo.pop() {
+            Some(mutation) => {
+                model.undo.push(mutation.inverse());
+                apply(model, mutation)
+            }
+            None => {
+                model.toast(Toast::info("Nothing to redo"));
+                Vec::new()
+            }
+        },
         Action::SyncNow => {
             model.status.sync = SyncStatus::Working {
                 detail: "starting".to_string(),
@@ -512,6 +558,82 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     effects.push(Effect::LoadLabels);
     effects.push(Effect::LoadCounts);
     effects
+}
+
+/// Make a change: apply it, and remember how to take it back.
+///
+/// Every edit goes through here, so the undo stack cannot fall out of step with what was
+/// done — and a new edit clears the redo stack, as everywhere else.
+fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
+    model.undo.push(mutation.inverse());
+    model.redo.clear();
+    apply(model, mutation)
+}
+
+/// Apply a mutation to the model's own copy, and ask for it to be stored and queued.
+///
+/// The snapshot is changed here rather than waited for: the next frame already shows the
+/// tick. `Store::queue` does the durable half in one transaction, and the reload that
+/// follows is confirmation, not the mechanism.
+fn apply(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
+    apply_locally(model, &mutation);
+    vec![Effect::Apply(mutation)]
+}
+
+/// The optimistic edit, against the list the user is looking at.
+fn apply_locally(model: &mut Model, mutation: &Mutation) {
+    let tasks = &mut model.data.tasks;
+    match mutation {
+        Mutation::CreateTask { task } => {
+            // At the top, and selected, so it is visible the instant it exists. The
+            // reload puts it in its sorted place and the selection follows it there,
+            // which is what tracking the selection by id is for.
+            tasks.insert(0, (**task).clone());
+            model.list.selected = Some(task.id);
+            model.list.offset = 0;
+        }
+        Mutation::UpdateTask { after, .. } => {
+            if let Some(existing) = tasks.iter_mut().find(|task| task.id == after.id) {
+                *existing = (**after).clone();
+            }
+        }
+        Mutation::DeleteTask { before } => {
+            if let Some(at) = tasks.iter().position(|task| task.id == before.id) {
+                tasks.remove(at);
+                // The row that slid up into the gap, or the one above if it was last.
+                let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
+                model.list.selected = next.map(|task| task.id);
+            }
+        }
+        Mutation::AttachLabel { task, label } => {
+            if let Some(existing) = find(tasks, *task) {
+                if !existing.labels.iter().any(|held| held.id == label.id) {
+                    existing.labels.push((**label).clone());
+                }
+            }
+        }
+        Mutation::DetachLabel { task, label } => {
+            if let Some(existing) = find(tasks, *task) {
+                existing.labels.retain(|held| held.id != label.id);
+            }
+        }
+    }
+    keep_selection_visible(model);
+}
+
+fn find(tasks: &mut [Task], id: criax_core::models::TaskId) -> Option<&mut Task> {
+    tasks.iter_mut().find(|task| task.id == id)
+}
+
+/// What an undo just did, in words the user can check against the screen.
+fn undo_text(mutation: &Mutation) -> String {
+    match mutation {
+        Mutation::CreateTask { task } => format!("Undone — restored \"{}\"", task.title),
+        Mutation::DeleteTask { before } => format!("Undone — removed \"{}\"", before.title),
+        Mutation::UpdateTask { after, .. } => format!("Undone — \"{}\"", after.title),
+        Mutation::AttachLabel { label, .. } => format!("Undone — added {}", label.title),
+        Mutation::DetachLabel { label, .. } => format!("Undone — removed {}", label.title),
+    }
 }
 
 /// Why a pane the user just asked for did not appear.

@@ -14,7 +14,7 @@
 │  /           Search the current list      │
 │  Enter       Open the selected task       │
 │                                           │
-│View                                       │
-│  z s         Show or hide the sidebar     │
-│  z p         Show or hide the preview pane│
+│Tasks                                      │
+│  d           Mark done, or not done       │
+│  u           Undo the last change         │
 └───────────────────────────────────────────┘

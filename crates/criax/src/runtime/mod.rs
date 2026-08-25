@@ -200,9 +200,28 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
                 let _ = store.set_state(LAST_PROJECT, &value).await;
             });
         }
+        Effect::Apply(mutation) => {
+            let (store, tx) = (store.clone(), tx.clone());
+            let sync = sync.cloned();
+            tokio::spawn(async move {
+                if let Err(error) = store.queue(mutation).await {
+                    // The model has already shown the change. Saying the store refused it
+                    // is the only honest thing to do; the reload below puts the list back
+                    // to what was actually written.
+                    let _ = tx.send(Msg::StoreFailed(error.to_string()));
+                }
+                // Reload from the store rather than trusting the optimistic copy, then
+                // send it on its way. `spawn_sync` coalesces, so a burst of edits is one
+                // push rather than one each.
+                let _ = tx.send(Msg::Reload);
+                if let Some(sync) = sync {
+                    spawn_sync(sync, tx, Pass::Push);
+                }
+            });
+        }
         Effect::SyncNow => {
             if let Some(sync) = sync {
-                spawn_sync(Arc::clone(sync), tx.clone());
+                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Full);
             }
         }
         // The loop notices `model.running` rather than being killed from here, so the
@@ -249,13 +268,30 @@ fn build_sync(
     }
 }
 
+/// Which halves of a sync to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// Send queued changes and nothing else. What an edit asks for: it is one request per
+    /// entry, where a pull of this instance is seventy-eight pages.
+    Push,
+    /// Push, then pull. What the timer asks for.
+    Full,
+}
+
 /// Run one sync pass, forwarding its events into the loop.
-fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>) {
-    /// One pass at a time. A second timer tick while a slow pull is still running would
-    /// otherwise push the same queue twice.
+fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
+    /// One pass at a time. Two overlapping passes would push the same queue twice, and
+    /// the queue is ordered — an entry sent twice is a task created twice.
     static RUNNING: AtomicBool = AtomicBool::new(false);
+    /// An edit arrived while a pass was running. Without this, a change made during the
+    /// startup pull — which takes half a minute against 3,877 tasks — sits in the queue
+    /// until the five-minute timer comes round, and the user is told nothing.
+    static AGAIN: AtomicBool = AtomicBool::new(false);
 
     if RUNNING.swap(true, Ordering::SeqCst) {
+        if pass == Pass::Push {
+            AGAIN.store(true, Ordering::SeqCst);
+        }
         return;
     }
     tokio::spawn(async move {
@@ -270,7 +306,10 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>) {
         };
 
         let engine = (*sync).clone().with_events(events_tx);
-        let outcome = engine.once().await;
+        let outcome = match pass {
+            Pass::Push => engine.push().await.map(|_| ()),
+            Pass::Full => engine.once().await.map(|_| ()),
+        };
         if let Err(error) = outcome {
             let _ = tx.send(Msg::Sync(criax_core::SyncEvent::Failed {
                 phase: criax_core::sync::Phase::Pull,
@@ -279,6 +318,10 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>) {
         }
         forward.abort();
         RUNNING.store(false, Ordering::SeqCst);
+        // A push asked for while this pass was running still has to happen.
+        if AGAIN.swap(false, Ordering::SeqCst) {
+            spawn_sync(sync, tx, Pass::Push);
+        }
     });
 }
 
@@ -342,7 +385,7 @@ fn spawn_sync_timer(
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            spawn_sync(Arc::clone(&sync), tx.clone());
+            spawn_sync(Arc::clone(&sync), tx.clone(), Pass::Full);
         }
     });
 }

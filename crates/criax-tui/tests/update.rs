@@ -8,7 +8,7 @@
 use chrono::{TimeZone, Utc};
 use criax_core::config::columns::ColumnLayout;
 use criax_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
-use criax_core::store::{ProjectCounts, TaskCount, TaskOrder};
+use criax_core::store::{Mutation, ProjectCounts, TaskCount, TaskOrder};
 use criax_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use criax_core::{Config, SyncEvent};
 use criax_tui::keymap::Key;
@@ -635,6 +635,106 @@ fn quitting_from_the_palette_quits() {
     let effects = press_code(&mut model, KeyCode::Enter);
     assert!(!model.running);
     assert!(effects.contains(&Effect::Quit));
+}
+
+fn applied(effects: &[Effect]) -> Option<&Mutation> {
+    effects.iter().find_map(|effect| match effect {
+        Effect::Apply(mutation) => Some(mutation),
+        _ => None,
+    })
+}
+
+#[test]
+fn marking_done_shows_before_it_is_stored() {
+    let mut model = loaded();
+    assert!(!model.selected_task().unwrap().done);
+
+    let effects = press(&mut model, 'd');
+
+    // The frame after the keystroke already has it, without waiting for the store.
+    assert!(model.selected_task().unwrap().done);
+    assert!(model.selected_task().unwrap().done_at.get().is_some());
+
+    // And the durable half was asked for, carrying what it looked like before.
+    match applied(&effects).expect("a write was queued") {
+        Mutation::UpdateTask { before, after } => {
+            assert!(!before.done, "the rollback still has the old row");
+            assert!(after.done);
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn undo_queues_the_inverse_like_any_other_change() {
+    let mut model = loaded();
+    press(&mut model, 'd');
+    assert!(model.selected_task().unwrap().done);
+    assert_eq!(model.undo.len(), 1);
+
+    let effects = press(&mut model, 'u');
+    assert!(!model.selected_task().unwrap().done, "the list went back");
+    assert!(
+        applied(&effects).is_some(),
+        "undo is a queued mutation, not a parallel mechanism"
+    );
+    assert!(model.undo.is_empty());
+    assert_eq!(model.redo.len(), 1);
+}
+
+#[test]
+fn redo_puts_it_back_and_a_new_edit_clears_the_stack() {
+    let mut model = loaded();
+    press(&mut model, 'd');
+    press(&mut model, 'u');
+    assert_eq!(model.redo.len(), 1);
+
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+    );
+    assert!(model.selected_task().unwrap().done);
+    assert!(model.redo.is_empty());
+
+    press(&mut model, 'u');
+    press(&mut model, 'd');
+    assert!(model.redo.is_empty(), "a new edit clears what was undone");
+}
+
+#[test]
+fn undo_goes_back_as_far_as_the_session_does() {
+    let mut model = loaded();
+    for _ in 0..3 {
+        press(&mut model, 'd');
+        press(&mut model, 'j');
+    }
+    assert_eq!(model.undo.len(), 3);
+    assert_eq!(model.data.tasks.iter().filter(|task| task.done).count(), 3);
+
+    for _ in 0..3 {
+        press(&mut model, 'u');
+    }
+    assert_eq!(model.data.tasks.iter().filter(|task| task.done).count(), 0);
+    assert!(model.undo.is_empty());
+
+    // And the bottom of the stack says so rather than doing something arbitrary.
+    let effects = press(&mut model, 'u');
+    assert!(applied(&effects).is_none());
+    assert!(model
+        .status
+        .toast
+        .as_ref()
+        .is_some_and(|toast| toast.text.contains("Nothing to undo")));
+}
+
+#[test]
+fn a_write_is_reloaded_from_the_store_rather_than_trusted() {
+    let mut model = loaded();
+    press(&mut model, 'd');
+    // The runtime sends this once the write has landed.
+    let effects = update(&mut model, Msg::Reload);
+    assert!(loaded_query(&effects).is_some());
+    assert!(effects.contains(&Effect::LoadCounts));
 }
 
 #[test]

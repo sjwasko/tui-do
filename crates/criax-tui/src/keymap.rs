@@ -128,6 +128,8 @@ pub enum Context {
 pub enum Group {
     /// Moving around.
     Navigation,
+    /// Changing a task.
+    Task,
     /// Changing what is shown.
     View,
     /// Everything about the application itself.
@@ -140,6 +142,7 @@ impl Group {
     pub const fn heading(self) -> &'static str {
         match self {
             Self::Navigation => "Navigation",
+            Self::Task => "Tasks",
             Self::View => "View",
             Self::Application => "Application",
         }
@@ -148,7 +151,7 @@ impl Group {
     /// Every group, in the order help lists them.
     #[must_use]
     pub const fn all() -> &'static [Self] {
-        &[Self::Navigation, Self::View, Self::Application]
+        &[Self::Navigation, Self::Task, Self::View, Self::Application]
     }
 }
 
@@ -201,6 +204,12 @@ pub enum Action {
     GotoProject,
     /// Jump to a label by name.
     GotoLabel,
+    /// Mark the selected task done, or not done.
+    ToggleDone,
+    /// Take back the last change.
+    Undo,
+    /// Put back what was undone.
+    Redo,
     /// Sync now rather than waiting for the timer.
     SyncNow,
     /// Show the help modal.
@@ -427,6 +436,27 @@ pub const KEYMAP: &[Binding] = &[
         context: Context::Global,
         group: Group::View,
         doc: "Previous column layout",
+    },
+    Binding {
+        keys: &[chord![Key::char('d')]],
+        action: Action::ToggleDone,
+        context: Context::List,
+        group: Group::Task,
+        doc: "Mark done, or not done",
+    },
+    Binding {
+        keys: &[chord![Key::char('u')]],
+        action: Action::Undo,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Undo the last change",
+    },
+    Binding {
+        keys: &[chord![Key::ctrl('r')]],
+        action: Action::Redo,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Redo",
     },
     Binding {
         keys: &[chord![Key::char('r')]],

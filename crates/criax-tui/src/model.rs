@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use criax_core::config::columns::ColumnLayout;
 use criax_core::config::{Config, ViewConfig};
 use criax_core::models::{Label, Project, ProjectId, Task, TaskId};
-use criax_core::store::ProjectCounts;
+use criax_core::store::{Mutation, ProjectCounts};
 
 use crate::geometry::{self, Frames};
 use crate::keymap::{Context, Key};
@@ -267,6 +267,12 @@ pub struct Model {
     pub size: (u16, u16),
     /// The last time the runtime told us about. `update` never reads a clock.
     pub now: DateTime<Utc>,
+    /// Inverses of what has been done, newest last. Session-scoped: an inverse built
+    /// against yesterday's state would meet a task the server has changed since, and
+    /// lose in a way that is hard to explain.
+    pub undo: Vec<Mutation>,
+    /// Inverses of what has been undone. Cleared by any new edit.
+    pub redo: Vec<Mutation>,
     /// Cleared when the user quits; the runtime stops when this goes false.
     pub running: bool,
 }
@@ -328,6 +334,8 @@ impl Model {
             theme: Theme::default(),
             size,
             now,
+            undo: Vec::new(),
+            redo: Vec::new(),
             running: true,
         }
     }

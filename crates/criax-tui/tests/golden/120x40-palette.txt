@@ -15,10 +15,10 @@ Projects               │ that drops the cookie                                
                        │      │ Go to a label                                        g l │
                        │      │ Next column layout                                     L │
                        │      │ Previous column layout                                 H │
+                       │      │ Undo the last change                                   u │
                        │      │ Back to the list, then out of a search               Esc │
                        │      │ Show or hide completed tasks                           t │
                        │      │ Open the selected task                             Enter │
-                       │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
