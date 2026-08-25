@@ -428,3 +428,45 @@ fn a_chord_in_flight_is_visible() {
     assert_eq!(model.pending.len(), 1);
     golden("80x24-chord.txt", &draw(&model));
 }
+
+#[test]
+fn the_selection_stays_on_screen_when_rows_wrap() {
+    // Reported from a tiled Hyprland window: eighteen tasks in the inbox, ten drawn, and
+    // holding Down moved the preview through items 11-18 while the list never scrolled.
+    //
+    // A row wraps to as many as `rows::MAX_ROW_LINES` lines, so a body with room for
+    // eighteen *lines* holds far fewer *tasks*. The scroll maths counted lines, decided
+    // everything already fitted, and never moved the offset.
+    let mut model = fixture((80, 24));
+    model.data.tasks = (1..=18)
+        .map(|n| Task {
+            id: TaskId(n),
+            project_id: ProjectId(1),
+            title: format!(
+                "Task {n} - a title long enough that it has to wrap across more than \
+                 one line when the column is narrow"
+            ),
+            ..Task::default()
+        })
+        .collect();
+    model.list.selected = Some(TaskId(1));
+    model.list.offset = 0;
+
+    for _ in 0..17 {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        );
+    }
+    assert_eq!(
+        model.list.selected,
+        Some(TaskId(18)),
+        "the selection itself moved"
+    );
+
+    let screen = draw(&model);
+    assert!(
+        screen.contains("Task 18"),
+        "the selected task is not on the screen the user is looking at:\n{screen}"
+    );
+}

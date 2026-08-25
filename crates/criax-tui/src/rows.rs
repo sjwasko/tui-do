@@ -191,12 +191,7 @@ pub fn render(
                 .iter()
                 .map(|column| cell(task, column, context))
                 .collect();
-            let height = cells
-                .iter()
-                .map(|lines| lines.len() as u16)
-                .max()
-                .unwrap_or(1)
-                .clamp(1, MAX_ROW_LINES);
+            let height = height_of(&cells);
             RenderedRow {
                 task: task.id,
                 cells,
@@ -204,6 +199,85 @@ pub fn render(
             }
         })
         .collect()
+}
+
+/// How tall a row is, from cells that have already been laid out.
+fn height_of(cells: &[Vec<Line<'static>>]) -> u16 {
+    cells
+        .iter()
+        .map(|lines| lines.len() as u16)
+        .max()
+        .unwrap_or(1)
+        .clamp(1, MAX_ROW_LINES)
+}
+
+/// How tall one task's row would be, without keeping the row.
+///
+/// The scroll maths needs heights and nothing else. Going through the same `cell` code
+/// the renderer uses is the point: a second, cheaper estimate is exactly how the list
+/// came to show seven tasks while the selection was on the eighteenth.
+#[must_use]
+pub fn row_height(task: &Task, columns: &[MeasuredColumn], context: RowContext<'_>) -> u16 {
+    let cells: Vec<Vec<Line<'static>>> = columns
+        .iter()
+        .map(|column| cell(task, column, context))
+        .collect();
+    height_of(&cells)
+}
+
+/// How many whole rows fit in `height` lines, starting at `first`.
+///
+/// What a page motion should move by. Never zero: a row taller than the screen still
+/// counts as one, or paging would stop moving.
+#[must_use]
+pub fn fit(
+    tasks: &[Task],
+    columns: &[MeasuredColumn],
+    context: RowContext<'_>,
+    first: usize,
+    height: u16,
+) -> usize {
+    let mut used = 0;
+    let mut count = 0;
+    for task in tasks.iter().skip(first) {
+        let row = row_height(task, columns, context);
+        if count > 0 && used + row > height {
+            break;
+        }
+        used += row;
+        count += 1;
+    }
+    count.max(1)
+}
+
+/// The largest offset that still shows the row at `index` in full.
+///
+/// Walks back from the selected row, adding heights until one more would not fit. At
+/// most `height` rows are measured, because no row is shorter than a line.
+#[must_use]
+pub fn first_visible(
+    tasks: &[Task],
+    columns: &[MeasuredColumn],
+    context: RowContext<'_>,
+    index: usize,
+    height: u16,
+) -> usize {
+    let mut used = 0;
+    let mut first = index;
+    for candidate in (0..=index).rev() {
+        let Some(task) = tasks.get(candidate) else {
+            continue;
+        };
+        let row = row_height(task, columns, context);
+        // The selected row is kept whatever its height: one taller than the whole body
+        // is drawn from its top and clipped, which is what the renderer does too.
+        if candidate < index && used + row > height {
+            break;
+        }
+        used += row;
+        first = candidate;
+    }
+    first
 }
 
 /// One cell, wrapped or truncated to its column's width.
@@ -1017,5 +1091,63 @@ mod tests {
         );
         assert_eq!(rows[0].height, MAX_ROW_LINES);
         assert_eq!(rows[0].task, TaskId(1));
+    }
+
+    /// Eighteen tasks whose titles all wrap to the cap.
+    fn wrapping(count: i64) -> Vec<Task> {
+        (1..=count)
+            .map(|n| Task {
+                id: TaskId(n),
+                title: format!("task {n} one two three four five six seven"),
+                ..Task::default()
+            })
+            .collect()
+    }
+
+    fn narrow() -> Vec<MeasuredColumn> {
+        measure(
+            &layout(vec![ColumnSpec {
+                min_width: Some(10),
+                max_width: Some(10),
+                wrap: true,
+                ..ColumnSpec::new(Column::Title)
+            }]),
+            10,
+        )
+    }
+
+    fn plain_context() -> RowContext<'static> {
+        RowContext {
+            projects: &[],
+            theme: Theme::new(crate::theme::ColorDepth::TrueColor),
+            now: now(),
+        }
+    }
+
+    #[test]
+    fn what_fits_is_counted_in_rows_not_lines() {
+        // The whole bug: twelve lines of room, but every row is three lines tall, so
+        // four tasks fit -- not twelve.
+        let tasks = wrapping(18);
+        let context = plain_context();
+        assert_eq!(fit(&tasks, &narrow(), context, 0, 12), 4);
+    }
+
+    #[test]
+    fn a_selection_below_the_fold_pulls_the_offset_down_to_it() {
+        let tasks = wrapping(18);
+        let context = plain_context();
+        // Four rows fit, so showing the twelfth means starting at the ninth.
+        assert_eq!(first_visible(&tasks, &narrow(), context, 11, 12), 8);
+        assert_eq!(first_visible(&tasks, &narrow(), context, 17, 12), 14);
+    }
+
+    #[test]
+    fn a_row_taller_than_the_body_is_still_shown() {
+        // Otherwise the walk backwards finds nothing that fits and the list sticks.
+        let tasks = wrapping(4);
+        let context = plain_context();
+        assert_eq!(first_visible(&tasks, &narrow(), context, 2, 1), 2);
+        assert_eq!(fit(&tasks, &narrow(), context, 2, 1), 1);
     }
 }

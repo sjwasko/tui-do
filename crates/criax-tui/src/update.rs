@@ -12,6 +12,7 @@ use criax_core::sync::{Phase, Stage};
 use criax_core::SyncEvent;
 
 use crate::effect::Effect;
+use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
     Candidate, HelpState, Modal, Outcome, Pick, PickerKind, PickerState, SearchState, Submission,
@@ -20,6 +21,7 @@ use crate::modal::{
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
 use crate::query::{Scope, TASK_LIMIT};
+use crate::rows;
 use crate::sidebar::{self, SidebarTarget};
 
 /// Apply a message.
@@ -201,7 +203,16 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
 
 /// Perform an action.
 fn act(model: &mut Model, action: Action) -> Vec<Effect> {
-    let page = model.frames().list_rows().max(1) as isize;
+    // How many tasks are actually on screen, not how many lines there are. With wrapped
+    // rows those differ by a factor of three, and a page motion that used lines jumped
+    // over two screens of tasks for every one it showed.
+    let page = rows::fit(
+        &model.data.tasks,
+        &rows::measure(model.layout(), model.frames().list.width),
+        row_context(model),
+        model.list.offset,
+        body_height(model),
+    ) as isize;
     match action {
         Action::MoveDown => step(model, 1),
         Action::MoveUp => step(model, -1),
@@ -981,14 +992,43 @@ fn settle_focus(model: &mut Model) {
 
 /// Scroll the list so the selection is on screen.
 fn keep_selection_visible(model: &mut Model) {
-    let rows = model.frames().list_rows().max(1);
     let Some(index) = model.selected_index() else {
         model.list.offset = 0;
         return;
     };
     if index < model.list.offset {
         model.list.offset = index;
-    } else if index >= model.list.offset + rows {
-        model.list.offset = index + 1 - rows;
+        return;
+    }
+    // Counting rows as one line each is what broke this: a body with room for eighteen
+    // lines holds seven wrapped tasks, so the selection walked off the bottom of a list
+    // that had decided it was already showing everything.
+    let first = rows::first_visible(
+        &model.data.tasks,
+        &rows::measure(model.layout(), model.frames().list.width),
+        row_context(model),
+        index,
+        body_height(model),
+    );
+    if model.list.offset < first {
+        model.list.offset = first;
+    }
+}
+
+/// The lines available to task rows, once the column headings have taken theirs.
+fn body_height(model: &Model) -> u16 {
+    model
+        .frames()
+        .list
+        .height
+        .saturating_sub(geometry::LIST_HEADING_HEIGHT)
+}
+
+/// What the renderer would measure rows with.
+fn row_context(model: &Model) -> rows::RowContext<'_> {
+    rows::RowContext {
+        projects: &model.data.projects,
+        theme: model.theme,
+        now: model.now,
     }
 }
