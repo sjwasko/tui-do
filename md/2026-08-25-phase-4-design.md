@@ -65,6 +65,20 @@ Parses with the same `criax-core::quickadd`, applies and queues through the same
 queued and the next run syncs it — which is the whole local-first thesis, in a form that
 works from a script or a phone over ssh.
 
+**It reads names from the local store, and asks the server when that is not enough.**
+Resolving `+Legal` needs the project list, and local-first means reading it from a cache
+that may never have been filled — `criax add` on a fresh machine used to fail with a
+reachable server sitting right there. When a name matches nothing, it now pulls the
+project and label lists (one request each, against seventy-eight pages for the tasks) and
+tries again. That covers both an empty cache and one merely older than the project it
+names. Offline it still fails, and says which of the two it is.
+
+That is the one place where reading only from the local store was worse than asking the
+server, and it is worth being precise about why the rest of the write path is not: the
+outbox is an **ordered** queue, and a write that goes straight to the server jumps it. Add
+a task from a shell while an edit is queued in the interface and a direct write would land
+first — possibly before the create of the task that edit belongs to.
+
 Safe alongside a running TUI: the store is WAL with a 5s busy timeout, so the two
 processes do not fight. The TUI will not *show* the new task until its next sync or `r`,
 which is worth knowing but not worth a watcher.
