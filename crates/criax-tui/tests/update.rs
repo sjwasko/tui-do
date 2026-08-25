@@ -966,6 +966,113 @@ fn a_push_on_its_own_ends_the_sending_it_started() {
 }
 
 #[test]
+fn a_created_task_learns_the_id_the_server_gave_it() {
+    // B1, found by driving it: create a task, watch it appear in the web UI, then press
+    // `d` on it and get `404 This task does not exist` -- about the task just created.
+    //
+    // A created task holds a provisional, negative id until the server names it. The
+    // store swaps it, but an edit asks for a push-only pass, which ends in `Pushed` and
+    // does not reload -- so the interface went on holding -1 and sent `POST /tasks/-1`.
+    let mut model = loaded();
+    let provisional = TaskId(-1);
+    let created = task(-1, "new task");
+
+    // The state `apply_locally` leaves behind after `a`: at the top, selected, with its
+    // undo pushed.
+    model.data.tasks.insert(0, created.clone());
+    model.list.selected = Some(provisional);
+    model.undo.push(Mutation::DeleteTask {
+        before: Box::new(created),
+    });
+
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional,
+            assigned: TaskId(3901),
+        }),
+    );
+
+    assert_eq!(model.data.tasks[0].id, TaskId(3901), "the row on screen");
+    assert_eq!(
+        model.list.selected,
+        Some(TaskId(3901)),
+        "the selection, or the cursor jumps off the task just created"
+    );
+    match model.undo.last().expect("a create leaves an undo") {
+        Mutation::DeleteTask { before } => assert_eq!(
+            before.id,
+            TaskId(3901),
+            "`u` after a create must not ask the server to delete an id it never had"
+        ),
+        other => panic!("the create's inverse is a delete, not {other:?}"),
+    }
+    assert!(
+        loaded_query(&effects).is_some(),
+        "the store now holds the server's own row -- identifier, index, created"
+    );
+}
+
+#[test]
+fn an_edit_after_a_create_is_sent_against_the_id_the_server_knows() {
+    // The failure B1 actually saw, end to end: adopt, then press `d`.
+    let mut model = loaded();
+    model.data.tasks.insert(0, task(-1, "new task"));
+    model.list.selected = Some(TaskId(-1));
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: TaskId(-1),
+            assigned: TaskId(3901),
+        }),
+    );
+
+    let effects = press(&mut model, 'd');
+    let applied = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Apply(mutation) => Some(mutation),
+            _ => None,
+        })
+        .expect("`d` queues a change");
+    match applied {
+        Mutation::UpdateTask { before, after } => {
+            assert_eq!(after.id, TaskId(3901), "sent against the server's id");
+            assert_eq!(before.id, TaskId(3901), "and rolls back to the same row");
+            assert!(after.done, "and it is the done toggle");
+        }
+        other => panic!("`d` is an update, not {other:?}"),
+    }
+}
+
+#[test]
+fn an_adoption_leaves_a_task_it_does_not_name_alone() {
+    let mut model = loaded();
+    model.data.tasks.insert(0, task(-1, "new task"));
+    model.list.selected = Some(TaskId(2));
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: TaskId(-9),
+            assigned: TaskId(4000),
+        }),
+    );
+
+    assert_eq!(
+        model.data.tasks[0].id,
+        TaskId(-1),
+        "a different create waits"
+    );
+    assert_eq!(
+        model.list.selected,
+        Some(TaskId(2)),
+        "the selection stays put"
+    );
+}
+
+#[test]
 fn a_finished_sync_reloads_what_the_screen_is_showing() {
     let mut model = loaded();
     update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Pull)));

@@ -5,7 +5,7 @@
 //! cannot touch a store — every one of those arrives as a [`Msg`] and leaves as an
 //! [`Effect`]. That is what keeps the render loop from ever blocking.
 
-use criax_core::models::{Label, Project, ProjectId, Task};
+use criax_core::models::{Label, Project, ProjectId, Task, TaskId};
 use criax_core::quickadd;
 use criax_core::store::Mutation;
 use criax_core::sync::{Phase, Stage};
@@ -117,6 +117,10 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             model.toast(Toast::error(format!("{kind} rejected: {message}")));
             Vec::new()
         }
+        SyncEvent::Adopted {
+            provisional,
+            assigned,
+        } => adopt(model, provisional, assigned),
         SyncEvent::Pushed(report) => {
             // A push can be the whole pass, so this is where "sending" ends. `last_sync`
             // is deliberately not stamped: nothing was fetched, and "synced just now"
@@ -791,6 +795,34 @@ fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
     model.undo.push(mutation.inverse());
     model.redo.clear();
     apply(model, mutation)
+}
+
+/// Swap a provisional task id for the one the server gave it.
+///
+/// The store has already done this to its own rows and to anything still queued. What is
+/// left is everything the interface holds by id, and *all* of it has to move together:
+///
+/// * the row on screen, so the frame before the reload is not stale,
+/// * the selection, which is tracked by id precisely so it survives a reload,
+/// * the undo and redo stacks, whose mutations name the task they act on.
+///
+/// Missing any one of them sends the next edit to `/tasks/-14`, which the server answers
+/// `404 This task does not exist` — the task it just created. The undo stack is the one
+/// most easily forgotten: a create pushes a delete of the provisional id, so `u` right
+/// after creating a task would ask the server to delete something it never had.
+fn adopt(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<Effect> {
+    if let Some(task) = find(&mut model.data.tasks, provisional) {
+        task.id = assigned;
+    }
+    if model.list.selected == Some(provisional) {
+        model.list.selected = Some(assigned);
+    }
+    for mutation in model.undo.iter_mut().chain(model.redo.iter_mut()) {
+        mutation.retarget(provisional, assigned);
+    }
+    // The store now holds the server's own copy of the row -- its identifier, its index,
+    // its created stamp -- which the optimistic one never had.
+    reload_tasks(model)
 }
 
 /// Apply a mutation to the model's own copy, and ask for it to be stored and queued.

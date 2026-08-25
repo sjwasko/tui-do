@@ -138,6 +138,21 @@ pub enum SyncEvent {
         message: String,
     },
 
+    /// The server accepted a create and named the task.
+    ///
+    /// A created task carries a provisional, negative id until the server answers, and
+    /// the store swaps it for the real one. Anything still holding the provisional id is
+    /// then holding an id no server has ever seen: an edit made against it is sent as
+    /// `POST /tasks/-14` and comes back `404 This task does not exist`. The interface is
+    /// one such holder — its list, its selection and its undo stack — so the swap has to
+    /// be told, not inferred from a later pull that a push-only pass never runs.
+    Adopted {
+        /// The id the task had locally.
+        provisional: TaskId,
+        /// The id the server gave it.
+        assigned: TaskId,
+    },
+
     /// The push half finished, whether or not a pull follows.
     ///
     /// Separate from [`Self::Finished`] because a push can be asked for on its own — an
@@ -297,9 +312,17 @@ impl Sync {
 
         match (outcome, &entry.mutation) {
             (Sent::Created(assigned), Mutation::CreateTask { task }) => {
+                let (provisional, named) = (task.id, assigned.id);
                 self.store
-                    .settle_create(entry.id, task.id, *assigned)
+                    .settle_create(entry.id, provisional, *assigned)
                     .await?;
+                // After the store has swapped the id, never before: an interface that
+                // renumbered first and then met a store failure would be pointing at a
+                // row that does not exist.
+                self.emit(SyncEvent::Adopted {
+                    provisional,
+                    assigned: named,
+                });
             }
             (Sent::Updated(updated), Mutation::UpdateTask { after, .. }) => {
                 self.store.complete(entry.id).await?;
