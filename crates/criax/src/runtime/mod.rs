@@ -11,6 +11,7 @@
 
 mod terminal;
 
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -36,6 +37,17 @@ const TICK: Duration = Duration::from_secs(1);
 
 /// How long the input reader waits before checking whether it should stop.
 const INPUT_POLL: Duration = Duration::from_millis(100);
+
+/// How long the flush on exit waits between dots.
+const FLUSH_TICK: Duration = Duration::from_secs(1);
+
+/// How many dots the flush on exit prints before giving up, one a second.
+///
+/// This is the whole budget for the last push, so it is a deliberate trade: long
+/// enough that a slow-but-reachable server still lands the change, short enough
+/// that quitting offline does not feel like a hang. The change is not lost either
+/// way -- it stays in the outbox and goes out on the next run.
+const FLUSH_DOTS: u32 = 5;
 
 /// Run the interface until the user quits.
 ///
@@ -364,15 +376,36 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     }
 
     let changes = if pending == 1 { "change" } else { "changes" };
-    println!("Sending {pending} queued {changes}…");
-    match tokio::time::timeout(Duration::from_secs(10), (*sync).clone().push()).await {
-        Ok(Ok(report)) if report.is_complete() => println!("Sent."),
-        Ok(Ok(report)) => println!(
+    print!("Sending {pending} queued {changes}");
+    let _ = io::stdout().flush();
+
+    // A dot a second, rather than one message and a silent wait. On an unroutable
+    // server the push cannot answer, and a still screen there reads as a hang —
+    // which is the one thing this project is not allowed to look like. The dots
+    // are also the clock: when the last one lands, the wait is over.
+    let syncer = (*sync).clone();
+    let push = syncer.push();
+    tokio::pin!(push);
+    let mut outcome = None;
+    for _ in 0..FLUSH_DOTS {
+        tokio::select! {
+            answered = &mut push => { outcome = Some(answered); break }
+            () = tokio::time::sleep(FLUSH_TICK) => {
+                print!(".");
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+    println!();
+
+    match outcome {
+        Some(Ok(report)) if report.is_complete() => println!("Sent."),
+        Some(Ok(report)) => println!(
             "{} still queued; the next run will send them.",
             report.deferred
         ),
-        Ok(Err(error)) => println!("Still queued — could not reach the server: {error}"),
-        Err(_) => println!("Still queued — the server did not answer in time."),
+        Some(Err(error)) => println!("Still queued — could not reach the server: {error}"),
+        None => println!("Still queued — the server did not answer in time."),
     }
 }
 
