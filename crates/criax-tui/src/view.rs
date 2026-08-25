@@ -640,7 +640,15 @@ fn add_prompt(model: &Model, input: &TextInput, frame: &mut Frame) {
         summary.push("repeats".to_string());
     }
 
-    let right = if summary.is_empty() {
+    let right = if input.value().is_empty() {
+        // Nothing typed yet is exactly when the syntax is worth showing. There is no
+        // order to remember -- the parser takes these anywhere in the line -- so the
+        // legend is the whole of what there is to learn.
+        vec![Span::styled(
+            "*label  +project  !1-5  @user  a date   Esc:cancel",
+            theme.muted(),
+        )]
+    } else if summary.is_empty() {
         vec![Span::styled("Enter:add  Esc:cancel", theme.muted())]
     } else {
         vec![
