@@ -1,0 +1,18 @@
+# MANUAL-CHECKS A2 — a config pointing at production, so criax must refuse.
+#
+# This names the REAL prod host. It is safe to hand to criax only because the
+# guard fires before anything opens a socket (main.rs:116 for the interface,
+# main.rs:146 for `add`), so a refusal means no traffic reached sw-hp2.
+#
+# Do NOT pair this file with --i-know-this-is-prod. Use a2-prod-unroutable.yaml
+# for that half of the check — see the README.
+server:
+  url: https://sw-hp2.tail9803a5.ts.net:8443
+  token_file: ~/.config/criax/token
+
+sync:
+  interval_seconds: 300
+  enabled: true
+
+view:
+  active_layout: default
