@@ -1,0 +1,40 @@
+criax  Work › List  Table  Kanban                                                             ⟳ synced 2m ago
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  All tasks        4 │ Title                                  Project            Labels           Due
+  Favorites        2 │ Fix the token refresh that drops the   Work                urgent …        2 days ago
+Projects             │ cookie
+▾ Home             1 │ Ship the release                       Work                                Tomorrow
+    Errands          │ Renew the passport                     Home                backend         Sep 23
+  Work             3 │ A task with no date at all             Work                                —
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
+                     │
++ Call the VA *urgent !3 tomorrow                           *urgent · P3 · due Tomorrow  Enter:add  Esc:cancel

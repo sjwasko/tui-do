@@ -339,6 +339,35 @@ fn a_phone_terminal_can_still_read_the_help() {
 }
 
 #[test]
+fn the_add_prompt_teaches_the_syntax_and_then_shows_the_parse() {
+    let mut model = fixture((110, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+    );
+    // Nothing typed: the legend, because there is no order to remember and the sigils
+    // are the whole of what there is to learn.
+    let empty = draw(&model);
+    let status = empty.lines().last().unwrap_or_default();
+    assert!(status.contains("*label"), "{status}");
+    assert!(status.contains("!1-5"), "{status}");
+
+    for c in "Call the VA *urgent !3 tomorrow".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    let typed = draw(&model);
+    let status = typed.lines().last().unwrap_or_default();
+    assert!(status.starts_with("+ Call the VA"), "{status}");
+    assert!(status.contains("*urgent"), "{status}");
+    assert!(status.contains("P3"), "{status}");
+    assert!(status.contains("due Tomorrow"), "{status}");
+    golden("110x40-add.txt", &draw(&model));
+}
+
+#[test]
 fn an_empty_list_says_which_kind_of_empty_it_is() {
     let mut model = fixture((80, 24));
     let id = model.query_id;
