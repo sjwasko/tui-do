@@ -60,12 +60,16 @@ pub enum PaneState {
 }
 
 impl PaneState {
-    /// Whether the pane shows at this width, given its own breakpoints.
+    /// Whether the user wants this pane at this width.
+    ///
+    /// Intent, not visibility. Whether there is *room* is [`crate::geometry::frames`]'s
+    /// decision and only its decision — a second width rule here is how `z p` came to set
+    /// a pane to `Shown` that never appeared, with nothing on screen to say why.
     #[must_use]
-    pub const fn visible(self, width: u16, auto_min: u16, hard_min: u16) -> bool {
+    pub const fn wanted(self, width: u16, auto_min: u16) -> bool {
         match self {
             Self::Auto => width >= auto_min,
-            Self::Shown => width >= hard_min,
+            Self::Shown => true,
             Self::Hidden => false,
         }
     }
@@ -91,24 +95,16 @@ pub struct Panes {
 }
 
 impl Panes {
-    /// Whether the sidebar shows at this width.
+    /// Whether the sidebar is wanted at this width.
     #[must_use]
-    pub const fn sidebar_visible(self, width: u16) -> bool {
-        self.sidebar.visible(
-            width,
-            geometry::SIDEBAR_AUTO_MIN,
-            geometry::SIDEBAR_HARD_MIN,
-        )
+    pub const fn sidebar_wanted(self, width: u16) -> bool {
+        self.sidebar.wanted(width, geometry::SIDEBAR_AUTO_MIN)
     }
 
-    /// Whether the preview shows at this width.
+    /// Whether the preview is wanted at this width.
     #[must_use]
-    pub const fn preview_visible(self, width: u16) -> bool {
-        self.preview.visible(
-            width,
-            geometry::PREVIEW_AUTO_MIN,
-            geometry::PREVIEW_HARD_MIN,
-        )
+    pub const fn preview_wanted(self, width: u16) -> bool {
+        self.preview.wanted(width, geometry::PREVIEW_AUTO_MIN)
     }
 }
 
@@ -351,18 +347,32 @@ impl Model {
         geometry::frames(
             width,
             height,
-            self.panes.sidebar_visible(width),
-            self.preview_visible(),
+            self.panes.sidebar_wanted(width),
+            self.preview_wanted(),
         )
     }
 
-    /// Whether the preview pane is showing.
+    /// Whether the preview pane is wanted *and* has something to show.
     ///
     /// It needs something to preview: an empty list would otherwise draw an empty box
     /// where a third of the task list used to be.
     #[must_use]
-    pub fn preview_visible(&self) -> bool {
-        self.panes.preview_visible(self.size.0) && self.selected_task().is_some()
+    pub fn preview_wanted(&self) -> bool {
+        self.panes.preview_wanted(self.size.0) && self.selected_task().is_some()
+    }
+
+    /// Whether the sidebar is actually on screen.
+    ///
+    /// Asks the layout rather than the pane state, so "is it showing" has one answer.
+    #[must_use]
+    pub fn sidebar_showing(&self) -> bool {
+        self.frames().sidebar.is_some()
+    }
+
+    /// Whether the preview is actually on screen.
+    #[must_use]
+    pub fn preview_showing(&self) -> bool {
+        self.frames().preview.is_some()
     }
 
     /// The selected task, if it is still in the list.
@@ -447,22 +457,19 @@ mod tests {
     }
 
     #[test]
-    fn an_auto_pane_follows_the_width_and_a_pinned_one_does_not() {
+    fn an_auto_pane_follows_the_width_and_a_pinned_one_is_never_second_guessed() {
         let auto = PaneState::Auto;
-        assert!(auto.visible(120, geometry::SIDEBAR_AUTO_MIN, geometry::SIDEBAR_HARD_MIN));
-        assert!(!auto.visible(80, geometry::SIDEBAR_AUTO_MIN, geometry::SIDEBAR_HARD_MIN));
+        assert!(auto.wanted(120, geometry::SIDEBAR_AUTO_MIN));
+        assert!(!auto.wanted(80, geometry::SIDEBAR_AUTO_MIN));
 
+        // A pin is intent, and intent does not depend on the width. Whether there is room
+        // is `geometry::frames`'s call and nobody else's -- a second width rule here is
+        // what made `z p` set a pane that never appeared.
         let pinned = PaneState::Shown;
-        assert!(pinned.visible(80, geometry::SIDEBAR_AUTO_MIN, geometry::SIDEBAR_HARD_MIN));
+        assert!(pinned.wanted(80, geometry::SIDEBAR_AUTO_MIN));
+        assert!(pinned.wanted(40, geometry::SIDEBAR_AUTO_MIN));
 
-        // Even pinned, it yields when there is genuinely no room.
-        assert!(!pinned.visible(50, geometry::SIDEBAR_AUTO_MIN, geometry::SIDEBAR_HARD_MIN));
-
-        assert!(!PaneState::Hidden.visible(
-            200,
-            geometry::SIDEBAR_AUTO_MIN,
-            geometry::SIDEBAR_HARD_MIN
-        ));
+        assert!(!PaneState::Hidden.wanted(200, geometry::SIDEBAR_AUTO_MIN));
     }
 
     #[test]

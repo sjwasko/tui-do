@@ -21,4 +21,4 @@ criax  Work › List  Table  Kanban                               ⟳ synced 2m 
 
 
 
-compact: Just the title and when it is due        ?:help  /:search  g:go  q:quit
+No room beside the sidebar at 70 columns — hide it with z s

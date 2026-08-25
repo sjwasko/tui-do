@@ -215,15 +215,26 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::ToggleSidebar => {
-            let visible = model.panes.sidebar_visible(model.size.0);
-            model.panes.sidebar = model.panes.sidebar.toggled(visible);
+            let showing = model.sidebar_showing();
+            model.panes.sidebar = model.panes.sidebar.toggled(showing);
             settle_focus(model);
+            if !showing && !model.sidebar_showing() {
+                model.toast(Toast::info(no_room(Pane::Sidebar, model)));
+            }
             Vec::new()
         }
         Action::TogglePreview => {
-            let visible = model.preview_visible();
-            model.panes.preview = model.panes.preview.toggled(visible);
+            let showing = model.preview_showing();
+            model.panes.preview = model.panes.preview.toggled(showing);
             settle_focus(model);
+            if !showing && !model.preview_showing() {
+                let reason = if model.selected_task().is_none() {
+                    "No task selected to preview".to_string()
+                } else {
+                    no_room(Pane::Preview, model)
+                };
+                model.toast(Toast::info(reason));
+            }
             Vec::new()
         }
         Action::ToggleDoneTasks => {
@@ -503,6 +514,41 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     effects
 }
 
+/// Why a pane the user just asked for did not appear.
+///
+/// A toggle that silently does nothing is indistinguishable from a broken keyboard. This
+/// is the whole reason `Shown` no longer carries a width rule of its own: the layout is
+/// the only thing that knows there is no room, so the layout is what gets asked, and the
+/// user gets told.
+///
+/// And told something they can act on. The sidebar is laid out first, so on a middling
+/// terminal it is usually the sidebar — not the width — standing between the user and a
+/// preview, and "widen the terminal" would be true but useless advice.
+fn no_room(pane: Pane, model: &Model) -> String {
+    let (width, height) = model.size;
+    let alone = crate::geometry::frames(width, height, false, true);
+    if pane == Pane::Preview && alone.preview.is_some() {
+        return format!("No room beside the sidebar at {width} columns — hide it with z s");
+    }
+    format!("No room for the {pane} at {width} columns — widen the terminal")
+}
+
+/// Which optional pane a message is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pane {
+    Sidebar,
+    Preview,
+}
+
+impl std::fmt::Display for Pane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Sidebar => "sidebar",
+            Self::Preview => "preview",
+        })
+    }
+}
+
 /// Back out one level.
 ///
 /// Esc is the key every terminal user reaches for to undo the last narrowing, and until
@@ -525,10 +571,10 @@ fn back(model: &mut Model) -> Vec<Effect> {
 /// Move focus to the next visible pane.
 fn cycle_focus(model: &mut Model, forward: bool) {
     let mut panes = vec![Focus::List];
-    if model.panes.sidebar_visible(model.size.0) {
+    if model.sidebar_showing() {
         panes.insert(0, Focus::Sidebar);
     }
-    if model.preview_visible() {
+    if model.preview_showing() {
         panes.push(Focus::Preview);
     }
     let at = panes
@@ -547,8 +593,8 @@ fn cycle_focus(model: &mut Model, forward: bool) {
 /// Move focus off a pane that is no longer showing.
 fn settle_focus(model: &mut Model) {
     let stranded = match model.focus {
-        Focus::Sidebar => !model.panes.sidebar_visible(model.size.0),
-        Focus::Preview => !model.preview_visible(),
+        Focus::Sidebar => !model.sidebar_showing(),
+        Focus::Preview => !model.preview_showing(),
         Focus::List => false,
     };
     if stranded {

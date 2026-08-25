@@ -12,15 +12,6 @@ pub const SIDEBAR_AUTO_MIN: u16 = 100;
 /// Below this width the preview hides itself when it is on `Auto`.
 pub const PREVIEW_AUTO_MIN: u16 = 120;
 
-/// Below this width the sidebar cannot show at all, even pinned.
-///
-/// A pinned pane still yields when there is genuinely no room: honouring the pin at 50
-/// columns would leave a task list too narrow to read a title in.
-pub const SIDEBAR_HARD_MIN: u16 = 60;
-
-/// Below this width the preview cannot show at all, even pinned.
-pub const PREVIEW_HARD_MIN: u16 = 70;
-
 /// The breadcrumb-and-tabs strip, plus the rule under it.
 pub const HEADER_HEIGHT: u16 = 2;
 
