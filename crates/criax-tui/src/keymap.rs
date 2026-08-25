@@ -208,6 +208,8 @@ pub enum Action {
     AddTask,
     /// Mark the selected task done, or not done.
     ToggleDone,
+    /// Delete the selected task.
+    DeleteTask,
     /// Take back the last change.
     Undo,
     /// Put back what was undone.
@@ -449,9 +451,19 @@ pub const KEYMAP: &[Binding] = &[
     Binding {
         keys: &[chord![Key::char('d')]],
         action: Action::ToggleDone,
-        context: Context::List,
+        // Global, not list-only: the selected task exists whichever pane has focus, and
+        // a key that quietly does nothing because the sidebar is focused is a key the
+        // user reports as broken.
+        context: Context::Global,
         group: Group::Task,
         doc: "Mark done, or not done",
+    },
+    Binding {
+        keys: &[chord![Key::char('x')]],
+        action: Action::DeleteTask,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Delete the task",
     },
     Binding {
         keys: &[chord![Key::char('u')]],

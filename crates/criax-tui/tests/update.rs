@@ -749,6 +749,83 @@ fn marking_done_shows_before_it_is_stored() {
 }
 
 #[test]
+fn deleting_takes_the_row_out_and_moves_the_cursor_on() {
+    let mut model = loaded();
+    press(&mut model, 'j');
+    assert_eq!(selected_title(&model), "second");
+
+    let effects = press(&mut model, 'x');
+    assert_eq!(model.data.tasks.len(), 2, "gone from the list at once");
+    assert_eq!(
+        selected_title(&model),
+        "third",
+        "the cursor took the row that slid up, not nothing"
+    );
+    match applied(&effects).expect("a delete was queued") {
+        Mutation::DeleteTask { before } => assert_eq!(before.title, "second"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    assert!(model
+        .status
+        .toast
+        .as_ref()
+        .is_some_and(|toast| toast.text.contains("u to undo")));
+}
+
+#[test]
+fn deleting_the_last_row_falls_back_to_the_one_above() {
+    let mut model = loaded();
+    press(&mut model, 'G');
+    assert_eq!(selected_title(&model), "third");
+    press(&mut model, 'x');
+    assert_eq!(selected_title(&model), "second");
+}
+
+#[test]
+fn undoing_a_delete_re_creates_the_task() {
+    let mut model = loaded();
+    press(&mut model, 'x');
+    assert_eq!(model.data.tasks.len(), 2);
+
+    let effects = press(&mut model, 'u');
+    assert_eq!(model.data.tasks.len(), 3);
+    // Vikunja has no undelete, so the inverse of a delete is a create -- which is why the
+    // task comes back with a new id once the server has seen it.
+    match applied(&effects).expect("a create was queued") {
+        Mutation::CreateTask { task } => assert_eq!(task.title, "first"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_task_key_with_nothing_selected_says_so() {
+    let mut model = loaded();
+    let id = model.query_id;
+    update(&mut model, Msg::TasksLoaded { id, tasks: vec![] });
+
+    for key in ['d', 'x'] {
+        model.status.toast = None;
+        let effects = press(&mut model, key);
+        assert!(applied(&effects).is_none());
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(toast.text.contains("No task selected"), "{}", toast.text);
+    }
+}
+
+#[test]
+fn a_task_key_works_from_whichever_pane_has_focus() {
+    // `d` was list-only, so it did nothing at all with the sidebar focused -- which
+    // reads as a broken key rather than a scoped one.
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::BackTab);
+    assert_eq!(model.focus, Focus::Sidebar);
+
+    let effects = press(&mut model, 'd');
+    assert!(applied(&effects).is_some());
+    assert!(model.data.tasks.iter().any(|task| task.done));
+}
+
+#[test]
 fn undo_queues_the_inverse_like_any_other_change() {
     let mut model = loaded();
     press(&mut model, 'd');

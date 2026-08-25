@@ -298,6 +298,26 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             model.modals.push(Modal::Add(TextInput::default()));
             Vec::new()
         }
+        Action::DeleteTask => match model.selected_task() {
+            Some(task) => {
+                let before = task.clone();
+                // No confirmation, deliberately: a dialog asks the user to predict a
+                // mistake, undo lets them recognise one. The caveat is real and goes in
+                // the message -- Vikunja has no undelete, so undo re-creates the task
+                // and it comes back with a new id.
+                model.toast(Toast::warning(format!(
+                    "Deleted \"{}\" — u to undo",
+                    truncated(&before.title)
+                )));
+                edit(
+                    model,
+                    Mutation::DeleteTask {
+                        before: Box::new(before),
+                    },
+                )
+            }
+            None => nothing_selected(model),
+        },
         Action::ToggleDone => match model.selected_task() {
             Some(task) => {
                 let mut after = task.clone();
@@ -319,7 +339,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 model.toast(Toast::info(text));
                 edit(model, mutation)
             }
-            None => Vec::new(),
+            None => nothing_selected(model),
         },
         Action::Undo => match model.undo.pop() {
             Some(mutation) => {
@@ -747,6 +767,20 @@ fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String
         }
     }
     (found, missing)
+}
+
+/// Say why a task key did nothing.
+///
+/// It does nothing for a good reason -- an empty list, or a filter that matched none --
+/// but a key press that produces no response at all reads as a broken binding.
+fn nothing_selected(model: &mut Model) -> Vec<Effect> {
+    model.toast(Toast::info("No task selected"));
+    Vec::new()
+}
+
+/// A title short enough to sit in a message beside other words.
+fn truncated(title: &str) -> String {
+    crate::rows::truncate(title, 40)
 }
 
 /// Make a change: apply it, and remember how to take it back.

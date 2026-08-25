@@ -12,7 +12,7 @@
 mod terminal;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -95,6 +95,12 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
 
     let result = event_loop(&mut model, &mut guard, rx, &tx, &store, sync.as_ref()).await;
     stop.store(true, Ordering::SeqCst);
+
+    // The terminal goes back to the user before anything is printed to it.
+    drop(guard);
+    if let Some(sync) = &sync {
+        flush_on_exit(&store, sync).await;
+    }
     result
 }
 
@@ -294,7 +300,7 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
         }
         return;
     }
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let forward = {
             let tx = tx.clone();
@@ -323,6 +329,51 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
             spawn_sync(sync, tx, Pass::Push);
         }
     });
+    if let Ok(mut slot) = in_flight().lock() {
+        *slot = Some(handle);
+    }
+}
+
+/// The pass currently running, so quitting can stop waiting for it.
+fn in_flight() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
+    static IN_FLIGHT: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(None))
+}
+
+/// Send whatever is still queued before the process ends.
+///
+/// Without this, an edit made in the first half-minute waits behind the startup pull —
+/// seventy-eight pages against this instance — and quitting leaves it queued until the
+/// next launch. Nothing is lost either way, but a task marked done that the server has
+/// not heard about is a bad thing to walk away from.
+///
+/// The running pass is aborted first rather than waited for. A pull that stops early has
+/// applied whole pages and not yet run the retain that removes what the server dropped,
+/// so the worst it leaves behind is a store that is a little stale — which the next pull
+/// corrects. A push that raced that pull could have its new task deleted by the retain
+/// and would have to wait for the next pull to reappear.
+async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
+    let pending = store.pending_count().await.unwrap_or(0);
+    if pending <= 0 {
+        return;
+    }
+    if let Ok(mut slot) = in_flight().lock() {
+        if let Some(handle) = slot.take() {
+            handle.abort();
+        }
+    }
+
+    let changes = if pending == 1 { "change" } else { "changes" };
+    println!("Sending {pending} queued {changes}…");
+    match tokio::time::timeout(Duration::from_secs(10), (*sync).clone().push()).await {
+        Ok(Ok(report)) if report.is_complete() => println!("Sent."),
+        Ok(Ok(report)) => println!(
+            "{} still queued; the next run will send them.",
+            report.deferred
+        ),
+        Ok(Err(error)) => println!("Still queued — could not reach the server: {error}"),
+        Err(_) => println!("Still queued — the server did not answer in time."),
+    }
 }
 
 /// Read terminal events on a blocking thread.
