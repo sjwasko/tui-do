@@ -371,19 +371,18 @@ impl Sync {
         }
     }
 
-    async fn pull_inner(&self, report: &mut PullReport) -> Result<()> {
-        // The page cap comes from the server, never from a constant. Reading it also
-        // teaches the client's paginators what to ask for.
-        let info = self.client.info().await?;
-        self.store
-            .set_state(PAGE_CAP, self.client.page_size().to_string())
-            .await?;
-        tracing::debug!(version = %info.version, cap = self.client.page_size(), "server info");
-
-        let user = self.client.current_user().await?;
-        self.store
-            .set_state(CURRENT_USER, user.id.to_string())
-            .await?;
+    /// Pull the project and label lists, and nothing else.
+    ///
+    /// The two collections a name has to resolve against, and the only two that are cheap
+    /// — one request each, where the task listing is seventy-eight pages against a real
+    /// instance. `criax add` uses this when a `+project` or `*label` matches nothing it
+    /// has cached, which is the difference between working on a machine that has never
+    /// synced and refusing to.
+    ///
+    /// # Errors
+    /// Whatever the server or the store returns.
+    pub async fn pull_lists(&self) -> Result<PullReport> {
+        let mut report = PullReport::default();
 
         let projects = self.client.all_projects().await?;
         let project_ids: Vec<ProjectId> = projects.iter().map(|project| project.id).collect();
@@ -404,6 +403,28 @@ impl Sync {
             stored: report.labels,
             pages: None,
         });
+
+        Ok(report)
+    }
+
+    async fn pull_inner(&self, report: &mut PullReport) -> Result<()> {
+        // The page cap comes from the server, never from a constant. Reading it also
+        // teaches the client's paginators what to ask for.
+        let info = self.client.info().await?;
+        self.store
+            .set_state(PAGE_CAP, self.client.page_size().to_string())
+            .await?;
+        tracing::debug!(version = %info.version, cap = self.client.page_size(), "server info");
+
+        let user = self.client.current_user().await?;
+        self.store
+            .set_state(CURRENT_USER, user.id.to_string())
+            .await?;
+
+        let lists = self.pull_lists().await?;
+        report.projects = lists.projects;
+        report.labels = lists.labels;
+        report.removed += lists.removed;
 
         // Unfiltered: every task the user can see, done ones included -- confirmed on
         // dev, where the listing returned the same 1,942 done tasks that `done = true`

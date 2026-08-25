@@ -463,6 +463,19 @@ fn color_depth() -> ColorDepth {
     ColorDepth::Ansi16
 }
 
+/// What criax has cached, for an error message that says what to do next.
+fn describe(projects: &[criax_core::models::Project]) -> String {
+    let real = projects
+        .iter()
+        .filter(|project| project.id.get() > 0)
+        .count();
+    if real == 0 {
+        "no projects at all; run criax once to sync, or check the server is reachable".to_string()
+    } else {
+        format!("{real} projects; run criax to refresh the list")
+    }
+}
+
 /// Add a task from the command line.
 ///
 /// Shares everything that matters with the interface: the same parser, the same
@@ -488,26 +501,48 @@ pub async fn add(
         anyhow::bail!("nothing to add");
     }
 
-    let projects = store
+    let (sync, problem) = build_sync(config, config_path, &store);
+
+    let mut projects = store
         .projects(ProjectFilter::default(), ProjectSort::default())
         .await
         .context("could not read the project list")?;
-    let labels = store
+    let mut labels = store
         .labels(LabelFilter::default(), LabelSort::default())
         .await
         .unwrap_or_default();
 
-    let built =
-        criax_tui::quickadd_task(&parsed, &projects, &labels, None).ok_or_else(|| match parsed
-            .project
-            .as_deref()
-        {
-            Some(name) => anyhow::anyhow!(
-                "no project called \"{name}\". criax has {} cached — run criax once to sync",
-                projects.len()
-            ),
-            None => anyhow::anyhow!("no project to add to; run criax once to sync the list"),
-        })?;
+    let mut built = criax_tui::quickadd_task(&parsed, &projects, &labels, None);
+
+    // A name that matches nothing may mean the cache is empty or simply older than the
+    // project it names. Both are worth one cheap request each to settle — this is the one
+    // case where reading from the local store alone is worse than asking the server.
+    if built.is_none() && !offline {
+        if let Some(sync) = &sync {
+            if sync.pull_lists().await.is_ok() {
+                projects = store
+                    .projects(ProjectFilter::default(), ProjectSort::default())
+                    .await
+                    .unwrap_or(projects);
+                labels = store
+                    .labels(LabelFilter::default(), LabelSort::default())
+                    .await
+                    .unwrap_or(labels);
+                built = criax_tui::quickadd_task(&parsed, &projects, &labels, None);
+            }
+        }
+    }
+
+    let built = built.ok_or_else(|| match parsed.project.as_deref() {
+        Some(name) => anyhow::anyhow!(
+            "no project called \"{name}\" — criax knows of {}",
+            describe(&projects)
+        ),
+        None => anyhow::anyhow!(
+            "no project to add to — criax knows of {}",
+            describe(&projects)
+        ),
+    })?;
 
     let title = built.task.title.clone();
     let project_id = built.task.project_id;
@@ -543,7 +578,6 @@ pub async fn add(
         return Ok(());
     }
 
-    let (sync, problem) = build_sync(config, config_path, &store);
     let Some(sync) = sync else {
         println!(
             "Queued. {}",
