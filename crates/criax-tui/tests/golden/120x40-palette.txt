@@ -19,7 +19,7 @@ Projects               │ that drops the cookie                                
                        │      │ Back to the list, then out of a search               Esc │
                        │      │ Show or hide completed tasks                           t │
                        │      │ Open the selected task                             Enter │
-                       │      │                                                          │
+                       │      │ Delete the task                                        x │
                        │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
