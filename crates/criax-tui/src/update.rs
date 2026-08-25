@@ -196,6 +196,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             cycle_focus(model, false);
             Vec::new()
         }
+        Action::Back => back(model),
         Action::ExpandOrOpen => expand_or_open(model),
         Action::CollapseOrParent => collapse_or_parent(model),
         Action::OpenProject => {
@@ -495,6 +496,25 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     effects.push(Effect::LoadLabels);
     effects.push(Effect::LoadCounts);
     effects
+}
+
+/// Back out one level.
+///
+/// Esc is the key every terminal user reaches for to undo the last narrowing, and until
+/// this existed it did nothing at all outside a modal — which reads as the interface
+/// being stuck. The ladder is: a modal (handled before this is reached), then focus, then
+/// the search filter. Nothing below that, because the next rung down would be quitting,
+/// and Esc must never be the key that quits.
+fn back(model: &mut Model) -> Vec<Effect> {
+    if model.focus != Focus::List {
+        model.focus = Focus::List;
+        return Vec::new();
+    }
+    if model.query.search.take().is_some() {
+        model.toast(Toast::info("Search cleared"));
+        return reload_tasks(model);
+    }
+    Vec::new()
 }
 
 /// Move focus to the next visible pane.

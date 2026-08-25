@@ -234,6 +234,33 @@ fn the_command_palette() {
 }
 
 #[test]
+fn a_filtered_view_says_how_to_leave_it() {
+    // Finding your way out of a narrowed list should not require opening the help modal.
+    let mut model = fixture((80, 24));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+    );
+    for c in "the".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    assert_eq!(model.query.search.as_deref(), Some("the"));
+
+    let drawn = draw(&model);
+    let status = drawn.lines().last().unwrap_or_default();
+    assert!(status.contains("Esc:clear filter"), "{status}");
+    assert!(status.contains("filtered"), "{status}");
+    golden("80x24-filtered.txt", &draw(&model));
+}
+
+#[test]
 fn an_empty_list_says_which_kind_of_empty_it_is() {
     let mut model = fixture((80, 24));
     let id = model.query_id;
