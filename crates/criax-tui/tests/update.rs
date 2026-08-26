@@ -12,7 +12,7 @@ use criax_core::store::{Mutation, ProjectCounts, TaskCount, TaskOrder};
 use criax_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use criax_core::{Config, SyncEvent};
 use criax_tui::keymap::Key;
-use criax_tui::modal::Modal;
+use criax_tui::modal::{Modal, ModalView};
 use criax_tui::model::{Focus, PaneState, SyncStatus};
 use criax_tui::query::Scope;
 use criax_tui::update::{reload_everything, update};
@@ -1199,4 +1199,177 @@ fn a_key_release_does_not_move_the_cursor_twice() {
         Key::from_event(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
         Some(Key::char('j'))
     );
+}
+
+/// Open the edit form over the selected task and return it.
+fn open_edit(model: &mut Model) -> &mut criax_tui::modal::EditState {
+    press(model, 'e');
+    match model.modals.last_mut() {
+        Some(Modal::Edit(state)) => state.as_mut(),
+        other => panic!("`e` did not open the form: {other:?}"),
+    }
+}
+
+fn type_into(state: &mut criax_tui::modal::EditState, text: &str) {
+    for c in text.chars() {
+        state.handle(Key::char(c));
+    }
+}
+
+fn save(model: &mut Model) -> Vec<Effect> {
+    update(
+        model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+    )
+}
+
+#[test]
+fn the_edit_form_opens_filled_in_from_the_task() {
+    let mut model = loaded();
+    let selected = model
+        .selected_task()
+        .expect("something is selected")
+        .clone();
+    let state = open_edit(&mut model);
+
+    assert_eq!(state.title.value(), selected.title);
+    assert_eq!(
+        state.priority.value(),
+        selected.priority.to_string(),
+        "a form that opened empty would clear whatever it did not show"
+    );
+}
+
+#[test]
+fn the_edit_form_sends_one_update_for_the_task_body() {
+    let mut model = loaded();
+    let before = model.selected_task().expect("selected").clone();
+    let state = open_edit(&mut model);
+    // Clear the title and type a new one.
+    for _ in 0..before.title.chars().count() {
+        state.handle(Key::plain(KeyCode::Backspace));
+    }
+    type_into(state, "a different title");
+
+    let effects = save(&mut model);
+    assert!(model.modals.is_empty(), "saving closes the form");
+
+    let applied: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Apply(mutation) => Some(mutation),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        applied.len(),
+        1,
+        "one write for the body, not one per field"
+    );
+    match applied[0] {
+        Mutation::UpdateTask { before: was, after } => {
+            assert_eq!(after.title, "a different title");
+            assert_eq!(was.id, before.id);
+            assert_eq!(
+                after.id, before.id,
+                "the write has to name the task it edits"
+            );
+        }
+        other => panic!("expected an update, got {other:?}"),
+    }
+    // The screen shows it before the store has answered.
+    assert_eq!(selected_title(&model), "a different title");
+}
+
+#[test]
+fn labels_leave_the_form_as_their_own_mutations() {
+    // A task write ignores the body's `labels`, so a form that folded them into the
+    // update would silently drop them.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![Label {
+            id: LabelId(1),
+            title: "urgent".to_string(),
+            ..Label::default()
+        }]),
+    );
+    let state = open_edit(&mut model);
+    state.focus = criax_tui::modal::EditField::Labels;
+    type_into(state, "urgent");
+
+    let effects = save(&mut model);
+    let attached: Vec<_> = effects
+        .iter()
+        .filter(|effect| matches!(effect, Effect::Apply(Mutation::AttachLabel { .. })))
+        .collect();
+    assert_eq!(attached.len(), 1, "the label was not sent on its own");
+}
+
+#[test]
+fn the_edit_form_refuses_to_save_an_empty_title() {
+    let mut model = loaded();
+    let before = model.selected_task().expect("selected").clone();
+    let state = open_edit(&mut model);
+    for _ in 0..before.title.chars().count() {
+        state.handle(Key::plain(KeyCode::Backspace));
+    }
+
+    let effects = save(&mut model);
+    assert!(
+        effects.is_empty(),
+        "an untitled task is not a task; nothing should be sent"
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told why");
+    assert!(toast.text.contains("title"));
+}
+
+#[test]
+fn a_form_saved_untouched_sends_nothing() {
+    let mut model = loaded();
+    open_edit(&mut model);
+    let effects = save(&mut model);
+    assert!(
+        effects.is_empty(),
+        "opening and closing a form is not an edit"
+    );
+}
+
+#[test]
+fn enter_moves_between_fields_but_writes_a_newline_in_the_description() {
+    let mut model = loaded();
+    let state = open_edit(&mut model);
+    assert_eq!(state.focus, criax_tui::modal::EditField::Title);
+
+    state.handle(Key::plain(KeyCode::Enter));
+    assert_eq!(
+        state.focus,
+        criax_tui::modal::EditField::Description,
+        "Enter should move on from a one-line field"
+    );
+
+    let before = state.description.value().len();
+    state.handle(Key::plain(KeyCode::Enter));
+    assert_eq!(
+        state.focus,
+        criax_tui::modal::EditField::Description,
+        "Enter belongs to the description, which is genuinely several lines"
+    );
+    assert_eq!(state.description.value().len(), before + 1);
+}
+
+#[test]
+fn escaping_the_form_changes_nothing() {
+    let mut model = loaded();
+    let before = model.selected_task().expect("selected").clone();
+    let state = open_edit(&mut model);
+    type_into(state, " and more");
+
+    let effects = update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+    );
+    assert!(model.modals.is_empty());
+    assert!(effects.is_empty());
+    assert_eq!(selected_title(&model), before.title);
 }

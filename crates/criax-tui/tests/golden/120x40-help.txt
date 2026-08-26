@@ -1,23 +1,23 @@
 criax  Work › List  Table  Kanban                                                                       ⟳ synced 2m ago
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  All tasks          4 │ Tit┌Keys──────────────────────────────────────────────────────────┐ken refresh that drops the
-  Favorites          2 │ Fix│Navigation                                                    │
-Projects               │ Shi│  j / ↓       Move down                                       │────────────────────────────
-▾ Home               1 │ Ren│  k / ↑       Move up                                         │ork
-    Errands            │ A t│  C-d / PgDn  Page down                                       │ORK-42
-  Work               3 │    │  C-u / PgUp  Page up                                         │ days ago
-                       │    │  g g / Home  Jump to the top                                 │5
-                       │    │  G / End     Jump to the bottom                              │urgent  backend
-                       │    │  Tab         Focus the next pane                             │
-                       │    │  S-Tab       Focus the previous pane                         │h call needs the cookie set
-                       │    │  Esc         Back to the list, then out of a search          │ogin.
-                       │    │  g p         Go to a project                                 │
+────────────────────────────┌Keys──────────────────────────────────────────────────────────┐────────────────────────────
+  All tasks          4 │ Tit│Navigation                                                    │ken refresh that drops the
+  Favorites          2 │ Fix│  j / ↓       Move down                                       │
+Projects               │ Shi│  k / ↑       Move up                                         │────────────────────────────
+▾ Home               1 │ Ren│  C-d / PgDn  Page down                                       │ork
+    Errands            │ A t│  C-u / PgUp  Page up                                         │ORK-42
+  Work               3 │    │  g g / Home  Jump to the top                                 │ days ago
+                       │    │  G / End     Jump to the bottom                              │5
+                       │    │  Tab         Focus the next pane                             │urgent  backend
+                       │    │  S-Tab       Focus the previous pane                         │
+                       │    │  Esc         Back to the list, then out of a search          │h call needs the cookie set
+                       │    │  g p         Go to a project                                 │ogin.
                        │    │  g l         Go to a label                                   │
                        │    │  /           Search the current list                         │
                        │    │  Enter       Open the selected task                          │
                        │    │                                                              │
                        │    │Tasks                                                         │
                        │    │  a           Add a task                                      │
+                       │    │  e           Edit the selected task                          │
                        │    │  d           Mark done, or not done                          │
                        │    │  x           Delete the task                                 │
                        │    │  u           Undo the last change                            │

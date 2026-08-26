@@ -15,8 +15,8 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, HelpState, Modal, Outcome, Pick, PickerKind, PickerState, SearchState, Submission,
-    TextInput,
+    Candidate, EditDraft, EditState, HelpState, Modal, Outcome, Pick, PickerKind, PickerState,
+    SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -193,6 +193,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             reload_tasks(model)
         }
         Submission::Add(text) => add_task(model, &text),
+        Submission::Edited(draft) => apply_edit(model, *draft),
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
         // A command chosen by name does exactly what its key does. One implementation,
@@ -330,6 +331,20 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                         before: Box::new(before),
                     },
                 )
+            }
+            None => nothing_selected(model),
+        },
+        Action::EditTask => match model.selected_task() {
+            Some(task) => {
+                // The project's name, not its id: a form showing `12` is a form nobody
+                // can edit, and the modal cannot reach the model to look it up itself.
+                let project = model
+                    .project(task.project_id)
+                    .map_or_else(String::new, |project| project.title.clone());
+                model
+                    .modals
+                    .push(Modal::Edit(Box::new(EditState::new(task, &project))));
+                Vec::new()
             }
             None => nothing_selected(model),
         },
@@ -694,6 +709,125 @@ fn build_task(parsed: &quickadd::Parsed, project: ProjectId, labels: Vec<Label>)
         }
     }
     task
+}
+
+/// Turn a filled-in edit form into mutations.
+///
+/// The form hands over text and nothing else. What a project name, a label list or a date
+/// means depends on what the model knows, so it is decided here -- against the same
+/// helpers the quick-add prompt uses, so `+Legal` in a new task and `Legal` in this form
+/// cannot come to different conclusions.
+///
+/// The task write and the label changes are separate mutations because the server treats
+/// them separately: labels are attached and detached through their own endpoints and a
+/// task write ignores the body's `labels`. That means a form that changed both is two or
+/// three entries in the undo stack rather than one, which is honest about what was sent.
+fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
+    let mut notes: Vec<String> = Vec::new();
+    let before = *draft.before;
+    let mut after = before.clone();
+
+    after.title = draft.title.trim().to_string();
+    if after.title.is_empty() {
+        model.toast(Toast::error("A task needs a title"));
+        return Vec::new();
+    }
+    after.description = draft.description;
+
+    match draft.priority.as_str() {
+        "" => after.priority = 0,
+        text => match text.parse::<i64>() {
+            Ok(value) if (0..=5).contains(&value) => after.priority = value,
+            _ => notes.push(format!("{text:?} is not a priority between 0 and 5")),
+        },
+    }
+
+    // An empty field clears the date. Anything else goes through the quick-add parser, so
+    // the field understands `tomorrow` and `next friday` and not just `24/12/2026`.
+    if draft.due.is_empty() {
+        after.due_date = None.into();
+    } else {
+        let parsed = quickadd::parse(&draft.due, &model.now);
+        match parsed.due_date {
+            Some(due) => after.due_date = Some(due).into(),
+            None => notes.push(format!("{:?} is not a date criax understands", draft.due)),
+        }
+    }
+
+    if !draft.project.is_empty() {
+        match project_for(&model.data.projects, Some(&draft.project), None) {
+            Some(id) => after.project_id = id,
+            None => notes.push(format!("No project called {:?}", draft.project)),
+        }
+    }
+
+    let wanted: Vec<String> = draft
+        .labels
+        .split(',')
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    let (resolved, unknown) = resolve_labels(&model.data.labels, &wanted);
+    if !unknown.is_empty() {
+        notes.push(format!(
+            "No label called {} -- criax cannot create labels yet",
+            unknown.join(", ")
+        ));
+    }
+
+    let mut effects = Vec::new();
+    // Labels do not travel in the task body, so they are compared against `before` and
+    // sent on their own. `after` keeps them only so the row on screen looks right.
+    let attach: Vec<_> = resolved
+        .iter()
+        .filter(|label| !before.labels.iter().any(|held| held.id == label.id))
+        .cloned()
+        .collect();
+    let detach: Vec<_> = before
+        .labels
+        .iter()
+        .filter(|held| !resolved.iter().any(|label| label.id == held.id))
+        .cloned()
+        .collect();
+    after.labels = resolved;
+
+    if after != before {
+        effects.extend(edit(
+            model,
+            Mutation::UpdateTask {
+                before: Box::new(before.clone()),
+                after: Box::new(after),
+            },
+        ));
+    }
+    for label in attach {
+        effects.extend(edit(
+            model,
+            Mutation::AttachLabel {
+                task: before.id,
+                label: Box::new(label),
+            },
+        ));
+    }
+    for label in detach {
+        effects.extend(edit(
+            model,
+            Mutation::DetachLabel {
+                task: before.id,
+                label: Box::new(label),
+            },
+        ));
+    }
+
+    if effects.is_empty() {
+        model.toast(Toast::info("Nothing changed"));
+    } else if notes.is_empty() {
+        model.toast(Toast::info("Saved"));
+    }
+    if !notes.is_empty() {
+        model.toast(Toast::error(notes.join(" · ")));
+    }
+    effects
 }
 
 /// Turn quick-add text into a task, and queue it.
