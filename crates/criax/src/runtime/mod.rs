@@ -572,7 +572,13 @@ pub async fn add(
         .await
         .unwrap_or_default();
 
-    let mut built = criax_tui::quickadd_task(&parsed, &projects, &labels, None);
+    let mut built = criax_tui::quickadd_task(
+        &parsed,
+        &projects,
+        &labels,
+        None,
+        config.view.default_project.as_deref(),
+    );
 
     // A name that matches nothing may mean the cache is empty or simply older than the
     // project it names. Both are worth one cheap request each to settle — this is the one
@@ -588,7 +594,13 @@ pub async fn add(
                     .labels(LabelFilter::default(), LabelSort::default())
                     .await
                     .unwrap_or(labels);
-                built = criax_tui::quickadd_task(&parsed, &projects, &labels, None);
+                built = criax_tui::quickadd_task(
+                    &parsed,
+                    &projects,
+                    &labels,
+                    None,
+                    config.view.default_project.as_deref(),
+                );
             }
         }
     }

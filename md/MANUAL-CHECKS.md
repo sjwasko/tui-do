@@ -155,10 +155,19 @@ Not bugs. Listed so they are not reported as such.
   first — the server answers `412`, code `3012`, "This project cannot be deleted because it
   is the default project of a user", and an API token cannot change that setting.
 
-  `criax add +Inbox` says which one it chose, by id. **`criax add 'something'` does not**,
-  because nothing was named to be ambiguous about — it takes the first real project called
-  Inbox, which is `#1`, while the interface is usually showing `#12`. That is why a task
-  added from a shell can be correctly stored, correctly pushed, and nowhere on screen.
+  `criax add +Inbox` says which one it chose, by id. This config now settles it for
+  everything that does not name a project:
+
+  ```yaml
+  view:
+    default_project: '#12'
+  ```
+
+  `#12` names a project by id, and works anywhere a project can be written — `criax add
+  +#12`, the edit form's project field, and this setting. Without it, a task naming no
+  project takes the first real project called `Inbox`, which is `#1`, while the interface
+  is usually showing `#12` — so a task added from a shell could be correctly stored,
+  correctly pushed, and nowhere on screen.
 - A description holding only an embedded image renders blank. There is no text in it;
   attachments arrive in Phase 5.
 - `Table` and `Kanban` in the header do nothing. Phase 6 is the views API.
