@@ -662,8 +662,9 @@ pub fn quickadd_task(
     projects: &[Project],
     labels: &[Label],
     showing: Option<ProjectId>,
+    configured: Option<&str>,
 ) -> Option<QuickAdd> {
-    let project = project_for(projects, parsed.project.as_deref(), showing)?;
+    let project = project_for(projects, parsed.project.as_deref(), showing, configured)?;
     let (found, unknown_labels) = resolve_labels(labels, &parsed.labels);
     Some(QuickAdd {
         task: build_task(parsed, project, found),
@@ -763,7 +764,7 @@ fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
     } else if draft.project.is_empty() {
         notes.push("A task needs a project; kept the one it was in".to_string());
     } else {
-        match project_for(&model.data.projects, Some(&draft.project), None) {
+        match project_for(&model.data.projects, Some(&draft.project), None, None) {
             Some(id) => after.project_id = id,
             None => notes.push(format!("No project called {:?}", draft.project)),
         }
@@ -853,8 +854,13 @@ fn add_task(model: &mut Model, text: &str) -> Vec<Effect> {
         Scope::Project(id) => Some(id),
         _ => None,
     };
-    let Some(built) = quickadd_task(&parsed, &model.data.projects, &model.data.labels, showing)
-    else {
+    let Some(built) = quickadd_task(
+        &parsed,
+        &model.data.projects,
+        &model.data.labels,
+        showing,
+        model.default_project.as_deref(),
+    ) else {
         model.toast(Toast::error(match parsed.project.as_deref() {
             Some(name) => format!("No project called \"{name}\""),
             None => "No project to add to".to_string(),
@@ -900,23 +906,54 @@ fn project_for(
     projects: &[Project],
     named: Option<&str>,
     showing: Option<ProjectId>,
+    configured: Option<&str>,
 ) -> Option<ProjectId> {
+    if let Some(name) = named {
+        return resolve_project(projects, name);
+    }
+    if let Some(id) = showing {
+        return Some(id);
+    }
+    // Only once nothing else has said where: what the user is looking at outranks what
+    // they configured, or `a` inside a project would file the task somewhere else.
+    if let Some(id) = configured.and_then(|spec| resolve_project(projects, spec)) {
+        return Some(id);
+    }
     let real = || {
         projects
             .iter()
             .filter(|project| project.id.get() > 0 && !project.is_archived)
     };
-    if let Some(name) = named {
-        return real()
-            .find(|project| project.title.eq_ignore_ascii_case(name.trim()))
-            .map(|project| project.id);
-    }
-    if let Some(id) = showing {
-        return Some(id);
-    }
     real()
         .find(|project| project.title.eq_ignore_ascii_case("inbox"))
         .or_else(|| real().next())
+        .map(|project| project.id)
+}
+
+/// Find the project a written reference means.
+///
+/// `#12` names one by id and cannot be ambiguous; anything else is a title, and a title
+/// can be worn by more than one project -- Vikunja does not require them to be unique,
+/// and this account has two called `Inbox`. `#12` is the way to say which, and it works
+/// wherever a project can be written: `criax add +#12`, the edit form's project field,
+/// and `view.default_project` in the config.
+///
+/// A reference that looks like an id but names no project falls through to the title
+/// match rather than failing, so a project genuinely called `#12` is still reachable.
+fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
+    let spec = spec.trim();
+    let real = || {
+        projects
+            .iter()
+            .filter(|project| project.id.get() > 0 && !project.is_archived)
+    };
+    if let Some(id) = spec.strip_prefix('#').and_then(|n| n.parse::<i64>().ok()) {
+        if let Some(project) = real().find(|project| project.id.get() == id) {
+            return Some(project.id);
+        }
+    }
+    real()
+        .find(|project| project.title.eq_ignore_ascii_case(spec))
         .map(|project| project.id)
 }
 

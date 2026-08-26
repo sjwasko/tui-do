@@ -1438,3 +1438,66 @@ fn retyping_the_project_field_still_moves_the_task() {
         "the field was retyped, so it moves"
     );
 }
+
+#[test]
+fn a_configured_default_project_takes_the_tasks_that_name_none() {
+    // The fallback without one is to look for a project called "Inbox", which is a guess
+    // and picks the first of two. Naming it by id is how an account with duplicate titles
+    // says which one it means.
+    let mut model = loaded();
+    model.default_project = Some("#3".to_string());
+    press(&mut model, 'a');
+    for c in "Something".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    let filed = effects.iter().find_map(|effect| match effect {
+        Effect::Apply(Mutation::CreateTask { task }) => Some(task.project_id),
+        _ => None,
+    });
+    assert_eq!(filed, Some(ProjectId(3)));
+}
+
+#[test]
+fn a_hash_id_names_the_project_that_a_shared_title_cannot() {
+    // The lever for an account with two projects called "Inbox": `+#12` says which.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "Inbox", 0), project(12, "Inbox", 0)]),
+    );
+    press(&mut model, 'a');
+    for c in "Something +#12".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    let filed = effects.iter().find_map(|effect| match effect {
+        Effect::Apply(Mutation::CreateTask { task }) => Some(task.project_id),
+        _ => None,
+    });
+    assert_eq!(
+        filed,
+        Some(ProjectId(12)),
+        "a bare `+Inbox` would have picked whichever comes first"
+    );
+}
+
+#[test]
+fn a_hash_id_that_names_nothing_falls_back_to_the_title() {
+    // So a project genuinely called "#9" stays reachable.
+    let mut model = loaded();
+    update(&mut model, Msg::ProjectsLoaded(vec![project(3, "#9", 0)]));
+    press(&mut model, 'a');
+    for c in "Something +#9".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    let filed = effects.iter().find_map(|effect| match effect {
+        Effect::Apply(Mutation::CreateTask { task }) => Some(task.project_id),
+        _ => None,
+    });
+    assert_eq!(filed, Some(ProjectId(3)));
+}

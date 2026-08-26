@@ -111,7 +111,13 @@ impl Default for SyncConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewConfig {
-    /// Project to open on startup, by title. `None` shows everything.
+    /// Where to start, and where a task with no project named goes.
+    ///
+    /// A title, or `#12` to name a project by id. Vikunja does not require titles to be
+    /// unique -- an account seeded from another one can easily end up with two projects
+    /// called `Inbox` -- and a title that two projects answer to picks whichever comes
+    /// first. `#12` is the way to say which. `None` starts on everything and files a
+    /// task with no project named in whatever is called `Inbox`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
 

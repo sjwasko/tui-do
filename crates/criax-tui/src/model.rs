@@ -283,6 +283,11 @@ pub struct Model {
     pub undo: Vec<Mutation>,
     /// Inverses of what has been undone. Cleared by any new edit.
     pub redo: Vec<Mutation>,
+    /// Where a task with no project named goes, as written in the config.
+    ///
+    /// Held as the user wrote it rather than as an id, because a title can only be
+    /// resolved once the projects have loaded and this is built before they have.
+    pub default_project: Option<String>,
     /// Cleared when the user quits; the runtime stops when this goes false.
     pub running: bool,
 }
@@ -346,6 +351,7 @@ impl Model {
             now,
             undo: Vec::new(),
             redo: Vec::new(),
+            default_project: config.view.default_project.clone(),
             running: true,
         }
     }
@@ -447,11 +453,17 @@ pub fn landing_scope(
     remembered: Option<ProjectId>,
     projects: &[Project],
 ) -> Scope {
-    if let Some(name) = view.default_project.as_deref() {
-        if let Some(project) = projects
-            .iter()
-            .find(|project| project.id.get() > 0 && project.title.eq_ignore_ascii_case(name))
-        {
+    if let Some(spec) = view.default_project.as_deref() {
+        let spec = spec.trim();
+        let real = || projects.iter().filter(|project| project.id.get() > 0);
+        // `#12` names a project by id. Two projects may share a title, so a title alone
+        // cannot always say which one was meant.
+        let found = spec
+            .strip_prefix('#')
+            .and_then(|n| n.parse::<i64>().ok())
+            .and_then(|id| real().find(|project| project.id.get() == id))
+            .or_else(|| real().find(|project| project.title.eq_ignore_ascii_case(spec)));
+        if let Some(project) = found {
             return Scope::Project(project.id);
         }
     }
