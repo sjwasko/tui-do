@@ -12,7 +12,7 @@
 mod terminal;
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -297,19 +297,36 @@ enum Pass {
 }
 
 /// Run one sync pass, forwarding its events into the loop.
+/// Nothing was asked for while a pass was running.
+const NOTHING_AGAIN: u8 = 0;
+/// A push was asked for while a pass was running.
+const PUSH_AGAIN: u8 = 1;
+/// A full pass was asked for while a pass was running. Ordered above a push on purpose:
+/// `fetch_max` then keeps the more thorough of the two.
+const FULL_AGAIN: u8 = 2;
+
+const fn again_code(pass: Pass) -> u8 {
+    match pass {
+        Pass::Push => PUSH_AGAIN,
+        Pass::Full => FULL_AGAIN,
+    }
+}
+
 fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
     /// One pass at a time. Two overlapping passes would push the same queue twice, and
     /// the queue is ordered — an entry sent twice is a task created twice.
     static RUNNING: AtomicBool = AtomicBool::new(false);
-    /// An edit arrived while a pass was running. Without this, a change made during the
-    /// startup pull — which takes half a minute against 3,877 tasks — sits in the queue
-    /// until the five-minute timer comes round, and the user is told nothing.
-    static AGAIN: AtomicBool = AtomicBool::new(false);
+    /// What was asked for while a pass was running: nothing, a push, or a full pass.
+    ///
+    /// Without this, a change made during the startup pull — half a minute against 3,877
+    /// tasks — sits in the queue until the five-minute timer comes round. A full pass
+    /// used to be dropped here outright, so `r` during a pass did nothing at all while
+    /// the status line said "starting".
+    static AGAIN: AtomicU8 = AtomicU8::new(NOTHING_AGAIN);
 
     if RUNNING.swap(true, Ordering::SeqCst) {
-        if pass == Pass::Push {
-            AGAIN.store(true, Ordering::SeqCst);
-        }
+        // A full pass supersedes a queued push, because it does one anyway.
+        AGAIN.fetch_max(again_code(pass), Ordering::SeqCst);
         return;
     }
     let handle = tokio::spawn(async move {
@@ -334,11 +351,21 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
                 message: error.to_string(),
             }));
         }
-        forward.abort();
+        // Drop the engine so its sender closes, then let the forwarder finish draining.
+        //
+        // This used to `abort()` here, which raced the last event out of the channel --
+        // and the last event is `Finished`, the only one that reloads. The pull updated
+        // the store, the interface was never told, and the list stayed as it was until
+        // the next launch. A task added by `criax add` was in the database and not on
+        // the screen, which is exactly what it looked like from the outside.
+        drop(engine);
+        let _ = forward.await;
         RUNNING.store(false, Ordering::SeqCst);
-        // A push asked for while this pass was running still has to happen.
-        if AGAIN.swap(false, Ordering::SeqCst) {
-            spawn_sync(sync, tx, Pass::Push);
+        // Whatever was asked for while this pass was running still has to happen.
+        match AGAIN.swap(NOTHING_AGAIN, Ordering::SeqCst) {
+            PUSH_AGAIN => spawn_sync(sync, tx, Pass::Push),
+            FULL_AGAIN => spawn_sync(sync, tx, Pass::Full),
+            _ => {}
         }
     });
     if let Ok(mut slot) = in_flight().lock() {
@@ -627,4 +654,62 @@ pub async fn add(
         Err(error) => println!("Queued — could not reach the server: {error}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use criax_core::sync::{Phase, PullReport, PushReport, SyncReport};
+    use criax_core::SyncEvent;
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    /// The shape the sync pass runs in: a forwarder relaying the engine's events, and an
+    /// engine that emits `Finished` as its very last act.
+    ///
+    /// Awaiting the forwarder after dropping the sender is load-bearing. Aborting it
+    /// instead raced the last event out of the channel -- and the last event is the only
+    /// one that reloads, so a pull would update the store and leave the screen showing
+    /// what it showed before, until the next launch.
+    #[tokio::test]
+    async fn the_last_event_of_a_pass_survives_the_end_of_it() {
+        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Msg>();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel::<SyncEvent>();
+
+        let forward = tokio::spawn(async move {
+            while let Some(event) = events_rx.recv().await {
+                let _ = msg_tx.send(Msg::Sync(event));
+            }
+        });
+
+        events_tx.send(SyncEvent::Started(Phase::Pull)).unwrap();
+        events_tx
+            .send(SyncEvent::Finished(SyncReport {
+                push: PushReport::default(),
+                pull: PullReport::default(),
+            }))
+            .unwrap();
+
+        drop(events_tx);
+        forward.await.unwrap();
+
+        let mut seen = Vec::new();
+        while let Ok(msg) = msg_rx.try_recv() {
+            if let Msg::Sync(event) = msg {
+                seen.push(event);
+            }
+        }
+        assert!(
+            matches!(seen.last(), Some(SyncEvent::Finished(_))),
+            "the reload event was lost when the pass ended; saw {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_pass_asked_for_mid_pass_outranks_a_push() {
+        // Both are remembered, but a full pass does a push anyway, so it wins.
+        assert!(again_code(Pass::Full) > again_code(Pass::Push));
+        assert!(again_code(Pass::Push) > NOTHING_AGAIN);
+    }
 }
