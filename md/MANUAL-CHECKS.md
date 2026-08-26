@@ -60,6 +60,14 @@ delivered, so the pull wrote to the store and the screen was never told; and `r`
 while a pass was running was dropped outright. `r` should also be **instant** for the
 local part — the task is already in the store, so nothing needs fetching to draw it.
 
+**B8 — Editing a task does not move it.** `e` a task, change only the title, `Ctrl-S`.
+It must stay in the project it was in. *This was broken:* the form shows a project by
+name, and dev carries two projects called `Inbox` (#1, the one Vikunja makes for the
+account, and #12, seeded from prod). An untouched field was resolved back by name, hit
+#1 first, and moved the task there — so it vanished from the list in criax and in the
+web UI both, having been saved perfectly well. A name is a label, not a key; the form
+now only resolves the field when it was actually retyped.
+
 ---
 
 ## C. Undo

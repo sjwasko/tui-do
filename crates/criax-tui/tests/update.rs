@@ -1373,3 +1373,68 @@ fn escaping_the_form_changes_nothing() {
     assert!(effects.is_empty());
     assert_eq!(selected_title(&model), before.title);
 }
+
+#[test]
+fn editing_a_task_does_not_move_it_to_a_project_that_merely_shares_a_name() {
+    // Dev really does carry two projects called "Inbox" -- #1, which Vikunja creates for
+    // the account, and #12, seeded from prod. The form shows a project by *name*, so a
+    // task in #12 whose project field was never touched used to resolve back to #1 and
+    // get silently moved: gone from the list the user was looking at, in criax and in
+    // the web UI both. The name is a label, not a key; the id is what was opened.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![
+            project(1, "Inbox", 0),
+            project(12, "Inbox", 0),
+            project(3, "Personal", 0),
+        ]),
+    );
+    answer(
+        &mut model,
+        vec![Task {
+            project_id: ProjectId(12),
+            ..task(1, "first")
+        }],
+    );
+
+    let state = open_edit(&mut model);
+    assert_eq!(state.project.value(), "Inbox");
+    state.focus = criax_tui::modal::EditField::Title;
+    type_into(state, "!");
+    let effects = save(&mut model);
+
+    let moved = effects.iter().find_map(|effect| match effect {
+        Effect::Apply(Mutation::UpdateTask { after, .. }) => Some(after.project_id),
+        _ => None,
+    });
+    assert_eq!(
+        moved,
+        Some(ProjectId(12)),
+        "the title changed; the project did not"
+    );
+}
+
+#[test]
+fn retyping_the_project_field_still_moves_the_task() {
+    // The other half of the pair above: leaving the field alone must not move the task,
+    // but changing it must, or the fix has quietly turned the field read-only.
+    let mut model = loaded();
+    let state = open_edit(&mut model);
+    state.focus = criax_tui::modal::EditField::Project;
+    for _ in 0..state.project.value().chars().count() {
+        state.handle(Key::plain(KeyCode::Backspace));
+    }
+    type_into(state, "Personal");
+    let effects = save(&mut model);
+
+    let moved = effects.iter().find_map(|effect| match effect {
+        Effect::Apply(Mutation::UpdateTask { after, .. }) => Some(after.project_id),
+        _ => None,
+    });
+    assert_eq!(
+        moved,
+        Some(ProjectId(3)),
+        "the field was retyped, so it moves"
+    );
+}

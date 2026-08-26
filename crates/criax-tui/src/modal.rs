@@ -422,6 +422,13 @@ pub struct EditState {
     pub due: TextInput,
     /// The project field.
     pub project: TextInput,
+    /// The project name the form was opened with.
+    ///
+    /// Two projects can share a title -- dev carries two called "Inbox" -- so resolving
+    /// this field by name can land on a different project than the one the task is in.
+    /// Keeping what was shown lets `update` tell "untouched" from "retyped", and leave
+    /// the id alone in the first case.
+    pub project_was: String,
     /// The labels field.
     pub labels: TextInput,
     /// Which field has the keyboard.
@@ -453,6 +460,7 @@ impl EditState {
                     .unwrap_or_default(),
             ),
             project: TextInput::new(project_name.to_string()),
+            project_was: project_name.to_string(),
             labels: TextInput::new(labels),
             focus: EditField::Title,
             before: Box::new(task.clone()),
@@ -495,6 +503,7 @@ impl EditState {
             priority: self.priority.value().trim().to_string(),
             due: self.due.value().trim().to_string(),
             project: self.project.value().trim().to_string(),
+            project_was: self.project_was.trim().to_string(),
             labels: self.labels.value().to_string(),
         }
     }
@@ -520,6 +529,9 @@ pub struct EditDraft {
     pub due: String,
     /// The project name, as typed.
     pub project: String,
+    /// The project name the form was opened with, to tell an untouched field from a
+    /// retyped one when two projects share a name.
+    pub project_was: String,
     /// The label names, comma-separated, as typed.
     pub labels: String,
 }

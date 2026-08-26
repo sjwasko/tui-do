@@ -754,7 +754,15 @@ fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
         }
     }
 
-    if !draft.project.is_empty() {
+    // A project name is a label, not a key -- two of them can read "Inbox". Resolving an
+    // untouched field by name would answer with whichever one sorts first and move the
+    // task there, out of the list the user was looking at, without saying so. So the
+    // field only resolves when it was actually retyped; otherwise the id stands.
+    if draft.project.eq_ignore_ascii_case(&draft.project_was) {
+        // Untouched, so there is nothing to resolve and nothing to say.
+    } else if draft.project.is_empty() {
+        notes.push("A task needs a project; kept the one it was in".to_string());
+    } else {
         match project_for(&model.data.projects, Some(&draft.project), None) {
             Some(id) => after.project_id = id,
             None => notes.push(format!("No project called {:?}", draft.project)),
