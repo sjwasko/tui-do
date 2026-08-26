@@ -46,6 +46,20 @@ climb in the status line, reconnect. They should drain with no prompting.
 **B5 — `criax add` from a shell.** With and without a reachable server. Offline it must say
 the task is queued, and the next run must send it.
 
+**B6 — An edit to a task you just made lands.** `a` a task, wait for it to appear in the
+web UI, then `d` it. *This was broken:* a created task carries a provisional negative id
+until the server names it, and a push-only pass ends in `Pushed`, which does not reload —
+so the interface went on holding `-14` and sent `POST /tasks/-14`, answered `404 This task
+does not exist` about the task it had just created. Try `u` straight after a create too:
+the undo stack names the same id.
+
+**B7 — A task added from a shell shows up on `r`.** Leave the interface open, `criax add
+'something'` in another terminal, then press `r`. *This was broken twice over:* the pass
+emitted `Finished` last and the runtime aborted the event forwarder before it was
+delivered, so the pull wrote to the store and the screen was never told; and `r` pressed
+while a pass was running was dropped outright. `r` should also be **instant** for the
+local part — the task is already in the store, so nothing needs fetching to draw it.
+
 ---
 
 ## C. Undo
@@ -94,6 +108,18 @@ must keep a gap between the breadcrumb and the sync indicator at every width.
 say `j/k scrolls`. *This was broken:* adding one binding pushed the last row off a fixed
 height with nothing to indicate it.
 
+**E5 — A short window still scrolls.** Tile the terminal so that fewer rows fit than the
+list holds, then hold `j` past the last visible one. The list must follow. *This was
+broken:* a row wraps to as many as three lines, and the scroll maths counted lines, so
+eighteen tasks in an eighteen-line body drew seven and never moved — the selection walked
+down behind a list that had decided it was already showing everything. `PageDown` had the
+same fault and jumped about three screens for every one it showed.
+
+**E6 — The pane being driven is the brighter one.** `Tab` through the panes. *This was
+broken:* the unfocused selection used `REVERSED`, which swaps each span's own colour into
+its background, so a row carrying a due-soon date became a yellow bar — on the pane that
+was *not* taking the keys, while the focused pane wore a quiet dark blue.
+
 ---
 
 ## F. Reading real data
@@ -115,8 +141,16 @@ the prompt.
 Not bugs. Listed so they are not reported as such.
 
 - Two `Inbox` rows in the sidebar: dev genuinely has two real projects with that name
-  (`#1` empty, `#12` with tasks), plus a pseudo-project that is correctly filtered out.
-  `criax add +Inbox` says which one it chose, by id.
+  (`#1` empty, `#12` with the tasks), plus a pseudo-project that is correctly filtered
+  out. Vikunja makes `#1` for a new account and `seed-from-prod.sh` brought `#12` in from
+  prod, which has only one. Deleting `#1` needs the account's default project moved off it
+  first — the server answers `412`, code `3012`, "This project cannot be deleted because it
+  is the default project of a user", and an API token cannot change that setting.
+
+  `criax add +Inbox` says which one it chose, by id. **`criax add 'something'` does not**,
+  because nothing was named to be ambiguous about — it takes the first real project called
+  Inbox, which is `#1`, while the interface is usually showing `#12`. That is why a task
+  added from a shell can be correctly stored, correctly pushed, and nowhere on screen.
 - A description holding only an embedded image renders blank. There is no text in it;
   attachments arrive in Phase 5.
 - `Table` and `Kanban` in the header do nothing. Phase 6 is the views API.
