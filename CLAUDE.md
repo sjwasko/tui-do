@@ -152,12 +152,18 @@ the macOS port uses later.
 
 ```sh
 cargo build --workspace
+cargo build --workspace --release         # what `criax` on PATH actually runs -- see below
 cargo clippy --workspace --all-targets    # must be clean; CI runs with -D warnings
 cargo fmt --all
 cargo test --workspace
 cargo xtask fetch-spec                    # refresh spec/vikunja.json from the dev server
 deploy/test-ubuntu.sh                     # build + test in the ubuntu:26.04 container
 ```
+
+**`~/.local/bin/criax` is a symlink to `target/release/criax`**, so that is the binary a
+manual check exercises. A debug build proves the tests pass and changes nothing the user
+is looking at: handing over a fix without `--release` means they retest the old code and
+report it still broken. Build release before saying a fix is ready to try.
 
 Workspace lints deny `unwrap`, `panic`, `todo`, `dbg!` and forbid `unsafe`. Tests may
 `allow` them at module level; production code may not.
