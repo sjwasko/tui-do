@@ -16,6 +16,8 @@
 
 use std::marker::PhantomData;
 
+use futures_util::{stream, StreamExt, TryStreamExt};
+
 use reqwest::header::HeaderMap;
 use serde::de::DeserializeOwned;
 
@@ -36,6 +38,14 @@ pub const RESULT_COUNT_HEADER: &str = "x-pagination-result-count";
 /// [`ApiError::TooManyPages`], never a quiet stop: a collection that ends early and
 /// reports success is the failure this module exists to prevent.
 const MAX_PAGES: u32 = 10_000;
+
+/// How many pages are fetched at once when the server has said how many there are.
+///
+/// The walk is latency-bound rather than bandwidth-bound -- each page is one round trip
+/// and almost no work -- so this is the difference between thirty-five seconds and about
+/// five. Kept modest because the server on the other end is somebody's home instance,
+/// not a fleet.
+const CONCURRENT_PAGES: usize = 8;
 
 /// Where a page sits in the collection it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -220,13 +230,77 @@ impl<T: DeserializeOwned> Pager<T> {
 
     /// Read every remaining page into one vector.
     ///
+    /// Pages after the first are fetched concurrently when the server says how many
+    /// there are. Seventy-eight pages at about 0.45s each is thirty-five seconds of
+    /// waiting on round trips, almost none of it work — the page count turns that walk
+    /// into a fan-out, and the results are reassembled in page order.
+    ///
+    /// The walk stays sequential when the server reports no page count, because then
+    /// the only way to know whether another page exists is to ask for it.
+    ///
     /// # Errors
     /// Any failure from any page. A partial result is not returned: a half-loaded task
-    /// list that looks complete is the failure mode this whole module exists to prevent.
+    /// list that looks complete is the failure mode this whole module exists to prevent —
+    /// and the sync engine deletes local tasks the listing did not mention, so a page
+    /// quietly dropped here would take the user's tasks with it.
     pub async fn collect_all(mut self) -> Result<Vec<T>> {
-        let mut all = Vec::new();
-        while let Some(page) = self.next_page().await? {
-            all.extend(page.items);
+        let Some(first) = self.next_page().await? else {
+            return Ok(Vec::new());
+        };
+        let mut all = first.items;
+
+        let Some(total) = first.info.total_pages else {
+            // No page count: fall back to following `has_more` one page at a time.
+            while let Some(page) = self.next_page().await? {
+                all.extend(page.items);
+            }
+            return Ok(all);
+        };
+
+        if total > MAX_PAGES {
+            return Err(ApiError::TooManyPages {
+                url: self.call.url_for_error(),
+                pages: total,
+            });
+        }
+        if total <= 1 {
+            return Ok(all);
+        }
+
+        let requests = (2..=total).map(|page| {
+            let client = self.client.clone();
+            let per_page = self.per_page;
+            let call = self
+                .call
+                .clone()
+                .with_query("page", page.to_string())
+                .with_query("per_page", per_page.to_string());
+            async move {
+                let (items, headers) = client.send::<Vec<T>>(call).await?;
+                let info = PageInfo::from_headers(&headers, page, per_page, per_page);
+                Ok::<_, ApiError>((items, info))
+            }
+        });
+
+        let pages: Vec<(Vec<T>, PageInfo)> = stream::iter(requests)
+            .buffered(CONCURRENT_PAGES)
+            .try_collect()
+            .await?;
+
+        // The count came from the first page, and a collection can grow while it is
+        // being read. Following the last page's own answer catches that rather than
+        // handing back a list that is short by whatever arrived in between.
+        let carry_on = pages
+            .last()
+            .is_some_and(|(items, info)| info.has_more(items.len()));
+        for (items, _) in pages {
+            all.extend(items);
+        }
+        if carry_on {
+            self.next_page = Some(total + 1);
+            while let Some(page) = self.next_page().await? {
+                all.extend(page.items);
+            }
         }
         Ok(all)
     }

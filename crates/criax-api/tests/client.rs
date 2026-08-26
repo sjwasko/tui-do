@@ -910,3 +910,78 @@ async fn a_permission_denial_does_not_spend_a_token_refresh() {
         other => panic!("expected Forbidden, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn pages_fetched_at_once_still_arrive_in_order() {
+    // The fan-out is only safe if the results are reassembled by page. Later pages are
+    // made to answer sooner, so a naive "whatever finishes first" would scramble them.
+    let server = MockServer::start().await;
+    for page in 1..=6u32 {
+        // Page 1 must answer first for the walk to start, so it is not delayed; the
+        // rest answer in reverse order of their number.
+        let delay = if page == 1 {
+            0
+        } else {
+            u64::from(7 - page) * 40
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/v1/tasks"))
+            .and(query_param("page", page.to_string().as_str()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(delay))
+                    .set_body_json(vec![json!({
+                        "id": page,
+                        "title": format!("page {page}"),
+                        "project_id": 1
+                    })])
+                    .insert_header("x-pagination-total-pages", "6")
+                    .insert_header("x-pagination-result-count", "1"),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let tasks = client(&server)
+        .all_tasks(&TaskQuery::default())
+        .await
+        .expect("every page");
+
+    let ids: Vec<i64> = tasks.iter().map(|task| task.id.get()).collect();
+    assert_eq!(ids, vec![1, 2, 3, 4, 5, 6], "pages came back out of order");
+}
+
+#[tokio::test]
+async fn a_collection_that_grows_while_it_is_read_is_still_read_to_the_end() {
+    // The page count comes from page one. If tasks arrive while the rest are in flight,
+    // the last page says so -- and stopping at the original count would hand back a
+    // short list, which the sync engine would treat as "these tasks are gone".
+    let server = MockServer::start().await;
+    let body = |id: i64, total: &str, count: &str| {
+        ResponseTemplate::new(200)
+            .set_body_json(vec![json!({"id": id, "title": "t", "project_id": 1})])
+            .insert_header("x-pagination-total-pages", total)
+            .insert_header("x-pagination-result-count", count)
+    };
+    // Two pages announced, but page two reports three, and page three is real.
+    for (page, id, total) in [(1u32, 1i64, "2"), (2, 2, "3"), (3, 3, "3")] {
+        Mock::given(method("GET"))
+            .and(path("/api/v1/tasks"))
+            .and(query_param("page", page.to_string().as_str()))
+            .respond_with(body(id, total, "1"))
+            .mount(&server)
+            .await;
+    }
+
+    let tasks = client(&server)
+        .all_tasks(&TaskQuery::default())
+        .await
+        .expect("every page");
+
+    let ids: Vec<i64> = tasks.iter().map(|task| task.id.get()).collect();
+    assert_eq!(
+        ids,
+        vec![1, 2, 3],
+        "the page that appeared mid-walk was dropped"
+    );
+}
