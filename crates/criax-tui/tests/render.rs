@@ -13,12 +13,13 @@ use criax_core::models::datetime::Timestamp;
 use criax_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use criax_core::store::{ProjectCounts, TaskCount};
 use criax_core::Config;
-use criax_tui::model::{PaneState, SyncStatus, Toast};
+use criax_tui::model::{Focus, PaneState, SyncStatus, Toast};
 use criax_tui::query::Scope;
 use criax_tui::update::{reload_everything, update};
 use criax_tui::{view, Model, Msg};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
+use ratatui::style::Modifier;
 use ratatui::Terminal;
 
 fn now() -> chrono::DateTime<chrono::Utc> {
@@ -469,4 +470,96 @@ fn the_selection_stays_on_screen_when_rows_wrap() {
         screen.contains("Task 18"),
         "the selected task is not on the screen the user is looking at:\n{screen}"
     );
+}
+
+/// The style of the row containing `needle`, searched inside one pane only.
+///
+/// Scoped to a pane on purpose: the preview draws the selected task's title too, so a
+/// whole-screen search finds that copy first and reads the style of the wrong thing.
+fn style_in_pane(
+    model: &Model,
+    area: ratatui::layout::Rect,
+    needle: &str,
+) -> ratatui::style::Style {
+    let (width, height) = model.size;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| view(model, frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    for y in area.y..area.y.saturating_add(area.height) {
+        let row: String = (area.x..area.x.saturating_add(area.width))
+            .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+            .collect();
+        if let Some(at_byte) = row.find(needle) {
+            // Byte offset is not a column: rows carry multibyte box-drawing characters.
+            let at = area.x + row[..at_byte].chars().count() as u16;
+            return buffer.cell((at, y)).unwrap().style();
+        }
+    }
+    panic!("no row containing {needle:?} in {area:?}");
+}
+
+#[test]
+fn the_pane_being_driven_wears_the_brighter_selection() {
+    // Reported as "the colours are backwards": the unfocused row used REVERSED, which
+    // swaps each span's own colour into its background. A row carrying a due-soon date
+    // therefore became a yellow bar -- on the pane the user was *not* driving, while the
+    // focused pane got a quiet dark blue.
+    let mut model = fixture((160, 50));
+    let title = "Fix the token refresh";
+    let theme = model.theme;
+    let list = model.frames().list;
+    let sidebar = model
+        .frames()
+        .sidebar
+        .expect("the sidebar shows at 160 wide");
+
+    assert_eq!(model.focus, Focus::List, "the list starts focused");
+    let driven = style_in_pane(&model, list, title);
+    assert_eq!(
+        driven.bg,
+        theme.selected(true).bg,
+        "the focused list should wear the focused selection"
+    );
+    assert_eq!(
+        style_in_pane(&model, sidebar, "Work").bg,
+        theme.selected(false).bg,
+        "and the sidebar, which is not being driven, the quiet one"
+    );
+
+    // Tab off the list. With every pane showing, focus leaves the list.
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+    );
+    assert_ne!(model.focus, Focus::List);
+
+    let idle = style_in_pane(&model, list, title);
+    assert_eq!(
+        idle.bg,
+        theme.selected(false).bg,
+        "the list should step back once it is not the pane being driven"
+    );
+    assert_ne!(
+        driven.bg, idle.bg,
+        "the two states have to be told apart at a glance"
+    );
+}
+
+#[test]
+fn a_selection_never_borrows_the_rows_own_colours() {
+    // REVERSED is the specific thing that made an unfocused row loud: it turns every
+    // coloured span into a block of that colour.
+    let theme = criax_tui::theme::Theme::new(criax_tui::theme::ColorDepth::TrueColor);
+    for focused in [true, false] {
+        let style = theme.selected(focused);
+        assert!(
+            !style.add_modifier.contains(Modifier::REVERSED),
+            "selected({focused}) still reverses the row's own spans"
+        );
+        assert!(
+            style.bg.is_some(),
+            "selected({focused}) must be findable on the screen"
+        );
+    }
+    assert_ne!(theme.pane(true).fg, theme.pane(false).fg);
 }

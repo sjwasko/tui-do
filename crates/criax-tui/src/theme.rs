@@ -84,7 +84,12 @@ pub struct Theme {
 const ACCENT: Shade = Shade::new((25, 115, 255), Color::Blue);
 const MUTED: Shade = Shade::new((122, 128, 140), Color::DarkGray);
 const BORDER: Shade = Shade::new((68, 74, 88), Color::DarkGray);
-const SELECTION: Shade = Shade::new((38, 46, 64), Color::Blue);
+/// The selected row in the pane being driven. Bright enough to find at a glance in a
+/// tiled window, dark enough that the row's own text stays readable on top of it.
+const SELECTION_FOCUS: Shade = Shade::new((46, 82, 148), Color::Blue);
+
+/// The selected row in a pane that is not being driven. Present, not competing.
+const SELECTION_IDLE: Shade = Shade::new((38, 46, 64), Color::DarkGray);
 const OVERDUE: Shade = Shade::new((224, 84, 84), Color::Red);
 const SOON: Shade = Shade::new((230, 170, 60), Color::Yellow);
 const OK: Shade = Shade::new((90, 190, 120), Color::Green);
@@ -126,17 +131,38 @@ impl Theme {
         self.muted().add_modifier(Modifier::BOLD)
     }
 
-    /// The selected row, in the pane that has focus.
+    /// The selected row, brighter in the pane that has focus.
+    ///
+    /// Both states are a background colour, deliberately. The unfocused row used
+    /// `REVERSED`, which swaps each *span's* own colour into its background — so a row
+    /// carrying a due-soon date turned into a yellow bar, an overdue one into a red bar,
+    /// and the labels into whatever the server had coloured them. The result was that
+    /// the pane the user was *not* driving wore the loudest thing on the screen, while
+    /// the focused pane got a quiet dark blue. The salience was backwards.
     #[must_use]
     pub fn selected(self, focused: bool) -> Style {
         if focused {
             Style::new()
-                .bg(SELECTION.at(self.depth))
+                .bg(SELECTION_FOCUS.at(self.depth))
                 .add_modifier(Modifier::BOLD)
         } else {
-            // Still visible, so the user can see where they will land on Tab, but not
-            // competing with the pane they are actually driving.
-            Style::new().add_modifier(Modifier::REVERSED | Modifier::DIM)
+            // Visible, so the user can see where Tab will land them, but plainly quieter
+            // than the pane they are driving.
+            Style::new().bg(SELECTION_IDLE.at(self.depth))
+        }
+    }
+
+    /// A pane's border or headings, accented while it has focus.
+    ///
+    /// The selected row answers "where am I", but not while a pane is empty or its
+    /// selection is scrolled out of sight. This answers "which pane am I driving" on its
+    /// own, which is the question Tab raises.
+    #[must_use]
+    pub fn pane(self, focused: bool) -> Style {
+        if focused {
+            Style::new().fg(ACCENT.at(self.depth))
+        } else {
+            self.border()
         }
     }
 
