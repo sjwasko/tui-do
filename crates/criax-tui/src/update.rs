@@ -381,7 +381,17 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             model.status.sync = SyncStatus::Working {
                 detail: "starting".to_string(),
             };
-            vec![Effect::SyncNow]
+            // Read the store first, and only then ask the server. Everything `criax add`
+            // wrote is already local, so it appears on this frame rather than after the
+            // pull — which is seventy-eight sequential pages, better than half a minute,
+            // and no part of it is needed to show a task the store already has.
+            //
+            // The pull still runs, and its own reload lands when it finishes. This is
+            // the local-first claim applied to the refresh key itself: the cache answers
+            // now, the server confirms later.
+            let mut effects = reload_everything(model);
+            effects.push(Effect::SyncNow);
+            effects
         }
         Action::CommandPalette => {
             // Built from the keymap, in the focused pane's context, so the palette and
