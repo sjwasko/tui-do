@@ -1073,6 +1073,28 @@ fn an_adoption_leaves_a_task_it_does_not_name_alone() {
 }
 
 #[test]
+fn asking_to_sync_reads_the_store_before_it_waits_on_the_server() {
+    // `criax add` writes to the same store, so the task is local before the pull starts.
+    // Waiting seventy-eight pages to show a row that is already on disk is the lag this
+    // project exists to remove.
+    let mut model = loaded();
+    let effects = press(&mut model, 'r');
+
+    assert!(
+        loaded_query(&effects).is_some(),
+        "r must re-read the store on the spot"
+    );
+    assert!(
+        effects.contains(&Effect::LoadCounts),
+        "including the counts, which is where a task added elsewhere shows first"
+    );
+    assert!(
+        effects.contains(&Effect::SyncNow),
+        "and still ask the server"
+    );
+}
+
+#[test]
 fn a_finished_sync_reloads_what_the_screen_is_showing() {
     let mut model = loaded();
     update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Pull)));
