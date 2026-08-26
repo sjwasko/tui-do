@@ -17,6 +17,7 @@ criax-tui = { path = "crates/criax-tui" }
 
 ratatui = "0.30"
 crossterm = "0.29"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 # `cookies` is not optional: `POST /user/token/refresh` answers "No refresh token provided."
 # unless the refresh cookie set by `POST /login` is sent back with the request.
