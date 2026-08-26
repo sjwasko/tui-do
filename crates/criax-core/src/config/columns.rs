@@ -152,6 +152,14 @@ pub struct ColumnLayout {
 
 impl ColumnLayout {
     /// The layouts shipped when the user has configured none.
+    ///
+    /// None of them wrap. A wrapped title costs two or three rows to say what a truncated
+    /// one says in one, so a short window shows a third of the tasks it could — and the
+    /// list is the thing the user is scanning. What the truncation hides is a keystroke
+    /// away in the preview, which exists for exactly that.
+    ///
+    /// `wrap` stays in the schema, and the renderer and the scroll maths both still
+    /// handle it, because it is the user's column layout to configure.
     #[must_use]
     pub fn defaults() -> Vec<Self> {
         vec![
@@ -161,7 +169,6 @@ impl ColumnLayout {
                 columns: vec![
                     ColumnSpec {
                         min_width: Some(20),
-                        wrap: true,
                         ..ColumnSpec::new(Column::Title)
                     },
                     ColumnSpec {
@@ -207,7 +214,6 @@ impl ColumnLayout {
                     },
                     ColumnSpec {
                         min_width: Some(20),
-                        wrap: true,
                         ..ColumnSpec::new(Column::Title)
                     },
                     ColumnSpec::new(Column::Project),

@@ -1,12 +1,12 @@
 criax  Work › List  Table  Kanban                                                                       ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   All tasks          4 │ Title                   Project    Labels   Due        │ Fix the token refresh that drops the
-  Favorites          2 │ Fix the token refresh   Work        urgent  2 days ago │ cookie
-Projects               │ that drops the cookie                                  │ ──────────────────────────────────────
-▾ Home               1 │ Ship the release        Work                Tomorrow   │ Project  Work
-    Errands            │ Renew the passport      Home        backen… Sep 23     │ ID       WORK-42
-  Work               3 │ A task with no date at  Work                —          │ Due      2 days ago
-                       │ all                                                    │ Priority P5
+  Favorites          2 │ Fix the token refresh … Work        urgent  2 days ago │ cookie
+Projects               │ Ship the release        Work                Tomorrow   │ ──────────────────────────────────────
+▾ Home               1 │ Renew the passport      Home        backen… Sep 23     │ Project  Work
+    Errands            │ A task with no date at… Work                —          │ ID       WORK-42
+  Work               3 │                                                        │ Due      2 days ago
+                       │                                                        │ Priority P5
                        │                                                        │ Labels    urgent  backend
                        │                                                        │
                        │                                                        │ The refresh call needs the cookie set

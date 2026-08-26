@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
+use criax_core::config::columns::{Column, ColumnLayout, ColumnSpec};
 use criax_core::models::datetime::Timestamp;
 use criax_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use criax_core::store::{ProjectCounts, TaskCount};
@@ -439,6 +440,18 @@ fn the_selection_stays_on_screen_when_rows_wrap() {
     // eighteen *lines* holds far fewer *tasks*. The scroll maths counted lines, decided
     // everything already fitted, and never moved the offset.
     let mut model = fixture((80, 24));
+    // The shipped layouts truncate now, so a layout that wraps has to be asked for --
+    // `wrap` is still the user's to set, and the scroll maths still has to survive it.
+    model.layouts = vec![ColumnLayout {
+        name: "wrapping".to_string(),
+        description: None,
+        columns: vec![ColumnSpec {
+            min_width: Some(20),
+            wrap: true,
+            ..ColumnSpec::new(Column::Title)
+        }],
+    }];
+    model.layout_ix = 0;
     model.data.tasks = (1..=18)
         .map(|n| Task {
             id: TaskId(n),
