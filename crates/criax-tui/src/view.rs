@@ -170,7 +170,7 @@ fn draw_sidebar(model: &Model, frame: &mut Frame, area: Rect) {
     let focused = model.focus == Focus::Sidebar;
     let block = Block::new()
         .borders(Borders::RIGHT)
-        .border_style(theme.border());
+        .border_style(theme.pane(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -253,13 +253,20 @@ fn list(model: &Model, frame: &mut Frame, area: Rect) {
     };
     let columns = rows::measure(model.layout(), area.width);
 
+    // The list sits between the other two panes and owns no border of its own, so its
+    // column headings are where it says whether it is the pane being driven.
+    let heading_style = if model.focus == Focus::List {
+        theme.pane(true).add_modifier(Modifier::BOLD)
+    } else {
+        theme.heading()
+    };
     let heading = Line::from(interleave(
         columns
             .iter()
             .map(|column| {
                 Span::styled(
                     pad(&rows::truncate(&column.heading, column.width), column.width),
-                    theme.heading(),
+                    heading_style,
                 )
             })
             .collect(),
@@ -380,7 +387,7 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
     let theme = model.theme;
     let block = Block::new()
         .borders(Borders::LEFT)
-        .border_style(theme.border());
+        .border_style(theme.pane(model.focus == Focus::Preview));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
