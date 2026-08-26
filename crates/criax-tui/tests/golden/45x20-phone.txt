@@ -1,12 +1,12 @@
 criax  Work                  ⟳ synced 2m ago
 ─────────────────────────────────────────────
  Title                  Project     Labels
- Fix the token refresh  Work         urgent …
- that drops the cookie
+ Fix the token refresh… Work         urgent …
  Ship the release       Work
  Renew the passport     Home         backend
- A task with no date at Work
- all
+ A task with no date a… Work
+
+
 
 
 
