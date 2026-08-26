@@ -206,6 +206,8 @@ pub enum Action {
     GotoLabel,
     /// Add a task, typed in quick-add syntax.
     AddTask,
+    /// Open the edit form over the selected task.
+    EditTask,
     /// Mark the selected task done, or not done.
     ToggleDone,
     /// Delete the selected task.
@@ -447,6 +449,13 @@ pub const KEYMAP: &[Binding] = &[
         context: Context::Global,
         group: Group::Task,
         doc: "Add a task",
+    },
+    Binding {
+        keys: &[chord![Key::char('e')]],
+        action: Action::EditTask,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Edit the selected task",
     },
     Binding {
         keys: &[chord![Key::char('d')]],

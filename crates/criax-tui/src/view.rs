@@ -6,13 +6,13 @@
 //! without a terminal.
 
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::keymap::{help_rows, HelpRow};
-use crate::modal::{Modal, PickerState, SearchState, TextInput};
+use crate::modal::{EditField, EditState, Modal, PickerState, SearchState, TextInput};
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
 use crate::rows::{self, MeasuredColumn, RowContext};
@@ -576,6 +576,10 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         // adding a modal is a compile error until it has been given a size.
         Modal::Search(_) | Modal::Add(_) => (60, 3),
         Modal::Picker(_) => (60, 16),
+        // One line per field, the description given room to be a description, plus the
+        // border and the hint. Sized to its content for the same reason the help modal
+        // is: a fixed height is how a row goes missing.
+        Modal::Edit(_) => (72, EditField::ALL.len() as u16 + EDIT_DESCRIPTION_LINES + 3),
     };
     let area = centered(frame.area(), width, height);
     let truncated = matches!(modal, Modal::Help(_)) && area.height < rows.len() as u16 + 2;
@@ -611,9 +615,79 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         }
         // Drawn as prompts above, never as boxes.
         Modal::Search(_) | Modal::Add(_) => {}
+        Modal::Edit(state) => edit_body(state, frame, inner, theme),
         Modal::Picker(picker) => {
             picker_body(picker, frame, inner, theme);
         }
+    }
+}
+
+/// How many lines the description field is given inside the edit form.
+const EDIT_DESCRIPTION_LINES: u16 = 4;
+
+/// The edit form: every field of one task, with the focused one marked.
+fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
+    /// Room for the widest label plus its colon.
+    const GUTTER: u16 = 13;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for field in EditField::ALL {
+        let focused = state.focus == field;
+        let input = state.field(field);
+        let width = area.width.saturating_sub(GUTTER + 1);
+
+        // The label carries the focus, so the field being typed into is findable without
+        // hunting for a cursor -- the same accent the focused pane uses.
+        let label = Span::styled(
+            format!(
+                " {:<width$}",
+                field.label(),
+                width = usize::from(GUTTER) - 1
+            ),
+            if focused {
+                theme.pane(true).add_modifier(Modifier::BOLD)
+            } else {
+                theme.muted()
+            },
+        );
+
+        if input.is_multiline() {
+            let wrapped = rows::wrap(input.value(), width, EDIT_DESCRIPTION_LINES);
+            for (index, text) in wrapped.iter().enumerate() {
+                let gutter = if index == 0 {
+                    label.clone()
+                } else {
+                    Span::raw(" ".repeat(usize::from(GUTTER)))
+                };
+                lines.push(Line::from(vec![
+                    gutter,
+                    Span::styled(text.clone(), value_style(theme, focused)),
+                ]));
+            }
+            // Keep the box a constant height whatever the description holds, so the
+            // fields below it do not move as the user types.
+            for _ in wrapped.len()..usize::from(EDIT_DESCRIPTION_LINES) {
+                lines.push(Line::default());
+            }
+        } else {
+            let shown = rows::truncate(input.value(), width);
+            let text = if shown.is_empty() && !focused {
+                Span::styled("—".to_string(), theme.muted())
+            } else {
+                Span::styled(shown, value_style(theme, focused))
+            };
+            lines.push(Line::from(vec![label, text]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A form value, marked while its field has the keyboard.
+fn value_style(theme: Theme, focused: bool) -> Style {
+    if focused {
+        theme.text().add_modifier(Modifier::UNDERLINED)
+    } else {
+        theme.text()
     }
 }
 

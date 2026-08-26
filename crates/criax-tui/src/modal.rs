@@ -9,8 +9,8 @@
 //! resize, with no fall-through to the screen underneath, because "sometimes it leaks" is
 //! how the predecessor's key handling grew to 790 lines.
 
-use criax_core::models::{LabelId, ProjectId};
-use crossterm::event::KeyCode;
+use criax_core::models::{LabelId, ProjectId, Task};
+use crossterm::event::{KeyCode, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
@@ -24,6 +24,7 @@ use crate::keymap::{help_rows, Action, Context, Key};
 pub struct TextInput {
     value: String,
     cursor: usize,
+    multiline: bool,
 }
 
 impl TextInput {
@@ -32,7 +33,29 @@ impl TextInput {
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         let cursor = value.chars().count();
-        Self { value, cursor }
+        Self {
+            value,
+            cursor,
+            multiline: false,
+        }
+    }
+
+    /// A field that takes Enter as a newline rather than leaving it to the modal.
+    ///
+    /// A description is the one task field that is genuinely several lines, and flattening
+    /// one because the editor could not hold it would lose the user's text.
+    #[must_use]
+    pub fn multiline(value: impl Into<String>) -> Self {
+        Self {
+            multiline: true,
+            ..Self::new(value)
+        }
+    }
+
+    /// Whether Enter belongs to this field.
+    #[must_use]
+    pub const fn is_multiline(&self) -> bool {
+        self.multiline
     }
 
     /// The text so far.
@@ -57,6 +80,12 @@ impl TextInput {
             KeyCode::Char(c) if !key.mods.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 let at = self.byte_offset(self.cursor);
                 self.value.insert(at, c);
+                self.cursor += 1;
+                true
+            }
+            KeyCode::Enter if self.multiline => {
+                let at = self.byte_offset(self.cursor);
+                self.value.insert(at, '\n');
                 self.cursor += 1;
                 true
             }
@@ -291,10 +320,12 @@ pub enum Modal {
     Add(TextInput),
     /// Choosing a project or a label.
     Picker(PickerState),
+    /// Editing every field of one task.
+    Edit(Box<EditState>),
 }
 
 /// What a modal decided about a key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// Handled; nothing else should see it.
     Consumed,
@@ -307,7 +338,7 @@ pub enum Outcome {
 }
 
 /// What a modal asks `update` to do when it closes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Submission {
     /// Filter the list by this text. Empty clears the search.
     Search(String),
@@ -315,6 +346,216 @@ pub enum Submission {
     Picked(Pick),
     /// Create a task from this quick-add text.
     Add(String),
+    /// Apply this filled-in edit form.
+    Edited(Box<EditDraft>),
+}
+
+/// Which field of the edit form has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditField {
+    /// The task's title.
+    Title,
+    /// Its description, which may be several lines.
+    Description,
+    /// 0 for none, 1 to 5.
+    Priority,
+    /// Anything the quick-add parser understands: `tomorrow`, `24/12/2026`, `friday`.
+    Due,
+    /// A project name, resolved the way `+project` is.
+    Project,
+    /// Comma-separated label names, resolved the way `*label` is.
+    Labels,
+}
+
+impl EditField {
+    /// Every field, in the order they are shown and tabbed through.
+    pub const ALL: [Self; 6] = [
+        Self::Title,
+        Self::Description,
+        Self::Priority,
+        Self::Due,
+        Self::Project,
+        Self::Labels,
+    ];
+
+    /// What this field is called on screen.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Title => "Title",
+            Self::Description => "Description",
+            Self::Priority => "Priority",
+            Self::Due => "Due",
+            Self::Project => "Project",
+            Self::Labels => "Labels",
+        }
+    }
+
+    fn step(self, forward: bool) -> Self {
+        let at = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        let count = Self::ALL.len();
+        let next = if forward {
+            (at + 1) % count
+        } else {
+            (at + count - 1) % count
+        };
+        Self::ALL[next]
+    }
+}
+
+/// The edit form, over one task.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditState {
+    /// The task as it was.
+    ///
+    /// Kept whole rather than by id: it is what the mutation's `before` needs, what a
+    /// rejection restores, and -- because assignees travel in the task body and an empty
+    /// list clears them -- the only safe thing to build the write from.
+    pub before: Box<Task>,
+    /// The title field.
+    pub title: TextInput,
+    /// The description field, which takes Enter as a newline.
+    pub description: TextInput,
+    /// The priority field.
+    pub priority: TextInput,
+    /// The due-date field.
+    pub due: TextInput,
+    /// The project field.
+    pub project: TextInput,
+    /// The labels field.
+    pub labels: TextInput,
+    /// Which field has the keyboard.
+    pub focus: EditField,
+}
+
+impl EditState {
+    /// A form filled in from `task`.
+    ///
+    /// `project_name` and the label names are passed in rather than looked up, because
+    /// the modal cannot reach the model and a form that showed ids would be a form nobody
+    /// could edit.
+    #[must_use]
+    pub fn new(task: &Task, project_name: &str) -> Self {
+        let labels = task
+            .labels
+            .iter()
+            .map(|label| label.title.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self {
+            title: TextInput::new(task.title.clone()),
+            description: TextInput::multiline(task.description.clone()),
+            priority: TextInput::new(task.priority.to_string()),
+            due: TextInput::new(
+                task.due_date
+                    .get()
+                    .map(|due| due.format("%d/%m/%Y").to_string())
+                    .unwrap_or_default(),
+            ),
+            project: TextInput::new(project_name.to_string()),
+            labels: TextInput::new(labels),
+            focus: EditField::Title,
+            before: Box::new(task.clone()),
+        }
+    }
+
+    /// The field with the keyboard.
+    pub fn current(&mut self) -> &mut TextInput {
+        match self.focus {
+            EditField::Title => &mut self.title,
+            EditField::Description => &mut self.description,
+            EditField::Priority => &mut self.priority,
+            EditField::Due => &mut self.due,
+            EditField::Project => &mut self.project,
+            EditField::Labels => &mut self.labels,
+        }
+    }
+
+    /// One field's text, for drawing.
+    #[must_use]
+    pub fn field(&self, which: EditField) -> &TextInput {
+        match which {
+            EditField::Title => &self.title,
+            EditField::Description => &self.description,
+            EditField::Priority => &self.priority,
+            EditField::Due => &self.due,
+            EditField::Project => &self.project,
+            EditField::Labels => &self.labels,
+        }
+    }
+
+    /// What the user typed, for `update` to resolve against the projects and labels it
+    /// knows about. The modal deliberately resolves nothing itself.
+    #[must_use]
+    pub fn draft(&self) -> EditDraft {
+        EditDraft {
+            before: self.before.clone(),
+            title: self.title.value().to_string(),
+            description: self.description.value().to_string(),
+            priority: self.priority.value().trim().to_string(),
+            due: self.due.value().trim().to_string(),
+            project: self.project.value().trim().to_string(),
+            labels: self.labels.value().to_string(),
+        }
+    }
+}
+
+/// A filled-in edit form, before any of it has been understood.
+///
+/// Every field is still the text the user typed. Resolving a project name, a label list
+/// or a date needs the model, and `update` is where the model lives -- so the modal hands
+/// over strings and `update` decides what they mean, the same way the quick-add prompt
+/// does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditDraft {
+    /// The task as it was, for the mutation's `before`.
+    pub before: Box<Task>,
+    /// The new title.
+    pub title: String,
+    /// The new description.
+    pub description: String,
+    /// Priority, as typed.
+    pub priority: String,
+    /// The due date, as typed.
+    pub due: String,
+    /// The project name, as typed.
+    pub project: String,
+    /// The label names, comma-separated, as typed.
+    pub labels: String,
+}
+
+impl ModalView for EditState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            KeyCode::Esc => Outcome::Dismiss,
+            // Saving is its own chord because Enter belongs to the description, and a
+            // form that saved on Enter could not hold a second line.
+            KeyCode::Char('s') if key.mods.contains(KeyModifiers::CONTROL) => {
+                Outcome::Submit(Submission::Edited(Box::new(self.draft())))
+            }
+            KeyCode::Tab => {
+                self.focus = self.focus.step(true);
+                Outcome::Consumed
+            }
+            KeyCode::BackTab => {
+                self.focus = self.focus.step(false);
+                Outcome::Consumed
+            }
+            // Enter moves on, except in the one field that is genuinely several lines.
+            KeyCode::Enter if !self.current().is_multiline() => {
+                self.focus = self.focus.step(true);
+                Outcome::Consumed
+            }
+            _ => {
+                self.current().press(key);
+                Outcome::Consumed
+            }
+        }
+    }
+
+    fn title(&self) -> String {
+        "Edit task  —  Tab moves, Ctrl-S saves, Esc cancels".to_string()
+    }
 }
 
 /// Behaviour every modal has.
@@ -443,6 +684,7 @@ impl Modal {
             Self::Search(state) => state,
             Self::Add(state) => state,
             Self::Picker(state) => state,
+            Self::Edit(state) => state.as_mut(),
         }
     }
 
@@ -455,6 +697,7 @@ impl Modal {
     #[must_use]
     pub fn title(&self) -> String {
         match self {
+            Self::Edit(state) => state.title(),
             Self::Help(state) => state.title(),
             Self::Search(state) => state.title(),
             Self::Add(state) => state.title(),

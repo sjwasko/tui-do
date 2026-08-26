@@ -16,5 +16,5 @@
 │                                           │
 │Tasks                                      │
 │  a           Add a task                   │
-│  d           Mark done, or not done       │
+│  e           Edit the selected task       │
 └───────────────────────────────────────────┘

@@ -19,8 +19,8 @@ Projects               │ Ship the release        Work                Tomorrow 
                        │      │ Back to the list, then out of a search               Esc │
                        │      │ Show or hide completed tasks                           t │
                        │      │ Open the selected task                             Enter │
+                       │      │ Edit the selected task                                 e │
                        │      │ Delete the task                                        x │
-                       │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
