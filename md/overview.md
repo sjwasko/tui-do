@@ -1,4 +1,4 @@
-# criax
+# tui-do
 
 A local-first terminal client for [Vikunja](https://vikunja.io), written
 in Rust.
@@ -15,17 +15,17 @@ it shapes every decision below.
 
 **Vikunja** is an open-source, self-hostable task manager: projects, tasks,
 labels, assignees, due dates, saved filters, Kanban boards. It has a web UI, a
-documented REST API, and no official terminal client. criax speaks that API and
+documented REST API, and no official terminal client. tui-do speaks that API and
 stores everything it learns locally.
 
-criax is built against Vikunja **v2.5.0**, and the OpenAPI document it was built
+tui-do is built against Vikunja **v2.5.0**, and the OpenAPI document it was built
 from — 126 paths — is checked into the repo at `spec/vikunja.json`. A
 conformance test asserts that every URL the client builds exists in
 that document.
 
 ## The project it replaces
 
-criax is the second attempt. The first is **cria**, and the honest summary is
+tui-do is the second attempt. The first is **cria**, and the honest summary is
 that cria works, taught this project what a Vikunja TUI should *show*, and could
 not be built on.
 
@@ -41,7 +41,7 @@ without telling anyone.
 
 None of that is a criticism of the person who wrote it. Those are the failure
 modes of a codebase that grew by accretion without a test suite or a lint gate,
-which is most codebases. **criax exists to keep cria's behaviour and discard its
+which is most codebases. **tui-do exists to keep cria's behaviour and discard its
 architecture** — its `tests/` directory in particular is a genuinely useful
 behavioural spec, and the quick-add syntax and configurable column layouts are
 cria's ideas, reimplemented.
@@ -51,7 +51,7 @@ never has, so nothing has been copied from it. The two ideas carried across are
 independently derivable — the parser implements *Vikunja's own documented*
 quick-add syntax, and the column layouts are a YAML schema described in cria's
 own documentation. Both were written from those descriptions and from tests.
-criax ships `MIT OR Apache-2.0`.
+tui-do ships `MIT OR Apache-2.0`.
 
 ## How it was built
 
@@ -78,14 +78,14 @@ produced it:
 
 ```
                    ┌─────────────────────────────────────┐
-                   │              criax                  │   the binary:
+                   │              tui-do                  │   the binary:
                    │   terminal · effect runtime · CLI   │   owns tokio, the
                    └───────┬──────────────────┬──────────┘   terminal, and the
                            │                  │              only awaits
                  Msg ▲     │ Effect           │
                      │     ▼                  ▼
           ┌──────────┴──────────┐   ┌──────────────────────┐
-          │      criax-tui      │   │      criax-core      │
+          │      tui-do-tui      │   │      tui-do-core      │
           │  Model · Msg ·      │──▶│  store · outbox ·    │
           │  update · view      │   │  sync · quickadd ·   │
           │                     │   │  config              │
@@ -93,7 +93,7 @@ produced it:
           └─────────────────────┘              │
                                                ▼
                                     ┌──────────────────────┐
-                                    │      criax-api       │
+                                    │      tui-do-api       │
                                     │  typed client ·      │
                                     │  models · paging     │
                                     └──────────┬───────────┘
@@ -102,19 +102,19 @@ produced it:
                                         Vikunja server
 ```
 
-The arrows that matter are the ones that are **missing**. `criax-tui` does not
+The arrows that matter are the ones that are **missing**. `tui-do-tui` does not
 depend on `reqwest`, `rusqlite` or `tokio`, so it *cannot* await anything — the
 dependency list is the enforcement mechanism, not a convention anyone has
 to remember.
 
-### `criax-api` — the wire
+### `tui-do-api` — the wire
 
 A typed client over Vikunja's REST API. Owns the models, the pagination (page
 size read from the server's `/api/v1/info`, never hardcoded), authentication by
 scoped token or by password-and-refresh-cookie, and the error taxonomy the sync
 engine classifies against.
 
-### `criax-core` — what is true right now
+### `tui-do-core` — what is true right now
 
 The local SQLite store is the source of truth the interface reads from.
 Beside it:
@@ -134,7 +134,7 @@ Beside it:
 - **`config`** — YAML, XDG paths, token resolution, and a one-way importer for
   cria's config.
 
-### `criax-tui` — everything on screen
+### `tui-do-tui` — everything on screen
 
 `update(&mut Model, Msg) -> Vec<Effect>` is a pure, synchronous function. It
 cannot read a clock — the current time arrives inside `Msg::Tick` — and it
@@ -142,12 +142,12 @@ cannot touch a store. Screens and modals are an `enum` and a stack, never
 booleans. The keymap is a single table read by three consumers, so the bindings,
 the help modal and the command palette cannot drift.
 
-### `criax` — the only place that blocks
+### `tui-do` — the only place that blocks
 
 The effect runtime: it owns the terminal, the tokio runtime, the store handle
 and the sync timer. It executes `Effect`s on their own tasks and sends results
 back as `Msg`s, so nothing sits between a keystroke and a frame. It also hosts
-the CLI — `criax add`, which shares the parser and the outbox with the interface
+the CLI — `tui-do add`, which shares the parser and the outbox with the interface
 rather than reimplementing either.
 
 ## The loop
@@ -224,7 +224,7 @@ did not catch.
 Phases 0–3 are complete: the API layer, the store, the sync engine, and a
 read-only interface that shows 3,877 real tasks instantly from cache. Phase 4 —
 mutations — is half built: add, complete, delete, undo and redo work against a
-live server, from the interface or from `criax add` in a shell.
+live server, from the interface or from `tui-do add` in a shell.
 
 Ahead: the rest of the edit keys, markdown descriptions, comments and
 attachments, then Vikunja's own views — Kanban, table, saved filters.

@@ -1,4 +1,4 @@
-# criax development Vikunja instance.
+# tui-do development Vikunja instance.
 #
 # Pinned to the SAME image versions as production (prod-box) so behaviour differences
 # between dev and prod are never a version artifact. Verified 2026-08-24:
@@ -7,12 +7,12 @@
 # Runs on dev-box. Binds loopback only; the tailnet gets it via `tailscale serve`.
 # See deploy/README.md.
 
-name: criax-dev
+name: tui-do-dev
 
 services:
   vikunja:
     image: vikunja/vikunja:2.5.0
-    container_name: criax-vikunja
+    container_name: tui-do-vikunja
     restart: unless-stopped
     depends_on:
       vikunja-db:
@@ -20,7 +20,7 @@ services:
     env_file: [./vikunja.env]
     volumes:
       # Attachments and uploaded files.
-      - ${CRIAX_DEV_ROOT:-/opt/appdata/criax-dev}/files:/db
+      - ${TUI_DO_DEV_ROOT:-/opt/appdata/tui-do-dev}/files:/db
     healthcheck:
       # The Vikunja image ships no shell and no curl/wget, so an exec-form probe
       # against its own binary is the only option. `vikunja healthcheck` opens a DB
@@ -35,12 +35,12 @@ services:
 
   vikunja-db:
     image: postgres:18.4
-    container_name: criax-vikunja-db
+    container_name: tui-do-vikunja-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${CRIAX_DB_USER:-vikunja}
-      POSTGRES_PASSWORD: ${CRIAX_DB_PASSWORD:?set CRIAX_DB_PASSWORD in deploy/.env}
-      POSTGRES_DB: ${CRIAX_DB_NAME:-vikunja}
+      POSTGRES_USER: ${TUI_DO_DB_USER:-vikunja}
+      POSTGRES_PASSWORD: ${TUI_DO_DB_PASSWORD:?set TUI_DO_DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${TUI_DO_DB_NAME:-vikunja}
     volumes:
       # Local disk only. Never an SMB mount -- Postgres on SMB corrupts.
       #
@@ -49,9 +49,9 @@ services:
       # `pg_upgrade --link` works without crossing a mount boundary; pointing the
       # mount at the old path makes the image refuse to start. Production uses the
       # same layout.
-      - ${CRIAX_DEV_ROOT:-/opt/appdata/criax-dev}/db:/var/lib/postgresql
+      - ${TUI_DO_DEV_ROOT:-/opt/appdata/tui-do-dev}/db:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${CRIAX_DB_USER:-vikunja} -d ${CRIAX_DB_NAME:-vikunja}"]
+      test: ["CMD-SHELL", "pg_isready -U ${TUI_DO_DB_USER:-vikunja} -d ${TUI_DO_DB_NAME:-vikunja}"]
       interval: 10s
       timeout: 5s
       retries: 5

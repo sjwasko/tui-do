@@ -1,4 +1,4 @@
-"""Does `r` surface a task added by `criax add` into the project on screen?
+"""Does `r` surface a task added by `tui-do add` into the project on screen?
 
 Scope is removed as a variable: the TUI is landed on a uniquely-named project and
 the task is added to that same project by name.
@@ -17,8 +17,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vt import Screen
 
-DB = os.path.expanduser("~/.local/share/criax/criax.db")
-BIN = "./target/release/criax"
+DB = os.path.expanduser("~/.local/share/tui-do/tui-do.db")
+BIN = "./target/release/tui-do"
 PROJECT = "Mileage"
 PROJECT_ID = 30
 COLS, ROWS = 120, 40

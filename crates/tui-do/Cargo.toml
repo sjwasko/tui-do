@@ -1,0 +1,30 @@
+[package]
+name = "tui-do"
+description = "A fast, local-first terminal client for Vikunja."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+default-run = "tui-do"
+
+[[bin]]
+name = "tui-do"
+path = "src/main.rs"
+
+[dependencies]
+tui-do-api.workspace = true
+tui-do-core.workspace = true
+tui-do-tui.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+chrono.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

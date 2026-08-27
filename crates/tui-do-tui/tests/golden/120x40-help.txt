@@ -1,0 +1,40 @@
+tui-do  Work › List  Table  Kanban                                                                      ⟳ synced 2m ago
+────────────────────────────┌Keys──────────────────────────────────────────────────────────┐────────────────────────────
+  All tasks          4 │ Tit│Navigation                                                    │ken refresh that drops the
+  Favorites          2 │ Fix│  j / ↓       Move down                                       │
+Projects               │ Shi│  k / ↑       Move up                                         │────────────────────────────
+▾ Home               1 │ Ren│  C-d / PgDn  Page down                                       │ork
+    Errands            │ A t│  C-u / PgUp  Page up                                         │ORK-42
+  Work               3 │    │  g g / Home  Jump to the top                                 │ days ago
+                       │    │  G / End     Jump to the bottom                              │5
+                       │    │  Tab         Focus the next pane                             │urgent  backend
+                       │    │  S-Tab       Focus the previous pane                         │
+                       │    │  Esc         Back to the list, then out of a search          │h call needs the cookie set
+                       │    │  g p         Go to a project                                 │ogin.
+                       │    │  g l         Go to a label                                   │
+                       │    │  /           Search the current list                         │
+                       │    │  Enter       Open the selected task                          │
+                       │    │                                                              │
+                       │    │Tasks                                                         │
+                       │    │  a           Add a task                                      │
+                       │    │  e           Edit the selected task                          │
+                       │    │  d           Mark done, or not done                          │
+                       │    │  x           Delete the task                                 │
+                       │    │  u           Undo the last change                            │
+                       │    │  C-r         Redo                                            │
+                       │    │                                                              │
+                       │    │View                                                          │
+                       │    │  z s         Show or hide the sidebar                        │
+                       │    │  z p         Show or hide the preview pane                   │
+                       │    │  t           Show or hide completed tasks                    │
+                       │    │  L           Next column layout                              │
+                       │    │  H           Previous column layout                          │
+                       │    │                                                              │
+                       │    │Application                                                   │
+                       │    │  r           Sync now                                        │
+                       │    │  :           Run a command by name                           │
+                       │    │  ?           Show this help                                  │
+                       │    │  q / C-c     Quit                                            │
+                       │    └──────────────────────────────────────────────────────────────┘
+                       │                                                        │
+4 tasks                                                                                   ?:help  /:search  g:go  q:quit

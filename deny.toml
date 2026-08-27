@@ -2,7 +2,7 @@
 
 [licenses]
 version = 2
-# criax ships MIT OR Apache-2.0; only permissively licensed dependencies are acceptable,
+# tui-do ships MIT OR Apache-2.0; only permissively licensed dependencies are acceptable,
 # because a copyleft dependency would silently override that promise.
 allow = [
     "MIT",

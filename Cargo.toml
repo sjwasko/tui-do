@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
-members = ["crates/criax", "crates/criax-api", "crates/criax-core", "crates/criax-tui", "xtask"]
+members = ["crates/tui-do", "crates/tui-do-api", "crates/tui-do-core", "crates/tui-do-tui", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sjwasko/criax"
+repository = "https://github.com/sjwasko/tui-do"
 authors = ["Steve Wasko"]
 
 [workspace.dependencies]
-criax-api = { path = "crates/criax-api" }
-criax-core = { path = "crates/criax-core" }
-criax-tui = { path = "crates/criax-tui" }
+tui-do-api = { path = "crates/tui-do-api" }
+tui-do-core = { path = "crates/tui-do-core" }
+tui-do-tui = { path = "crates/tui-do-tui" }
 
 ratatui = "0.30"
 crossterm = "0.29"
@@ -46,7 +46,7 @@ wiremock = "0.6"
 
 # Lints apply to every crate in the workspace. Each crate opts in with `[lints] workspace = true`.
 #
-# The `unwrap`/`panic` denials exist because cria — the project criax replaces — accumulated
+# The `unwrap`/`panic` denials exist because cria — the project tui-do replaces — accumulated
 # 67 `unwrap()` calls and 198 `.clone()`s with no CI lint gate at all. Denying them from commit
 # one is cheaper than removing them later. Tests are exempt via `allow` attributes at the
 # module level, not by weakening these.

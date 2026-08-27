@@ -6,15 +6,15 @@
 # --i-know-this-is-prod proves the flag works without a packet reaching prod
 # — and, more to the point, without a pull.
 #
-# The pull is the reason this file exists. criax keeps one store for every
-# server (~/.local/share/criax/criax.db, from Store::default_path), and a pull
+# The pull is the reason this file exists. tui-do keeps one store for every
+# server (~/.local/share/tui-do/tui-do.db, from Store::default_path), and a pull
 # deletes every local task the listing did not mention. Starting against real
 # prod would therefore replace the dev-derived cache with prod's tasks, which
 # is both a write to your local state and the end of the warm cache the other
 # checks depend on.
 server:
   url: https://prod-box.invalid:8443
-  token_file: ~/.config/criax/token
+  token_file: ~/.config/tui-do/token
 
 sync:
   interval_seconds: 300

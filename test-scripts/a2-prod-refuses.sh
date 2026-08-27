@@ -4,8 +4,8 @@
 #
 # Automates everything that can be asserted without a terminal:
 #
-#   1. `criax --config <prod>`      refuses, naming --i-know-this-is-prod
-#   2. `criax add --config <prod>`  refuses the same way, and queues nothing
+#   1. `tui-do --config <prod>`      refuses, naming --i-know-this-is-prod
+#   2. `tui-do add --config <prod>`  refuses the same way, and queues nothing
 #   3. with the flag, it gets past the guard and reaches the interface
 #
 # Only "and then it draws" is left for your eyes; step 4 prints that command
@@ -26,18 +26,18 @@ readonly FLAG="--i-know-this-is-prod"
 # escape — which is the thing this check exists to prevent.
 readonly PROBE_TEXT="A2 probe — this must never reach a server"
 
-bin=${CRIAX_BIN:-}
+bin=${TUI_DO_BIN:-}
 if [[ -z $bin ]]; then
-	for candidate in ../target/debug/criax ../target/release/criax; do
+	for candidate in ../target/debug/tui-do ../target/release/tui-do; do
 		[[ -x $candidate ]] && { bin=$candidate; break; }
 	done
 fi
-[[ -z $bin ]] && bin=$(command -v criax || true)
-[[ -n $bin ]] || { echo "no criax binary — build it or set CRIAX_BIN" >&2; exit 1; }
+[[ -z $bin ]] && bin=$(command -v tui-do || true)
+[[ -n $bin ]] || { echo "no tui-do binary — build it or set TUI_DO_BIN" >&2; exit 1; }
 # absolute, so the command printed in step 3 works from any directory
 bin=$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")
 
-store="$HOME/.local/share/criax/criax.db"
+store="$HOME/.local/share/tui-do/tui-do.db"
 failures=0
 
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
@@ -53,7 +53,7 @@ echo "config:  $PROD_CONFIG ($(awk '/url:/{print $2; exit}' "$PROD_CONFIG"))"
 echo
 
 # --- 1. the interface refuses ------------------------------------------------
-echo "1. criax --config $PROD_CONFIG"
+echo "1. tui-do --config $PROD_CONFIG"
 # timeout, in case the guard is broken and this tries to open the interface.
 out=$(timeout 15 "$bin" --config "$PROD_CONFIG" 2>&1 </dev/null)
 status=$?
@@ -67,7 +67,7 @@ sed 's/^/  | /' <<<"$out"
 echo
 
 # --- 2. `add` refuses, and queues nothing ------------------------------------
-echo "2. criax add --config $PROD_CONFIG"
+echo "2. tui-do add --config $PROD_CONFIG"
 before=$(outbox_count)
 out=$(timeout 15 "$bin" add --config "$PROD_CONFIG" "$PROBE_TEXT" 2>&1 </dev/null)
 status=$?
@@ -88,12 +88,12 @@ sed 's/^/  | /' <<<"$out"
 echo
 
 # --- 3. the flag gets past the guard -----------------------------------------
-# Run under setsid, so there is no controlling terminal: criax then gets as far
+# Run under setsid, so there is no controlling terminal: tui-do then gets as far
 # as opening the interface and fails on raw mode instead. That failure is the
 # proof — it only happens after guard_production has let it through. Without
 # setsid this would take over your terminal, because crossterm opens /dev/tty
 # directly rather than stdout.
-echo "3. criax --config $UNROUTABLE_CONFIG $FLAG"
+echo "3. tui-do --config $UNROUTABLE_CONFIG $FLAG"
 if command -v setsid >/dev/null; then
 	out=$(setsid timeout 15 "$bin" --config "$UNROUTABLE_CONFIG" "$FLAG" 2>&1 </dev/null)
 	status=$?
@@ -132,7 +132,7 @@ cat <<EOF
    task the listing did not mention. It would overwrite your dev cache with
    prod's tasks.
 
-   Never run: criax add --config $PROD_CONFIG $FLAG
+   Never run: tui-do add --config $PROD_CONFIG $FLAG
    That is the one combination in A2 that would write to production.
 
 EOF
