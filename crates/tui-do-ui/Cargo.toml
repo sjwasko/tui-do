@@ -1,5 +1,5 @@
 [package]
-name = "tui-do-tui"
+name = "tui-do-ui"
 description = "Pure, synchronous terminal UI layer for tui-do: Model, Msg, update, view."
 version.workspace = true
 edition.workspace = true

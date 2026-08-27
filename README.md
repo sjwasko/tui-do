@@ -21,7 +21,7 @@ This is enforced by the crate graph rather than by discipline:
 |---|---|---|
 | `tui-do-api` | Typed go-vikunja REST client | — |
 | `tui-do-core` | Domain model, SQLite store, sync engine, quick-add parser, config | render |
-| `tui-do-tui` | `Model`, `Msg`, `update`, `view`, widgets, keymap | perform I/O — no `reqwest`, no `rusqlite`, no `tokio` |
+| `tui-do-ui` | `Model`, `Msg`, `update`, `view`, widgets, keymap | perform I/O — no `reqwest`, no `rusqlite`, no `tokio` |
 | `tui-do` | CLI, wiring, effect runtime, terminal lifecycle | — |
 
 Writes are optimistic: the local store updates immediately and the change is queued in an

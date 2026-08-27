@@ -5,7 +5,7 @@
 //! the renderer.
 //!
 //! Terminal capability arrives from outside rather than being sniffed here: the runtime
-//! knows whether it is talking to a truecolor terminal, and `tui-do-tui` stays a pure
+//! knows whether it is talking to a truecolor terminal, and `tui-do-ui` stays a pure
 //! function of what it is told.
 
 use chrono::{DateTime, Utc};

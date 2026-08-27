@@ -29,7 +29,7 @@ pub struct Task {
     pub title: String,
 
     /// Longer description. Vikunja's web editor stores HTML here, so this is not
-    /// necessarily plain text or Markdown — see the renderer in `tui-do-tui`.
+    /// necessarily plain text or Markdown — see the renderer in `tui-do-ui`.
     #[serde(default)]
     pub description: String,
 

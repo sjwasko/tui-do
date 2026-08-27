@@ -12,7 +12,7 @@ pub mod sync;
 
 /// The wire models, re-exported.
 ///
-/// `tui-do-tui` names `Task`, `Project` and `Label` constantly but must not depend on
+/// `tui-do-ui` names `Task`, `Project` and `Label` constantly but must not depend on
 /// `tui-do-api` directly, because that crate carries `reqwest` and the UI layer's
 /// dependency list *is* the enforcement mechanism for "the render loop never awaits I/O".
 /// Reaching them through here keeps both facts true.

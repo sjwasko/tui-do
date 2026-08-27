@@ -12,12 +12,12 @@ use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::store::{Mutation, ProjectCounts, TaskCount, TaskOrder};
 use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use tui_do_core::{Config, SyncEvent};
-use tui_do_tui::keymap::Key;
-use tui_do_tui::modal::{Modal, ModalView};
-use tui_do_tui::model::{Focus, PaneState, SyncStatus};
-use tui_do_tui::query::Scope;
-use tui_do_tui::update::{reload_everything, update};
-use tui_do_tui::{Effect, Model, Msg};
+use tui_do_ui::keymap::Key;
+use tui_do_ui::modal::{Modal, ModalView};
+use tui_do_ui::model::{Focus, PaneState, SyncStatus};
+use tui_do_ui::query::Scope;
+use tui_do_ui::update::{reload_everything, update};
+use tui_do_ui::{Effect, Model, Msg};
 
 fn now() -> chrono::DateTime<chrono::Utc> {
     Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
@@ -92,7 +92,7 @@ fn selected_title(model: &Model) -> &str {
     model.selected_task().map_or("", |task| task.title.as_str())
 }
 
-fn loaded_query(effects: &[Effect]) -> Option<tui_do_tui::QueryId> {
+fn loaded_query(effects: &[Effect]) -> Option<tui_do_ui::QueryId> {
     effects.iter().find_map(|effect| match effect {
         Effect::LoadTasks { id, .. } => Some(*id),
         _ => None,
@@ -1169,7 +1169,7 @@ fn a_toast_expires_on_ticks_because_update_has_no_clock() {
     press(&mut model, 't');
     assert!(model.status.toast.is_some());
 
-    for _ in 0..tui_do_tui::model::Toast::LIFETIME {
+    for _ in 0..tui_do_ui::model::Toast::LIFETIME {
         update(&mut model, Msg::Tick(now()));
     }
     assert!(model.status.toast.is_none());
@@ -1202,7 +1202,7 @@ fn a_key_release_does_not_move_the_cursor_twice() {
 }
 
 /// Open the edit form over the selected task and return it.
-fn open_edit(model: &mut Model) -> &mut tui_do_tui::modal::EditState {
+fn open_edit(model: &mut Model) -> &mut tui_do_ui::modal::EditState {
     press(model, 'e');
     match model.modals.last_mut() {
         Some(Modal::Edit(state)) => state.as_mut(),
@@ -1210,7 +1210,7 @@ fn open_edit(model: &mut Model) -> &mut tui_do_tui::modal::EditState {
     }
 }
 
-fn type_into(state: &mut tui_do_tui::modal::EditState, text: &str) {
+fn type_into(state: &mut tui_do_ui::modal::EditState, text: &str) {
     for c in text.chars() {
         state.handle(Key::char(c));
     }
@@ -1295,7 +1295,7 @@ fn labels_leave_the_form_as_their_own_mutations() {
         }]),
     );
     let state = open_edit(&mut model);
-    state.focus = tui_do_tui::modal::EditField::Labels;
+    state.focus = tui_do_ui::modal::EditField::Labels;
     type_into(state, "urgent");
 
     let effects = save(&mut model);
@@ -1339,12 +1339,12 @@ fn a_form_saved_untouched_sends_nothing() {
 fn enter_moves_between_fields_but_writes_a_newline_in_the_description() {
     let mut model = loaded();
     let state = open_edit(&mut model);
-    assert_eq!(state.focus, tui_do_tui::modal::EditField::Title);
+    assert_eq!(state.focus, tui_do_ui::modal::EditField::Title);
 
     state.handle(Key::plain(KeyCode::Enter));
     assert_eq!(
         state.focus,
-        tui_do_tui::modal::EditField::Description,
+        tui_do_ui::modal::EditField::Description,
         "Enter should move on from a one-line field"
     );
 
@@ -1352,7 +1352,7 @@ fn enter_moves_between_fields_but_writes_a_newline_in_the_description() {
     state.handle(Key::plain(KeyCode::Enter));
     assert_eq!(
         state.focus,
-        tui_do_tui::modal::EditField::Description,
+        tui_do_ui::modal::EditField::Description,
         "Enter belongs to the description, which is genuinely several lines"
     );
     assert_eq!(state.description.value().len(), before + 1);
@@ -1400,7 +1400,7 @@ fn editing_a_task_does_not_move_it_to_a_project_that_merely_shares_a_name() {
 
     let state = open_edit(&mut model);
     assert_eq!(state.project.value(), "Inbox");
-    state.focus = tui_do_tui::modal::EditField::Title;
+    state.focus = tui_do_ui::modal::EditField::Title;
     type_into(state, "!");
     let effects = save(&mut model);
 
@@ -1421,7 +1421,7 @@ fn retyping_the_project_field_still_moves_the_task() {
     // but changing it must, or the fix has quietly turned the field read-only.
     let mut model = loaded();
     let state = open_edit(&mut model);
-    state.focus = tui_do_tui::modal::EditField::Project;
+    state.focus = tui_do_ui::modal::EditField::Project;
     for _ in 0..state.project.value().chars().count() {
         state.handle(Key::plain(KeyCode::Backspace));
     }
@@ -1530,7 +1530,7 @@ fn shift_enter_writes_a_newline_in_the_description() {
     // description as a line break, or the chord the user reaches for does nothing.
     let mut model = loaded();
     let state = open_edit(&mut model);
-    state.focus = tui_do_tui::modal::EditField::Description;
+    state.focus = tui_do_ui::modal::EditField::Description;
     type_into(state, "one");
     state.handle(Key {
         code: KeyCode::Enter,
@@ -1540,7 +1540,7 @@ fn shift_enter_writes_a_newline_in_the_description() {
     assert_eq!(state.description.value(), "one\ntwo");
     assert_eq!(
         state.focus,
-        tui_do_tui::modal::EditField::Description,
+        tui_do_ui::modal::EditField::Description,
         "Shift-Enter must not move to the next field"
     );
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tui-do", "crates/tui-do-api", "crates/tui-do-core", "crates/tui-do-tui", "xtask"]
+members = ["crates/tui-do", "crates/tui-do-api", "crates/tui-do-core", "crates/tui-do-ui", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,7 +13,7 @@ authors = ["Steve Wasko"]
 [workspace.dependencies]
 tui-do-api = { path = "crates/tui-do-api" }
 tui-do-core = { path = "crates/tui-do-core" }
-tui-do-tui = { path = "crates/tui-do-tui" }
+tui-do-ui = { path = "crates/tui-do-ui" }
 
 ratatui = "0.30"
 crossterm = "0.29"
