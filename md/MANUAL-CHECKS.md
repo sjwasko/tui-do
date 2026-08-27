@@ -62,7 +62,7 @@ local part — the task is already in the store, so nothing needs fetching to dr
 
 **B8 — Editing a task does not move it.** `e` a task, change only the title, `Ctrl-S`.
 It must stay in the project it was in. *This was broken:* the form shows a project by
-name, and dev carries two projects called `Inbox` (#1, the one Vikunja makes for the
+name, and dev carried two projects called `Inbox` (#1, the one Vikunja makes for the
 account, and #12, seeded from prod). An untouched field was resolved back by name, hit
 #1 first, and moved the task there — so it vanished from the list in tui-do and in the
 web UI both, having been saved perfectly well. A name is a label, not a key; the form
@@ -164,26 +164,24 @@ the prompt.
 
 Not bugs. Listed so they are not reported as such.
 
-- Two `Inbox` rows in the sidebar: dev genuinely has two real projects with that name
-  (`#1` empty, `#12` with the tasks), plus a pseudo-project that is correctly filtered
-  out. Vikunja makes `#1` for a new account and `seed-from-prod.sh` brought `#12` in from
-  prod, which has only one. Deleting `#1` needs the account's default project moved off it
-  first — the server answers `412`, code `3012`, "This project cannot be deleted because it
-  is the default project of a user", and an API token cannot change that setting.
+- **Resolved 2026-08-27.** Dev used to carry two real projects called `Inbox` — `#1`,
+  which Vikunja makes for a new account, and `#12`, which `seed-from-prod.sh` brought in
+  from prod. The account default was moved to `#12` and `#1` deleted, so the sidebar now
+  shows one (plus a pseudo-project that is correctly filtered out). Deleting it required
+  moving the default first: while it held that role the server answered `412`, code
+  `3012`, "This project cannot be deleted because it is the default project of a user",
+  and an API token cannot change that setting.
 
-  `tui-do add +Inbox` says which one it chose, by id. This config now settles it for
-  everything that does not name a project:
+  The lesson outlives the duplicate. **Vikunja does not require project titles to be
+  unique** — measured, not assumed: two `PUT /projects` with the same title both
+  succeeded. So resolving a project by name can always be ambiguous, which is why `#12`
+  names a project by id and works anywhere a project can be written: `tui-do add +#12`,
+  the edit form's project field, and `view.default_project` in the config.
 
-  ```yaml
-  view:
-    default_project: '#12'
-  ```
-
-  `#12` names a project by id, and works anywhere a project can be written — `tui-do add
-  +#12`, the edit form's project field, and this setting. Without it, a task naming no
-  project takes the first real project called `Inbox`, which is `#1`, while the interface
-  is usually showing `#12` — so a task added from a shell could be correctly stored,
-  correctly pushed, and nowhere on screen.
+  `view.default_project` is now optional rather than load-bearing — with one `Inbox` the
+  fallback finds it unaided. Note that it also sets the *landing* project and outranks
+  the remembered one, so leaving it set means always starting in Inbox rather than where
+  you left off.
 - A description holding only an embedded image renders blank. There is no text in it;
   attachments arrive in Phase 5.
 - `Table` and `Kanban` in the header do nothing. Phase 6 is the views API.
