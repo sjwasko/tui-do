@@ -116,8 +116,21 @@ reality.
 
 ## Getting the work off this machine
 
-`mirror-to-git.sh` pushes this repository to Forgejo (`origin`, on `sw-hp2`) and then to
-a private GitHub repository (`github`). `tui-do-mirror.timer` runs it every eight hours;
+`mirror-to-git.sh` pushes this repository to Forgejo (`origin`) and then to a private
+GitHub repository (`github`).
+
+| | |
+|---|---|
+| **Forgejo** | `https://sw-hp2.tail9803a5.ts.net:9443` — v15.0.7, tailnet only, proxying `127.0.0.1:3030` |
+| **git over ssh** | `ssh://git@sw-hp2.tail9803a5.ts.net:2222/swasko/tui-do.git` |
+| **GitHub mirror** | `git@github.com:sjwasko/tui-do.git` — private |
+
+Forgejo shares the `sw-hp2` box with production Vikunja but is a different service on a
+different port. The read-only rule covers the Vikunja instance and its data, not the
+host; pushing git there is not a prod write.
+
+Push-to-create is disabled on this instance, so a new repository has to be made in the
+web UI (or through the API with a token) before the first push will land. `tui-do-mirror.timer` runs it every eight hours;
 `deploy/systemd/` holds both units, symlinked into `~/.config/systemd/user/`.
 
     systemctl --user status tui-do-mirror.timer     # when it next runs
