@@ -56,5 +56,19 @@ mkdir -p "$bin_dir"
 ln -sfn "$repo/target/release/$NEW" "$bin_dir/$NEW"
 echo "  $bin_dir/$NEW -> $repo/target/release/$NEW"
 
+# A symlink to a path that is not there resolves to nothing, and the shell reports
+# it as "command not found" -- which reads as "never installed" rather than
+# "pointing at the wrong place". Two ways to get here: running this before the
+# first release build, or running it and *then* moving the repository, which bakes
+# in the old path.
+if [[ ! -x $bin_dir/$NEW ]]; then
+	echo
+	echo "warning: $bin_dir/$NEW does not resolve to an executable." >&2
+	echo "  It points at $repo/target/release/$NEW, which is not there." >&2
+	echo "  Build it with 'cargo build --workspace --release', or -- if the" >&2
+	echo "  repository has moved since -- re-run this script from its new home." >&2
+	exit 1
+fi
+
 echo
 echo "Done. Check with:  $NEW --version"
