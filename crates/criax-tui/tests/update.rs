@@ -1522,3 +1522,25 @@ fn the_queued_count_is_read_from_the_store_not_carried_forward() {
     update(&mut model, Msg::PendingLoaded(4));
     assert_eq!(model.status.queued, 4);
 }
+
+#[test]
+fn shift_enter_writes_a_newline_in_the_description() {
+    // Terminals that speak the enhanced keyboard protocol report Shift-Enter as Enter
+    // with a modifier; the rest send a plain carriage return. Both have to reach the
+    // description as a line break, or the chord the user reaches for does nothing.
+    let mut model = loaded();
+    let state = open_edit(&mut model);
+    state.focus = criax_tui::modal::EditField::Description;
+    type_into(state, "one");
+    state.handle(Key {
+        code: KeyCode::Enter,
+        mods: KeyModifiers::SHIFT,
+    });
+    type_into(state, "two");
+    assert_eq!(state.description.value(), "one\ntwo");
+    assert_eq!(
+        state.focus,
+        criax_tui::modal::EditField::Description,
+        "Shift-Enter must not move to the next field"
+    );
+}

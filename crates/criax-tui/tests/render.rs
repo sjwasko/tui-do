@@ -576,3 +576,39 @@ fn a_selection_never_borrows_the_rows_own_colours() {
     }
     assert_ne!(theme.pane(true).fg, theme.pane(false).fg);
 }
+
+#[test]
+fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
+    // `wrap` used `split_whitespace`, which ate the newline: two paragraphs came out as
+    // one run-on line, so pressing Enter in the form appeared to do nothing at all.
+    let mut model = fixture((120, 40));
+    let task = criax_core::models::Task {
+        id: criax_core::models::TaskId(1),
+        project_id: criax_core::models::ProjectId(1),
+        title: "with a description".to_string(),
+        description: "first paragraph\nsecond paragraph".to_string(),
+        ..Default::default()
+    };
+    model.modals.push(criax_tui::modal::Modal::Edit(Box::new(
+        criax_tui::modal::EditState::new(&task, "Alpha"),
+    )));
+
+    let screen = draw(&model);
+    assert!(
+        screen.contains("first paragraph"),
+        "no first line:\n{screen}"
+    );
+    let first = screen
+        .lines()
+        .position(|line| line.contains("first paragraph"))
+        .expect("first line is on screen");
+    let second = screen
+        .lines()
+        .position(|line| line.contains("second paragraph"))
+        .expect("second line is on screen");
+    assert_eq!(
+        second,
+        first + 1,
+        "the two paragraphs must be on consecutive rows, not joined:\n{screen}"
+    );
+}
