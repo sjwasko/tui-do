@@ -1,5 +1,5 @@
 [Unit]
-Description=Push tui-do to Forgejo and mirror it to GitHub
+Description=Push tui-do to Forgejo (which mirrors it on to GitHub)
 Wants=network-online.target
 After=network-online.target
 

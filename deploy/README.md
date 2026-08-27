@@ -116,22 +116,33 @@ reality.
 
 ## Getting the work off this machine
 
-`mirror-to-git.sh` pushes this repository to Forgejo (`origin`) and then to a private
-GitHub repository (`github`).
+`mirror-to-git.sh` pushes this repository to Forgejo. **Forgejo mirrors it to GitHub
+itself** — a push mirror on the repository, every eight hours, exactly as every other
+repository on that instance does. There is deliberately no `github` remote in this
+checkout: a second path to GitHub would be a second thing to keep in step, and the two
+could disagree about what the truth is.
+
+    local  --push-->  Forgejo  --Forgejo's push mirror, 8h-->  GitHub (private)
 
 | | |
 |---|---|
 | **Forgejo** | `https://prod-box.example.net:9443` — v15.0.7, tailnet only, proxying `127.0.0.1:3030` |
 | **git over ssh** | `ssh://git@prod-box.example.net:2222/swasko/tui-do.git` |
-| **GitHub mirror** | `git@github.com:sjwasko/tui-do.git` — private |
+| **GitHub** | `github.com/sjwasko/tui-do` — private, written only by Forgejo |
+
+The mirror is configured in the web UI under Settings → Repository → Mirror Settings,
+with an 8h interval and "sync when new commits are pushed" on. Forgejo's default mirror
+interval is already 8h, so nothing in `app.ini` needs changing.
 
 Forgejo shares the `prod-box` box with production Vikunja but is a different service on a
 different port. The read-only rule covers the Vikunja instance and its data, not the
 host; pushing git there is not a prod write.
 
-Push-to-create is disabled on this instance, so a new repository has to be made in the
-web UI (or through the API with a token) before the first push will land. `tui-do-mirror.timer` runs it every eight hours;
-`deploy/systemd/` holds both units, symlinked into `~/.config/systemd/user/`.
+Push-to-create is disabled on this instance, so a repository has to exist before the
+first push will land.
+
+`tui-do-mirror.timer` runs the script every eight hours (`deploy/systemd/`, symlinked
+into `~/.config/systemd/user/`).
 
     systemctl --user status tui-do-mirror.timer     # when it next runs
     journalctl --user -u tui-do-mirror -n 30        # what it did last time

@@ -1,5 +1,5 @@
 [Unit]
-Description=Mirror tui-do off this machine every eight hours
+Description=Push tui-do off this machine every eight hours
 
 [Timer]
 OnCalendar=*-*-* 00/8:00:00

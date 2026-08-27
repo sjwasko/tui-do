@@ -2,11 +2,14 @@
 #
 # Get this repository's committed work off this machine.
 #
-#   local  ->  origin (Forgejo, prod-box)  ->  github (private mirror)
+#   local  ->  origin (Forgejo)  ->  [Forgejo's own push mirror]  ->  GitHub
 #
-# Forgejo is where the work lives; GitHub is a copy that exists so one disk
-# failure is not the end of the project. Run by tui-do-mirror.timer every eight
-# hours, or by hand at any time.
+# This script's job ends at Forgejo. Forgejo mirrors to GitHub itself, every
+# eight hours, the same way every other repository on that instance does -- so
+# there is deliberately no `github` remote here. A second path to GitHub would
+# be a second thing to keep in step, and the two could disagree.
+#
+# Run by tui-do-mirror.timer every eight hours, or by hand at any time.
 #
 # It pushes commits. It never *makes* them: a dirty working tree is
 # work in progress, and committing that on a timer would put broken states into
@@ -17,8 +20,7 @@
 
 set -euo pipefail
 
-readonly UPSTREAM=origin   # Forgejo
-readonly MIRROR=github     # private copy
+readonly UPSTREAM=origin   # Forgejo; GitHub is Forgejo's business, not ours
 
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$repo"
@@ -70,15 +72,13 @@ say "$repo on $branch"
 
 set +e
 push_to "$UPSTREAM"; upstream_status=$?
-push_to "$MIRROR";   mirror_status=$?
 set -e
 
-[[ $upstream_status -eq 2 || $mirror_status -eq 2 ]] && needs_attention=1
-
-# The mirror is the whole point: if the copy off this machine did not happen,
-# say so loudly enough that the timer's status shows it.
-if [[ $mirror_status -ne 0 ]]; then
-	say "MIRROR DID NOT RUN — this repository has no fresh copy off this machine"
+# Getting off this machine is the whole point: if the push did not happen, say
+# so loudly enough that the timer's status shows it. GitHub is downstream of
+# this, so a failure here also means the GitHub copy will not refresh.
+if [[ $upstream_status -ne 0 ]]; then
+	say "PUSH DID NOT RUN — this repository has no fresh copy off this machine"
 	exit 2
 fi
 
