@@ -113,3 +113,22 @@ from decommissioned services — `:443`→`3030` (Forgejo), `:8443`→`8787`, an
 `:8444`→`8089` — none of which had anything listening behind them. Deploying reclaims
 `:8443` for dev Vikunja and removes the other two, leaving one mapping that reflects
 reality.
+
+## Getting the work off this machine
+
+`mirror-to-git.sh` pushes this repository to Forgejo (`origin`, on `prod-box`) and then to
+a private GitHub repository (`github`). `tui-do-mirror.timer` runs it every eight hours;
+`deploy/systemd/` holds both units, symlinked into `~/.config/systemd/user/`.
+
+    systemctl --user status tui-do-mirror.timer     # when it next runs
+    journalctl --user -u tui-do-mirror -n 30        # what it did last time
+    deploy/mirror-to-git.sh                         # run it now
+
+It pushes commits and never makes them. A dirty working tree is work in progress, and
+committing that on a timer would put broken states into the history *and* disguise the
+fact that nothing was actually backed up. Uncommitted paths are reported, and the run
+exits 2 — "a human should look at this" — which the unit treats as success so the timer
+keeps its schedule.
+
+The one failure it shouts about is the mirror not running. Forgejo being unreachable is
+survivable; both copies being stale is how a project ends up existing on one disk.

@@ -1,0 +1,13 @@
+[Unit]
+Description=Mirror tui-do off this machine every eight hours
+
+[Timer]
+OnCalendar=*-*-* 00/8:00:00
+# Catch up after the laptop has been asleep or off, rather than silently
+# skipping the window: the point is that a copy exists, not that it is punctual.
+Persistent=true
+RandomizedDelaySec=15m
+Unit=tui-do-mirror.service
+
+[Install]
+WantedBy=timers.target

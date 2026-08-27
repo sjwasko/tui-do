@@ -1,0 +1,13 @@
+[Unit]
+Description=Push tui-do to Forgejo and mirror it to GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/code/tui-do/deploy/mirror-to-git.sh
+# Exit 2 means "a human should look" — an uncommitted tree, or a push another
+# machine has already moved past. Both are real conditions and neither is a
+# failure of the unit, so the timer keeps its schedule instead of going red.
+SuccessExitStatus=0 2
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
