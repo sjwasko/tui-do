@@ -7,7 +7,7 @@
 //! Network calls, database writes and file access happen in the effect runtime, which
 //! lives in the binary crate and communicates over channels.
 //!
-//! This is enforced structurally: `tui-do-tui` does not depend on `reqwest`, `rusqlite` or
+//! This is enforced structurally: `tui-do-ui` does not depend on `reqwest`, `rusqlite` or
 //! `tokio`, so it *cannot* await anything. That is deliberate. The project this replaces
 //! awaited network calls while holding a lock on its application state, which froze the
 //! terminal for the duration of every slow request. Do not add an I/O dependency here.

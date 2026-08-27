@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 tui-do-api.workspace = true
 tui-do-core.workspace = true
-tui-do-tui.workspace = true
+tui-do-ui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true

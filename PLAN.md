@@ -104,14 +104,14 @@ tui-do/
 ├── crates/
 │   ├── tui-do-api/     Typed go-vikunja client. Models, endpoints, auth, thiserror errors. No TUI, no SQLite.
 │   ├── tui-do-core/    Domain models, SQLite store, sync engine + outbox, quick-add parser, config.
-│   ├── tui-do-tui/     Model/Msg/update/view, widgets, keymap, theme. Pure + sync. No network.
+│   ├── tui-do-ui/     Model/Msg/update/view, widgets, keymap, theme. Pure + sync. No network.
 │   └── tui-do/         Binary: clap CLI, wiring, terminal setup/teardown, panic hook.
 ├── spec/vikunja.json  Live API spec, refreshed from the dev server
 ├── deploy/            docker-compose + seed/reset scripts for the dev instance
 └── xtask/             Model codegen from spec, spec-conformance check
 ```
 
-The crate boundaries are the enforcement mechanism: `tui-do-tui` cannot depend on `reqwest`, so the freeze
+The crate boundaries are the enforcement mechanism: `tui-do-ui` cannot depend on `reqwest`, so the freeze
 bug is structurally impossible.
 
 ### Platform policy
@@ -225,7 +225,7 @@ Stand this up **before** Phase 1, so every subsequent phase is verified against 
   resolution, `api_key_file` indirection with tilde expansion, quick actions, column layouts. Add
   `tui-do migrate` to import `~/.config/cria/config.yaml`.
 
-### Phase 3 — `tui-do-tui` first light
+### Phase 3 — `tui-do-ui` first light
 
 Read-only milestone: launch, load from SQLite, browse. Should be *instant* — no network on the critical path.
 
@@ -280,7 +280,7 @@ quietly warning about, test on `sw-mba`), then reassess whether anything else is
 | `src/config.rs` (543) | `tui-do-core::config` | Best-written file in the repo |
 | `COLUMN_LAYOUTS.md`, `QUICK_ACTIONS.md` | schema + docs | Config schemas worth preserving |
 | `tests/` (5.4k LOC, 37 files) | spec + tests | `tests/app.rs` alone is 31 real behavioral tests |
-| `src/url_utils.rs`, `src/color_helper.rs`, `src/terminal_capabilities.rs` | `tui-do-tui` | Small, focused, useful |
+| `src/url_utils.rs`, `src/color_helper.rs`, `src/terminal_capabilities.rs` | `tui-do-ui` | Small, focused, useful |
 
 **Reference only:** `src/tui/ui/*` — read to learn *what* each screen shows, then rewrite.
 

@@ -85,7 +85,7 @@ produced it:
                  Msg ▲     │ Effect           │
                      │     ▼                  ▼
           ┌──────────┴──────────┐   ┌──────────────────────┐
-          │      tui-do-tui      │   │      tui-do-core      │
+          │      tui-do-ui      │   │      tui-do-core      │
           │  Model · Msg ·      │──▶│  store · outbox ·    │
           │  update · view      │   │  sync · quickadd ·   │
           │                     │   │  config              │
@@ -102,7 +102,7 @@ produced it:
                                         Vikunja server
 ```
 
-The arrows that matter are the ones that are **missing**. `tui-do-tui` does not
+The arrows that matter are the ones that are **missing**. `tui-do-ui` does not
 depend on `reqwest`, `rusqlite` or `tokio`, so it *cannot* await anything — the
 dependency list is the enforcement mechanism, not a convention anyone has
 to remember.
@@ -134,7 +134,7 @@ Beside it:
 - **`config`** — YAML, XDG paths, token resolution, and a one-way importer for
   cria's config.
 
-### `tui-do-tui` — everything on screen
+### `tui-do-ui` — everything on screen
 
 `update(&mut Model, Msg) -> Vec<Effect>` is a pure, synchronous function. It
 cannot read a clock — the current time arrives inside `Msg::Tick` — and it

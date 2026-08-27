@@ -1,6 +1,6 @@
 //! The effect runtime: the half of tui-do that is allowed to block.
 //!
-//! `tui-do-tui` describes what it wants as [`Effect`] values and learns what happened as
+//! `tui-do-ui` describes what it wants as [`Effect`] values and learns what happened as
 //! [`Msg`] values. This module is what turns one into the other — it owns the terminal,
 //! the store, the API client and the sync timer, and it is the only place in tui-do where
 //! anything is awaited.
@@ -22,10 +22,10 @@ use tui_do_api::Client;
 use tui_do_core::models::ProjectId;
 use tui_do_core::store::{LabelFilter, LabelSort, ProjectFilter, ProjectSort, LAST_PROJECT};
 use tui_do_core::{Config, Store, Sync};
-use tui_do_tui::model::landing_scope;
-use tui_do_tui::theme::{ColorDepth, Theme};
-use tui_do_tui::update::reload_everything;
-use tui_do_tui::{update, view, Effect, Model, Msg};
+use tui_do_ui::model::landing_scope;
+use tui_do_ui::theme::{ColorDepth, Theme};
+use tui_do_ui::update::reload_everything;
+use tui_do_ui::{update, view, Effect, Model, Msg};
 
 use terminal::TerminalGuard;
 
@@ -92,10 +92,10 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     let mut model = Model::new(&config, scope, chrono::Utc::now(), size);
     model.theme = Theme::new(color_depth());
     if let Some(problem) = credential_problem {
-        model.status.sync = tui_do_tui::model::SyncStatus::Failed {
+        model.status.sync = tui_do_ui::model::SyncStatus::Failed {
             message: problem.clone(),
         };
-        model.toast(tui_do_tui::model::Toast::error(problem));
+        model.toast(tui_do_ui::model::Toast::error(problem));
     }
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -511,7 +511,7 @@ fn spawn_sync_timer(
 
 /// How much colour this terminal can show.
 ///
-/// Read once, here, rather than anywhere in `tui-do-tui`: the UI layer is a pure function
+/// Read once, here, rather than anywhere in `tui-do-ui`: the UI layer is a pure function
 /// of what it is told, and "what the terminal can do" is something the runtime knows.
 fn color_depth() -> ColorDepth {
     if std::env::var_os("NO_COLOR").is_some() {
@@ -580,7 +580,7 @@ pub async fn add(
         .await
         .unwrap_or_default();
 
-    let mut built = tui_do_tui::quickadd_task(
+    let mut built = tui_do_ui::quickadd_task(
         &parsed,
         &projects,
         &labels,
@@ -602,7 +602,7 @@ pub async fn add(
                     .labels(LabelFilter::default(), LabelSort::default())
                     .await
                     .unwrap_or(labels);
-                built = tui_do_tui::quickadd_task(
+                built = tui_do_ui::quickadd_task(
                     &parsed,
                     &projects,
                     &labels,

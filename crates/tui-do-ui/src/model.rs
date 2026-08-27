@@ -271,7 +271,7 @@ pub struct Model {
     /// Sync state and transient messages.
     pub status: Status,
     /// The colours. Set once by the runtime, which is what knows how much colour the
-    /// terminal can show; `tui-do-tui` never sniffs a variable.
+    /// terminal can show; `tui-do-ui` never sniffs a variable.
     pub theme: Theme,
     /// Terminal size, as columns by rows.
     pub size: (u16, u16),

@@ -6,9 +6,9 @@ Full phase plan in `PLAN.md`.
 ## The rules that matter
 
 **1. The render loop never awaits I/O.**
-`tui-do-tui` is pure and synchronous. `update(&mut Model, Msg) -> Vec<Effect>` describes side
+`tui-do-ui` is pure and synchronous. `update(&mut Model, Msg) -> Vec<Effect>` describes side
 effects as values; the effect runtime in `crates/tui-do` executes them and sends results back
-as `Msg`. `tui-do-tui` has no `reqwest`, no `rusqlite`, no `tokio` dependency, and must never
+as `Msg`. `tui-do-ui` has no `reqwest`, no `rusqlite`, no `tokio` dependency, and must never
 gain one — that dependency ban *is* the enforcement mechanism.
 
 *Why:* the project tui-do replaces awaited network calls while holding a lock on its

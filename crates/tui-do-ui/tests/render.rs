@@ -2,7 +2,7 @@
 //!
 //! The three sizes are the three breakpoint bands: 80×24 is list-only, 120×40 gains the
 //! sidebar, 160×50 gains the preview as well. Re-bless them with `TUI_DO_BLESS=1 cargo
-//! test -p tui-do-tui --test render` after an intentional change, and read the diff.
+//! test -p tui-do-ui --test render` after an intentional change, and read the diff.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -18,10 +18,10 @@ use tui_do_core::models::datetime::Timestamp;
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::store::{ProjectCounts, TaskCount};
 use tui_do_core::Config;
-use tui_do_tui::model::{Focus, PaneState, SyncStatus, Toast};
-use tui_do_tui::query::Scope;
-use tui_do_tui::update::{reload_everything, update};
-use tui_do_tui::{view, Model, Msg};
+use tui_do_ui::model::{Focus, PaneState, SyncStatus, Toast};
+use tui_do_ui::query::Scope;
+use tui_do_ui::update::{reload_everything, update};
+use tui_do_ui::{view, Model, Msg};
 
 fn now() -> chrono::DateTime<chrono::Utc> {
     Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
@@ -562,7 +562,7 @@ fn the_pane_being_driven_wears_the_brighter_selection() {
 fn a_selection_never_borrows_the_rows_own_colours() {
     // REVERSED is the specific thing that made an unfocused row loud: it turns every
     // coloured span into a block of that colour.
-    let theme = tui_do_tui::theme::Theme::new(tui_do_tui::theme::ColorDepth::TrueColor);
+    let theme = tui_do_ui::theme::Theme::new(tui_do_ui::theme::ColorDepth::TrueColor);
     for focused in [true, false] {
         let style = theme.selected(focused);
         assert!(
@@ -589,8 +589,8 @@ fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
         description: "first paragraph\nsecond paragraph".to_string(),
         ..Default::default()
     };
-    model.modals.push(tui_do_tui::modal::Modal::Edit(Box::new(
-        tui_do_tui::modal::EditState::new(&task, "Alpha"),
+    model.modals.push(tui_do_ui::modal::Modal::Edit(Box::new(
+        tui_do_ui::modal::EditState::new(&task, "Alpha"),
     )));
 
     let screen = draw(&model);

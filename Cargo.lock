@@ -3066,7 +3066,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-do-api",
  "tui-do-core",
- "tui-do-tui",
+ "tui-do-ui",
 ]
 
 [[package]]
@@ -3105,7 +3105,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tui-do-tui"
+name = "tui-do-ui"
 version = "0.1.0"
 dependencies = [
  "chrono",
