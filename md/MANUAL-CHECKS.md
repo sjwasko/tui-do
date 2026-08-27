@@ -68,6 +68,12 @@ account, and #12, seeded from prod). An untouched field was resolved back by nam
 web UI both, having been saved perfectly well. A name is a label, not a key; the form
 now only resolves the field when it was actually retyped.
 
+**B9 — A description keeps the lines you typed.** `e` a task, Tab to Description, type a
+line, press Enter (or Shift-Enter), type another, `Ctrl-S`, then `e` again. Two lines,
+not one. *This was broken:* `rows::wrap` split on whitespace, and `\n` is whitespace, so
+the break was stored and then drawn as a space — the key appeared to do nothing. The
+form also drew no caret at all, so there was no way to see where a character would land.
+
 ---
 
 ## C. Undo
@@ -111,6 +117,16 @@ compact layout, which is the one a phone wants.
 
 **E3 — Nothing overruns.** A long toast must not walk over the key hints, and the header
 must keep a gap between the breadcrumb and the sync indicator at every width.
+
+To provoke a long toast, ask for something that fails with a long reason — `a` a task
+naming a label that does not exist, several of them: `probe *nope1 *nope2 *nope3
+*nope4`. The toast names every one. Then narrow the terminal to about 60 columns with
+the toast still up: the hints on the right (`?:help  /:search`) must stay readable
+rather than being written over. For the header, hold the terminal narrow and watch the
+gap between the project name on the left and `⟳ synced …` on the right — the brand and
+then the `List Table Kanban` tabs drop out to keep it, and the two halves must never
+touch. The offline banner is the longest right-hand side, so `test-scripts/go-offline.sh`
+plus a narrow window is the worst case.
 
 **E4 — The help modal is complete.** `?` — the last row must be visible, or the title must
 say `j/k scrolls`. *This was broken:* adding one binding pushed the last row off a fixed

@@ -42,8 +42,17 @@ impl TerminalGuard {
         enable_raw_mode().context("could not put the terminal into raw mode")?;
         RAW.store(true, Ordering::SeqCst);
         let mut out = io::stdout();
-        execute!(out, EnterAlternateScreen, cursor::Hide)
-            .context("could not switch to the alternate screen")?;
+        // A blinking block, not the terminal's default. criax shows a cursor only where
+        // text is being typed, and in the edit form the focused field is already
+        // underlined -- an underline caret would be camouflaged by it, and a thin bar was
+        // what the form had in effect before, which is to say nothing findable.
+        execute!(
+            out,
+            EnterAlternateScreen,
+            cursor::Hide,
+            cursor::SetCursorStyle::BlinkingBlock
+        )
+        .context("could not switch to the alternate screen")?;
 
         let terminal = Terminal::new(CrosstermBackend::new(out))
             .context("could not initialise the terminal backend")?;
@@ -70,7 +79,12 @@ fn restore() {
     let mut out = io::stdout();
     // Nothing useful can be done about a failure here: we are already on the way out, and
     // the alternative is a panic inside a panic hook.
-    let _ = execute!(out, LeaveAlternateScreen, cursor::Show);
+    let _ = execute!(
+        out,
+        cursor::SetCursorStyle::DefaultUserShape,
+        LeaveAlternateScreen,
+        cursor::Show
+    );
     let _ = disable_raw_mode();
     let _ = out.flush();
 }

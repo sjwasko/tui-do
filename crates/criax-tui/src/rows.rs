@@ -426,12 +426,35 @@ pub fn truncate(text: &str, width: u16) -> String {
 
 /// Wrap `text` at word boundaries into at most `max_lines` lines.
 ///
+/// An explicit newline is a hard break. It has to be: `split_whitespace` treats `\n` as
+/// ordinary space, so without this a description typed as two paragraphs rendered as one
+/// run-on line -- and pressing Enter in the edit form looked like it did nothing at all,
+/// because the character went in and was then drawn as a space.
+///
 /// The last line is truncated and ellipsised rather than the overflow being dropped
 /// silently: a cell that quietly loses half a title is worse than one that says it did.
 #[must_use]
 pub fn wrap(text: &str, width: u16, max_lines: u16) -> Vec<String> {
     if width == 0 || max_lines == 0 {
         return vec![String::new()];
+    }
+    if text.contains('\n') {
+        let mut lines: Vec<String> = Vec::new();
+        for paragraph in text.split('\n') {
+            let room = max_lines.saturating_sub(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+            if room == 0 {
+                break;
+            }
+            if paragraph.trim().is_empty() {
+                lines.push(String::new());
+                continue;
+            }
+            lines.extend(wrap(paragraph, width, room));
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        return lines;
     }
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -1149,5 +1172,117 @@ mod tests {
         let context = plain_context();
         assert_eq!(first_visible(&tasks, &narrow(), context, 2, 1), 2);
         assert_eq!(fit(&tasks, &narrow(), context, 2, 1), 1);
+    }
+}
+
+/// Lay a value out for an edit box, and say where the caret lands.
+///
+/// Character-wrapped rather than word-wrapped, and deliberately: in a box the user is
+/// typing into, a caret offset has to map to exactly one cell, and re-flowing words
+/// breaks that mapping. Explicit newlines are hard breaks.
+///
+/// Returns at most `max_lines` rows, windowed so the caret is always among them, and the
+/// caret's position *within that window* as (row, column).
+#[must_use]
+pub fn edit_layout(
+    text: &str,
+    width: u16,
+    max_lines: u16,
+    cursor: usize,
+) -> (Vec<String>, (u16, u16)) {
+    if width == 0 || max_lines == 0 {
+        return (vec![String::new()], (0, 0));
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut caret = (0_u16, 0_u16);
+    let mut seen = 0_usize;
+
+    for (paragraph_index, paragraph) in text.split('\n').enumerate() {
+        if paragraph_index > 0 {
+            seen += 1; // the newline itself
+        }
+        let mut current = String::new();
+        let mut used = 0_u16;
+        for (offset, c) in paragraph.chars().enumerate() {
+            let w = display_width(&c.to_string()).max(1);
+            if used + w > width {
+                rows.push(std::mem::take(&mut current));
+                used = 0;
+            }
+            if seen + offset == cursor {
+                caret = (u16::try_from(rows.len()).unwrap_or(u16::MAX), used);
+            }
+            current.push(c);
+            used += w;
+        }
+        let chars = paragraph.chars().count();
+        if seen + chars == cursor {
+            caret = (u16::try_from(rows.len()).unwrap_or(u16::MAX), used);
+        }
+        seen += chars;
+        rows.push(current);
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+
+    // Window the rows so the caret is visible, keeping the box a constant height.
+    let max = usize::from(max_lines);
+    let first = usize::from(caret.0).saturating_sub(max.saturating_sub(1));
+    let window: Vec<String> = rows.into_iter().skip(first).take(max).collect();
+    let caret_row = caret.0 - u16::try_from(first).unwrap_or(0);
+    (window, (caret_row, caret.1))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod edit_layout_tests {
+    use super::*;
+
+    #[test]
+    fn an_explicit_newline_is_a_hard_break() {
+        // `split_whitespace` ate these, so a two-paragraph description drew as one line
+        // and Enter in the form looked like it did nothing.
+        assert_eq!(wrap("one\ntwo", 40, 4), vec!["one", "two"]);
+        assert_eq!(wrap("one\n\ntwo", 40, 4), vec!["one", "", "two"]);
+    }
+
+    #[test]
+    fn a_hard_break_still_word_wraps_each_paragraph() {
+        assert_eq!(wrap("aaa bbb\nccc ddd", 7, 4), vec!["aaa bbb", "ccc ddd"]);
+    }
+
+    #[test]
+    fn the_caret_lands_on_the_row_the_newline_made() {
+        let (rows, caret) = edit_layout("one\ntwo", 40, 4, 4);
+        assert_eq!(rows, vec!["one", "two"]);
+        assert_eq!(
+            caret,
+            (1, 0),
+            "just after the newline is the start of row two"
+        );
+    }
+
+    #[test]
+    fn the_caret_at_the_end_sits_past_the_last_character() {
+        let (_, caret) = edit_layout("one\ntwo", 40, 4, 7);
+        assert_eq!(caret, (1, 3));
+    }
+
+    #[test]
+    fn a_line_wider_than_the_box_continues_on_the_next_row() {
+        let (rows, caret) = edit_layout("abcdef", 3, 4, 4);
+        assert_eq!(rows, vec!["abc", "def"]);
+        assert_eq!(caret, (1, 1));
+    }
+
+    #[test]
+    fn the_window_follows_the_caret_past_the_bottom() {
+        // Five rows of content in a four-row box: the box scrolls rather than hiding the
+        // line being typed on.
+        let text = "a\nb\nc\nd\ne";
+        let (rows, caret) = edit_layout(text, 40, 4, text.chars().count());
+        assert_eq!(rows, vec!["b", "c", "d", "e"]);
+        assert_eq!(caret, (3, 1));
     }
 }

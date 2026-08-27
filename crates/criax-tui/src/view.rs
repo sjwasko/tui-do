@@ -631,6 +631,10 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
     const GUTTER: u16 = 13;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Where the terminal's own cursor goes. The focused field's label and underline say
+    // *which* field has the keyboard; only a real caret says where in it the next
+    // character lands, and a multi-line box without one is unreadable.
+    let mut caret: Option<(u16, u16)> = None;
     for field in EditField::ALL {
         let focused = state.focus == field;
         let input = state.field(field);
@@ -652,7 +656,14 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
         );
 
         if input.is_multiline() {
-            let wrapped = rows::wrap(input.value(), width, EDIT_DESCRIPTION_LINES);
+            let (wrapped, (caret_row, caret_col)) =
+                rows::edit_layout(input.value(), width, EDIT_DESCRIPTION_LINES, input.cursor());
+            if focused {
+                caret = Some((
+                    area.x + GUTTER + caret_col,
+                    area.y + u16::try_from(lines.len()).unwrap_or(0) + caret_row,
+                ));
+            }
             for (index, text) in wrapped.iter().enumerate() {
                 let gutter = if index == 0 {
                     label.clone()
@@ -671,6 +682,13 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
             }
         } else {
             let shown = rows::truncate(input.value(), width);
+            if focused {
+                let before: String = input.value().chars().take(input.cursor()).collect();
+                caret = Some((
+                    area.x + GUTTER + rows::display_width(&before).min(width),
+                    area.y + u16::try_from(lines.len()).unwrap_or(0),
+                ));
+            }
             let text = if shown.is_empty() && !focused {
                 Span::styled("—".to_string(), theme.muted())
             } else {
@@ -680,6 +698,12 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
+    // After the widget, so the cursor is not painted over by it.
+    if let Some((x, y)) = caret {
+        if x < area.right() && y < area.bottom() {
+            frame.set_cursor_position((x, y));
+        }
+    }
 }
 
 /// A form value, marked while its field has the keyboard.
