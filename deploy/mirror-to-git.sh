@@ -48,7 +48,11 @@ push_to() { # remote
 		say "no '$remote' remote configured — skipping"
 		return 1
 	fi
-	if ! git ls-remote --exit-code "$remote" >/dev/null 2>&1; then
+	# Deliberately not --exit-code: that reports 2 for a repository that is
+	# reachable but holds no refs, which is precisely a freshly created one
+	# waiting for its first push. Plain ls-remote answers the question actually
+	# being asked -- can this remote be talked to -- and an empty repo answers yes.
+	if ! git ls-remote "$remote" >/dev/null 2>&1; then
 		say "'$remote' is unreachable or has no repository yet — skipping"
 		return 1
 	fi
