@@ -45,6 +45,9 @@ pub enum Msg {
     /// The store answered with per-project task counts.
     CountsLoaded(ProjectCounts),
 
+    /// How many changes the outbox is still holding.
+    PendingLoaded(usize),
+
     /// Something changed underneath the model; read it all again.
     ///
     /// Sent by the runtime after a write lands, so the list shows what was actually

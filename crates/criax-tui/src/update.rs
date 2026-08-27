@@ -76,6 +76,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.data.counts = counts;
             Vec::new()
         }
+        Msg::PendingLoaded(queued) => {
+            model.status.queued = queued;
+            Vec::new()
+        }
         Msg::Reload => reload_everything(model),
         Msg::StoreFailed(message) => {
             model.data.loading = false;
@@ -128,8 +132,12 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             // is deliberately not stamped: nothing was fetched, and "synced just now"
             // would be a claim about the server's state that this pass never checked.
             model.status.sync = SyncStatus::Idle;
+            // The report is what this pass deferred; the store is what is actually
+            // queued. They differ whenever something else shares the outbox -- `criax
+            // add` in another terminal, or a second interface -- so the report paints
+            // immediately and the store corrects it.
             model.status.queued = report.deferred;
-            Vec::new()
+            vec![Effect::LoadPending]
         }
         SyncEvent::Finished(report) => {
             model.status.sync = SyncStatus::Idle;
@@ -632,6 +640,7 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     effects.push(Effect::LoadProjects);
     effects.push(Effect::LoadLabels);
     effects.push(Effect::LoadCounts);
+    effects.push(Effect::LoadPending);
     effects
 }
 
@@ -1032,7 +1041,10 @@ fn adopt(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<Effect
 /// follows is confirmation, not the mechanism.
 fn apply(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
     apply_locally(model, &mutation);
-    vec![Effect::Apply(mutation)]
+    // Asked for rather than incremented: `Effect::Apply` is what writes the outbox row,
+    // and counting ahead of it would show a number the store does not agree with if the
+    // write fails.
+    vec![Effect::Apply(mutation), Effect::LoadPending]
 }
 
 /// The optimistic edit, against the list the user is looking at.

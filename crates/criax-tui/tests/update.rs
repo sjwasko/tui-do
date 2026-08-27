@@ -1501,3 +1501,24 @@ fn a_hash_id_that_names_nothing_falls_back_to_the_title() {
     });
     assert_eq!(filed, Some(ProjectId(3)));
 }
+
+#[test]
+fn the_queued_count_is_read_from_the_store_not_carried_forward() {
+    // The outbox is shared. `criax add` in another terminal queues against the same one,
+    // so a count left over from the last sync report drifts: the terminal says 4 and the
+    // interface says 3. Every refresh and every local write asks the store instead.
+    let mut model = loaded();
+    assert!(
+        reload_everything(&mut model).contains(&Effect::LoadPending),
+        "a refresh must re-read the queue"
+    );
+
+    let effects = press(&mut model, 'd');
+    assert!(
+        effects.contains(&Effect::LoadPending),
+        "queueing a change must re-read the queue"
+    );
+
+    update(&mut model, Msg::PendingLoaded(4));
+    assert_eq!(model.status.queued, 4);
+}

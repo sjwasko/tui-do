@@ -209,6 +209,14 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
                 let _ = tx.send(msg);
             });
         }
+        Effect::LoadPending => {
+            let (store, tx) = (store.clone(), tx.clone());
+            tokio::spawn(async move {
+                if let Ok(pending) = store.pending_count().await {
+                    let _ = tx.send(Msg::PendingLoaded(pending.try_into().unwrap_or(0)));
+                }
+            });
+        }
         Effect::RememberProject(project) => {
             let store = store.clone();
             tokio::spawn(async move {
