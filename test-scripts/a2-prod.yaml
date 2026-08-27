@@ -1,6 +1,6 @@
-# MANUAL-CHECKS A2 — a config pointing at production, so criax must refuse.
+# MANUAL-CHECKS A2 — a config pointing at production, so tui-do must refuse.
 #
-# This names the REAL prod host. It is safe to hand to criax only because the
+# This names the REAL prod host. It is safe to hand to tui-do only because the
 # guard fires before anything opens a socket (main.rs:116 for the interface,
 # main.rs:146 for `add`), so a refusal means no traffic reached sw-hp2.
 #
@@ -8,7 +8,7 @@
 # for that half of the check — see the README.
 server:
   url: https://sw-hp2.tail9803a5.ts.net:8443
-  token_file: ~/.config/criax/token
+  token_file: ~/.config/tui-do/token
 
 sync:
   interval_seconds: 300

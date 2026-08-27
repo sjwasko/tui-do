@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-config="${CRIAX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/criax/config.yaml}"
+config="${TUI_DO_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/tui-do/config.yaml}"
 backup="$config.pre-offline"
 
 if [[ ! -e $backup ]]; then
@@ -29,4 +29,4 @@ echo "config:  $config"
 echo "was:     ${before:-<unreadable>}"
 echo "now:     $after"
 echo
-echo "Anything queued while offline goes out on the next criax run or sync."
+echo "Anything queued while offline goes out on the next tui-do run or sync."

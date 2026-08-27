@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Build tasks for criax: model codegen from the Vikunja OpenAPI spec, spec conformance."
+description = "Build tasks for tui-do: model codegen from the Vikunja OpenAPI spec, spec conformance."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

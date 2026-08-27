@@ -1,4 +1,4 @@
-# criax — the manual checks
+# tui-do — the manual checks
 
 What automated tests cannot tell us. Everything here has caught at least one real defect
 that a green suite did not, which is why each entry says *what went wrong* rather than
@@ -12,19 +12,19 @@ restores the seeded baseline if a check makes a mess worth undoing.
 ## A. The two `PLAN.md` calls non-negotiable
 
 **A1 — Offline is not a degraded mode.**
-With the server unreachable, criax starts instantly, renders the cached list, accepts edits
+With the server unreachable, tui-do starts instantly, renders the cached list, accepts edits
 into the outbox, and never freezes.
 
 Use an *unroutable* address rather than a refused one — `https://10.255.255.1:8443` in a
-scratch config, `CRIAX_CONFIG=... criax`. A refused connection fails in milliseconds and
+scratch config, `TUI_DO_CONFIG=... tui-do`. A refused connection fails in milliseconds and
 proves nothing; a hanging connect is what froze the predecessor.
 
 Pass: the full list draws, `j`/`k` move, `d` marks done, the status line says it cannot
 reach the server, and `q` quits cleanly — all while the connect is still pending.
 
 **A2 — Production refuses.**
-`criax --config` a file pointing at `sw-hp2` and it must refuse to start, naming the flag.
-With `--i-know-this-is-prod` it starts. `criax add` takes the same path and must refuse too.
+`tui-do --config` a file pointing at `sw-hp2` and it must refuse to start, naming the flag.
+With `--i-know-this-is-prod` it starts. `tui-do add` takes the same path and must refuse too.
 
 ---
 
@@ -43,7 +43,7 @@ outbox until the next launch.
 **B4 — Offline edits drain on reconnect.** Go offline, make several edits, watch `N queued`
 climb in the status line, reconnect. They should drain with no prompting.
 
-**B5 — `criax add` from a shell.** With and without a reachable server. Offline it must say
+**B5 — `tui-do add` from a shell.** With and without a reachable server. Offline it must say
 the task is queued, and the next run must send it.
 
 **B6 — An edit to a task you just made lands.** `a` a task, wait for it to appear in the
@@ -53,7 +53,7 @@ so the interface went on holding `-14` and sent `POST /tasks/-14`, answered `404
 does not exist` about the task it had just created. Try `u` straight after a create too:
 the undo stack names the same id.
 
-**B7 — A task added from a shell shows up on `r`.** Leave the interface open, `criax add
+**B7 — A task added from a shell shows up on `r`.** Leave the interface open, `tui-do add
 'something'` in another terminal, then press `r`. *This was broken twice over:* the pass
 emitted `Finished` last and the runtime aborted the event forwarder before it was
 delivered, so the pull wrote to the store and the screen was never told; and `r` pressed
@@ -64,7 +64,7 @@ local part — the task is already in the store, so nothing needs fetching to dr
 It must stay in the project it was in. *This was broken:* the form shows a project by
 name, and dev carries two projects called `Inbox` (#1, the one Vikunja makes for the
 account, and #12, seeded from prod). An untouched field was resolved back by name, hit
-#1 first, and moved the task there — so it vanished from the list in criax and in the
+#1 first, and moved the task there — so it vanished from the list in tui-do and in the
 web UI both, having been saved perfectly well. A name is a label, not a key; the form
 now only resolves the field when it was actually retyped.
 
@@ -99,8 +99,8 @@ task from the web UI, reconnect. The push meets a 404 on a task that is gone: th
 must roll back on screen *and* toast an explanation. Tested against mocks; only this
 exercises the real shapes.
 
-**D2 — Two writers.** Edit the same task in the web UI and in criax while offline, then
-reconnect. criax's write is newer and should win, and the next pull should agree with
+**D2 — Two writers.** Edit the same task in the web UI and in tui-do while offline, then
+reconnect. tui-do's write is newer and should win, and the next pull should agree with
 itself rather than flickering.
 
 ---
@@ -171,7 +171,7 @@ Not bugs. Listed so they are not reported as such.
   first — the server answers `412`, code `3012`, "This project cannot be deleted because it
   is the default project of a user", and an API token cannot change that setting.
 
-  `criax add +Inbox` says which one it chose, by id. This config now settles it for
+  `tui-do add +Inbox` says which one it chose, by id. This config now settles it for
   everything that does not name a project:
 
   ```yaml
@@ -179,7 +179,7 @@ Not bugs. Listed so they are not reported as such.
     default_project: '#12'
   ```
 
-  `#12` names a project by id, and works anywhere a project can be written — `criax add
+  `#12` names a project by id, and works anywhere a project can be written — `tui-do add
   +#12`, the edit form's project field, and this setting. Without it, a task naming no
   project takes the first real project called `Inbox`, which is `#1`, while the interface
   is usually showing `#12` — so a task added from a shell could be correctly stored,
@@ -190,5 +190,5 @@ Not bugs. Listed so they are not reported as such.
 - Numeric dates are **day/month/year**, matching Vikunja: `24/12/2026` is Christmas Eve
   and `12/24/2026` parses as nothing and stays in the title.
 - A repeating task toggled done: Vikunja advances its due date rather than marking it
-  done. criax shows a tick optimistically and the reload corrects it. **Unmeasured** —
+  done. tui-do shows a tick optimistically and the reload corrects it. **Unmeasured** —
   worth watching.

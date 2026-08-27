@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# MANUAL-CHECKS A1 — point criax at an unroutable address so the connect hangs.
+# MANUAL-CHECKS A1 — point tui-do at an unroutable address so the connect hangs.
 #
 # Rewrites server.url in the live config and keeps a backup beside it. The store
-# lives at ~/.local/share/criax/criax.db and does not depend on the URL, so the
+# lives at ~/.local/share/tui-do/tui-do.db and does not depend on the URL, so the
 # cache stays warm — which is the whole point of the check.
 #
 # Undo with restore-config.sh in this directory. Run that before this one again:
@@ -16,7 +16,7 @@ set -euo pipefail
 # nothing; a hanging connect is what froze the predecessor.
 readonly OFFLINE_URL="https://10.255.255.1:8443"
 
-config="${CRIAX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/criax/config.yaml}"
+config="${TUI_DO_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/tui-do/config.yaml}"
 backup="$config.pre-offline"
 
 [[ -f $config ]] || { echo "no config at $config" >&2; exit 1; }
@@ -57,5 +57,5 @@ echo "backup:  $backup"
 echo "was:     $before"
 echo "now:     $after"
 echo
-echo "criax will now hang on connect. Edits you make go to the outbox and will"
+echo "tui-do will now hang on connect. Edits you make go to the outbox and will"
 echo "drain against the real server once restore-config.sh puts the URL back."

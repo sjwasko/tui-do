@@ -1,4 +1,4 @@
-# criax — working notes for Claude
+# tui-do — working notes for Claude
 
 A local-first terminal client for Vikunja. Rust workspace, ratatui UI, SQLite store.
 Full phase plan in `PLAN.md`.
@@ -6,12 +6,12 @@ Full phase plan in `PLAN.md`.
 ## The rules that matter
 
 **1. The render loop never awaits I/O.**
-`criax-tui` is pure and synchronous. `update(&mut Model, Msg) -> Vec<Effect>` describes side
-effects as values; the effect runtime in `crates/criax` executes them and sends results back
-as `Msg`. `criax-tui` has no `reqwest`, no `rusqlite`, no `tokio` dependency, and must never
+`tui-do-tui` is pure and synchronous. `update(&mut Model, Msg) -> Vec<Effect>` describes side
+effects as values; the effect runtime in `crates/tui-do` executes them and sends results back
+as `Msg`. `tui-do-tui` has no `reqwest`, no `rusqlite`, no `tokio` dependency, and must never
 gain one — that dependency ban *is* the enforcement mechanism.
 
-*Why:* the project criax replaces awaited network calls while holding a lock on its
+*Why:* the project tui-do replaces awaited network calls while holding a lock on its
 application state, freezing the terminal for the duration of every slow request.
 
 **2. No `show_x_modal: bool` fields.**
@@ -45,7 +45,7 @@ mechanism rather than a parallel one.
 ## Wire-format facts the spec does not tell you
 
 The OpenAPI document describes what the server *means*, not what it *emits*. Each of these
-cost a live failure to find; all are handled in `criax-api`, and new code must route
+cost a live failure to find; all are handled in `tui-do-api`, and new code must route
 through the same helpers rather than rediscover them.
 
 **Dates: "unset" is Go's zero time**, `"0001-01-01T00:00:00Z"`, never `null` — the SQL
@@ -133,8 +133,8 @@ silent failure — but it is no longer the load-bearing step its comment claimed
 Reset the dev server to its seeded baseline with `deploy/reset-dev.sh`. Seed it from a prod
 export with `deploy/seed-from-prod.sh` (which reads prod and writes only to dev).
 
-`crates/criax` refuses to start against the prod URL without `--i-know-this-is-prod`, and
-integration tests refuse to run unless `CRIAX_TEST_URL` points at dev. Do not weaken either
+`crates/tui-do` refuses to start against the prod URL without `--i-know-this-is-prod`, and
+integration tests refuse to run unless `TUI_DO_TEST_URL` points at dev. Do not weaken either
 guard to make something pass.
 
 ## Platform policy
@@ -152,7 +152,7 @@ the macOS port uses later.
 
 ```sh
 cargo build --workspace
-cargo build --workspace --release         # what `criax` on PATH actually runs -- see below
+cargo build --workspace --release         # what `tui-do` on PATH actually runs -- see below
 cargo clippy --workspace --all-targets    # must be clean; CI runs with -D warnings
 cargo fmt --all
 cargo test --workspace
@@ -160,7 +160,7 @@ cargo xtask fetch-spec                    # refresh spec/vikunja.json from the d
 deploy/test-ubuntu.sh                     # build + test in the ubuntu:26.04 container
 ```
 
-**`~/.local/bin/criax` is a symlink to `target/release/criax`**, so that is the binary a
+**`~/.local/bin/tui-do` is a symlink to `target/release/tui-do`**, so that is the binary a
 manual check exercises. A debug build proves the tests pass and changes nothing the user
 is looking at: handing over a fix without `--release` means they retest the old code and
 report it still broken. Build release before saying a fix is ready to try.
@@ -168,11 +168,22 @@ report it still broken. Build release before saying a fix is ready to try.
 Workspace lints deny `unwrap`, `panic`, `todo`, `dbg!` and forbid `unsafe`. Tests may
 `allow` them at module level; production code may not.
 
+## The rename
+
+The project was called `criax` until 2026-08-27. Everything in the repository moved in
+one commit; what did not, because a commit cannot reach into a home directory, is the
+config at `~/.config/tui-do/`, the store at `~/.local/share/tui-do/tui-do.db`, and the
+symlink on `PATH`. `deploy/adopt-new-name.sh` moves those, refuses while an instance is
+running (the store is SQLite in WAL mode), and is safe to re-run.
+
+`cria` — no `x` — is the *predecessor*, still checked out at `../cria`. It was never part
+of the rename and every mention of it is deliberate.
+
 ## Reference material
 
 `../cria` is the predecessor, checked out for reference. Read it to learn *what* a screen
 shows or *how* the quick-add syntax behaves — its `tests/` are a useful behavioral spec. Do
 not copy its code: it carries no license (no `LICENSE` file was ever committed), and its
-architecture is the thing criax exists to replace.
+architecture is the thing tui-do exists to replace.
 
 The Vikunja web UI is the design reference for layout and interaction.

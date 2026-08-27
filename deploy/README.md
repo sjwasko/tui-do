@@ -1,10 +1,10 @@
-# criax dev Vikunja instance
+# tui-do dev Vikunja instance
 
-An isolated Vikunja for developing and testing criax, so production task data is never
+An isolated Vikunja for developing and testing tui-do, so production task data is never
 at risk. Runs on `sw-surface`.
 
 **Production (`sw-hp2`) is read-only, always.** It is a source for the seed export and
-nothing else. `seed-from-prod.sh` refuses to write there; `criax` itself refuses to start
+nothing else. `seed-from-prod.sh` refuses to write there; `tui-do` itself refuses to start
 against the prod URL without `--i-know-this-is-prod`.
 
 ## Versions
@@ -27,15 +27,15 @@ data on local disk under `/opt/appdata`, secrets in `*.env` at mode 600.
 ```sh
 # 1. Create the directories. This is the one step that needs sudo -- sw-surface
 #    requires a password for it, so run this yourself before deploying.
-sudo mkdir -p /opt/stacks/criax-dev /opt/appdata/criax-dev/{db,files}
-sudo chown -R "$USER:$USER" /opt/stacks/criax-dev /opt/appdata/criax-dev
+sudo mkdir -p /opt/stacks/tui-do-dev /opt/appdata/tui-do-dev/{db,files}
+sudo chown -R "$USER:$USER" /opt/stacks/tui-do-dev /opt/appdata/tui-do-dev
 
-# 2. Copy this directory to /opt/stacks/criax-dev, then fill in the two env files
+# 2. Copy this directory to /opt/stacks/tui-do-dev, then fill in the two env files
 cp .env.example .env
 cp vikunja.env.example vikunja.env
 chmod 600 .env vikunja.env
 openssl rand -hex 32          # -> VIKUNJA_SERVICE_JWTSECRET
-openssl rand -hex 24          # -> CRIAX_DB_PASSWORD (both files must agree)
+openssl rand -hex 24          # -> TUI_DO_DB_PASSWORD (both files must agree)
 
 # 3. Start it
 docker compose up -d
@@ -50,7 +50,7 @@ set `VIKUNJA_SERVICE_ENABLEREGISTRATION=false` in `vikunja.env` followed by
 
 ## Where each script runs
 
-All of these live in the criax repo at `deploy/` and are run **from your workstation** —
+All of these live in the tui-do repo at `deploy/` and are run **from your workstation** —
 only the compose file and the two secret files are copied to the dev host. The ones that
 need Docker reach the host over SSH themselves; they also detect when they are already
 running on it, so either location works.
@@ -104,7 +104,7 @@ the only step requiring elevation: `sudo` on `sw-surface` prompts for a password
 cannot run unattended. Everything after it runs as `swasko` (who is in the `docker`
 group, and is Tailscale's `OperatorUser`, so `tailscale serve` needs no sudo either).
 
-Override the data root with `CRIAX_DEV_ROOT` in `.env` if it should move.
+Override the data root with `TUI_DO_DEV_ROOT` in `.env` if it should move.
 
 ## Tailnet mappings
 

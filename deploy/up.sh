@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Deploy (or redeploy) the criax dev Vikunja to sw-surface, from the workstation.
+# Deploy (or redeploy) the tui-do dev Vikunja to sw-surface, from the workstation.
 #
 # Idempotent: re-running syncs the compose file and restarts. Secrets are generated
 # once on first run and preserved afterwards -- rerunning will not rotate the JWT
 # secret out from under existing sessions or orphan the database password.
 #
 # Prerequisite (needs a sudo password, so run it on the host yourself):
-#   sudo mkdir -p /opt/stacks/criax-dev /opt/appdata/criax-dev/{db,files}
-#   sudo chown -R "$USER:$USER" /opt/stacks/criax-dev /opt/appdata/criax-dev
+#   sudo mkdir -p /opt/stacks/tui-do-dev /opt/appdata/tui-do-dev/{db,files}
+#   sudo chown -R "$USER:$USER" /opt/stacks/tui-do-dev /opt/appdata/tui-do-dev
 
 set -euo pipefail
 
-HOST="${CRIAX_DEV_HOST:-sw-surface.tail9803a5.ts.net}"
-STACK=/opt/stacks/criax-dev
-DATA=/opt/appdata/criax-dev
+HOST="${TUI_DO_DEV_HOST:-sw-surface.tail9803a5.ts.net}"
+STACK=/opt/stacks/tui-do-dev
+DATA=/opt/appdata/tui-do-dev
 PORT=8443
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -44,14 +44,14 @@ set -euo pipefail
 cd $STACK
 umask 077
 if [ ! -f .env ]; then
-  printf 'CRIAX_DEV_ROOT=%s\nCRIAX_DB_USER=vikunja\nCRIAX_DB_NAME=vikunja\nCRIAX_DB_PASSWORD=%s\n' \
+  printf 'TUI_DO_DEV_ROOT=%s\nTUI_DO_DB_USER=vikunja\nTUI_DO_DB_NAME=vikunja\nTUI_DO_DB_PASSWORD=%s\n' \
     "$DATA" "\$(openssl rand -hex 24)" > .env
   echo "  generated .env"
 else
   echo "  .env already present, kept"
 fi
 if [ ! -f vikunja.env ]; then
-  db_pass=\$(grep '^CRIAX_DB_PASSWORD=' .env | cut -d= -f2-)
+  db_pass=\$(grep '^TUI_DO_DB_PASSWORD=' .env | cut -d= -f2-)
   cat > vikunja.env <<INNER
 VIKUNJA_DATABASE_TYPE=postgres
 VIKUNJA_DATABASE_HOST=vikunja-db

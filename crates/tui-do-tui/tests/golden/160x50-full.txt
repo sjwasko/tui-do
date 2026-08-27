@@ -1,0 +1,50 @@
+tui-do  Work › List  Table  Kanban                                                                                                              ⟳ synced 2m ago
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  All tasks                  4 │ Title                           Project         Labels        Due         │ Fix the token refresh that drops the cookie
+  Favorites                  2 │ Fix the token refresh that dro… Work             urgent …     2 days ago  │ ───────────────────────────────────────────────────
+Projects                       │ Ship the release                Work                          Tomorrow    │ Project  Work
+▾ Home                       1 │ Renew the passport              Home             backend      Sep 23      │ ID       WORK-42
+    Errands                    │ A task with no date at all      Work                          —           │ Due      2 days ago
+  Work                       3 │                                                                           │ Priority P5
+                               │                                                                           │ Labels    urgent  backend
+                               │                                                                           │
+                               │                                                                           │ The refresh call needs the cookie set by POST
+                               │                                                                           │ /login.
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+                               │                                                                           │
+4 tasks                                                                                                                           ?:help  /:search  g:go  q:quit

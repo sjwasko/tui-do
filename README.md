@@ -1,8 +1,8 @@
-# criax
+# tui-do
 
 A fast, local-first terminal client for [Vikunja](https://vikunja.io).
 
-criax keeps your tasks in a local SQLite store and reconciles with the server in the
+tui-do keeps your tasks in a local SQLite store and reconciles with the server in the
 background. It starts instantly, works with the server unreachable, and never blocks a
 frame on a network call.
 
@@ -19,10 +19,10 @@ This is enforced by the crate graph rather than by discipline:
 
 | Crate | Responsibility | Notably cannot |
 |---|---|---|
-| `criax-api` | Typed go-vikunja REST client | — |
-| `criax-core` | Domain model, SQLite store, sync engine, quick-add parser, config | render |
-| `criax-tui` | `Model`, `Msg`, `update`, `view`, widgets, keymap | perform I/O — no `reqwest`, no `rusqlite`, no `tokio` |
-| `criax` | CLI, wiring, effect runtime, terminal lifecycle | — |
+| `tui-do-api` | Typed go-vikunja REST client | — |
+| `tui-do-core` | Domain model, SQLite store, sync engine, quick-add parser, config | render |
+| `tui-do-tui` | `Model`, `Msg`, `update`, `view`, widgets, keymap | perform I/O — no `reqwest`, no `rusqlite`, no `tokio` |
+| `tui-do` | CLI, wiring, effect runtime, terminal lifecycle | — |
 
 Writes are optimistic: the local store updates immediately and the change is queued in an
 outbox. If the server rejects it, the change is rolled back and reported.
@@ -47,14 +47,14 @@ cargo build --release
 ```
 
 Optional: install [`glow`](https://github.com/charmbracelet/glow) for richer Markdown
-rendering of task descriptions. Without it, criax falls back to a built-in renderer.
-`criax doctor` reports which is in use.
+rendering of task descriptions. Without it, tui-do falls back to a built-in renderer.
+`tui-do doctor` reports which is in use.
 
 ## Relationship to cria
 
-criax began as a fork-in-spirit of [cria](https://github.com/frigidplatypus/cria) by
+tui-do began as a fork-in-spirit of [cria](https://github.com/frigidplatypus/cria) by
 frigidplatypus, which established the idea of a keyboard-driven Vikunja TUI along with its
-quick-add syntax and column-layout configuration. criax is an independent implementation
+quick-add syntax and column-layout configuration. tui-do is an independent implementation
 with a different architecture and does not share cria's code.
 
 ## License
@@ -72,6 +72,6 @@ as above, without any additional terms or conditions.
 
 ## Copyright
 
-Copyright is held collectively by the project's contributors ("The criax Authors");
+Copyright is held collectively by the project's contributors ("The tui-do Authors");
 attribution lives in the git history. Contributions are accepted under the dual
 MIT/Apache-2.0 terms above.

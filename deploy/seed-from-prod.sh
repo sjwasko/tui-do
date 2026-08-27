@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seed the criax dev Vikunja from a production export.
+# Seed the tui-do dev Vikunja from a production export.
 #
 # PRODUCTION IS READ ONLY. The only thing this asks prod to do is build an export of
 # your own account; nothing is modified and nothing is imported there. The script
@@ -16,10 +16,10 @@
 
 set -euo pipefail
 
-PROD_URL="${CRIAX_PROD_URL:-https://sw-hp2.tail9803a5.ts.net:8443}"
-DEV_URL="${CRIAX_DEV_URL:-https://sw-surface.tail9803a5.ts.net:8443}"
-POLL_SECONDS="${CRIAX_POLL_SECONDS:-10}"
-POLL_TRIES="${CRIAX_POLL_TRIES:-60}"
+PROD_URL="${TUI_DO_PROD_URL:-https://sw-hp2.tail9803a5.ts.net:8443}"
+DEV_URL="${TUI_DO_DEV_URL:-https://sw-surface.tail9803a5.ts.net:8443}"
+POLL_SECONDS="${TUI_DO_POLL_SECONDS:-10}"
+POLL_TRIES="${TUI_DO_POLL_TRIES:-60}"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 

@@ -24,10 +24,10 @@ while that backup exists, so a second run cannot bury the real URL.
 remembered URL, because a hardcoded one here goes stale the moment the dev
 instance moves.
 
-Both honour `CRIAX_CONFIG`, so exporting it runs them against a scratch config
+Both honour `TUI_DO_CONFIG`, so exporting it runs them against a scratch config
 instead of the live one.
 
-The store (`~/.local/share/criax/criax.db`) does not depend on the server URL,
+The store (`~/.local/share/tui-do/tui-do.db`) does not depend on the server URL,
 so the cache stays warm across the swap. That is what makes the check meaningful
 rather than a test of an empty list.
 
@@ -40,8 +40,8 @@ which is check B4 falling out of A1 for free.
 
 Scripted:
 
-1. `criax --config a2-prod.yaml` exits non-zero and names `--i-know-this-is-prod`.
-2. `criax add` with the same config refuses too — **and the outbox count does not
+1. `tui-do --config a2-prod.yaml` exits non-zero and names `--i-know-this-is-prod`.
+2. `tui-do add` with the same config refuses too — **and the outbox count does not
    move**, so it refused before writing anything locally, not just before
    sending.
 3. With the flag, the same command is no longer refused and gets as far as
@@ -53,7 +53,7 @@ Yours:
 
 ### The two config files
 
-`a2-prod.yaml` names the real prod host. Handing it to criax is safe *only*
+`a2-prod.yaml` names the real prod host. Handing it to tui-do is safe *only*
 because the guard fires before any socket opens — `main.rs:116` for the
 interface, `main.rs:146` for `add` — so a refusal is itself the proof that
 nothing reached `sw-hp2`.
@@ -64,7 +64,7 @@ case-insensitive substring match on `sw-hp2` anywhere in the URL
 `.invalid` is reserved by RFC 6761 and never resolves.
 
 Everything that runs *with* the flag uses that second file, for a reason worth
-stating plainly: criax keeps **one store for every server**, and a pull deletes
+stating plainly: tui-do keeps **one store for every server**, and a pull deletes
 every local task the listing did not mention. Starting against real prod would
 replace the dev-derived cache with prod's tasks — a write to your local state,
 and the end of the warm cache the other checks depend on. Reading prod is
@@ -74,7 +74,7 @@ asking you to verify.
 The one combination the script will never run, and neither should you:
 
 ```
-criax add --config a2-prod.yaml --i-know-this-is-prod
+tui-do add --config a2-prod.yaml --i-know-this-is-prod
 ```
 
 That is the only path in A2 that would write to production.
@@ -82,7 +82,7 @@ That is the only path in A2 that would write to production.
 ### Why step 3 uses `setsid`
 
 crossterm opens `/dev/tty` directly rather than stdout, so redirecting output is
-not enough to keep criax from taking over your terminal. Under `setsid` there is
+not enough to keep tui-do from taking over your terminal. Under `setsid` there is
 no controlling terminal, so it fails at `could not put the terminal into raw
 mode` — a failure that can only happen *after* the guard has let it through,
 which is what makes it a usable assertion.

@@ -481,72 +481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "criax"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "criax-api",
- "criax-core",
- "criax-tui",
- "crossterm",
- "ratatui",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "criax-api"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "criax-core"
-version = "0.1.0"
-dependencies = [
- "aho-corasick",
- "chrono",
- "chrono-english",
- "criax-api",
- "dirs",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "criax-tui"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "criax-core",
- "crossterm",
- "fuzzy-matcher",
- "pulldown-cmark",
- "ratatui",
- "tracing",
- "unicode-width",
-]
-
-[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3117,6 +3051,72 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tui-do"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "ratatui",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tui-do-api",
+ "tui-do-core",
+ "tui-do-tui",
+]
+
+[[package]]
+name = "tui-do-api"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "tui-do-core"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "chrono",
+ "chrono-english",
+ "dirs",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tui-do-api",
+ "wiremock",
+]
+
+[[package]]
+name = "tui-do-tui"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "fuzzy-matcher",
+ "pulldown-cmark",
+ "ratatui",
+ "tracing",
+ "tui-do-core",
+ "unicode-width",
+]
 
 [[package]]
 name = "typenum"

@@ -1,4 +1,4 @@
-# criax — Phase 4 design: mutations
+# tui-do — Phase 4 design: mutations
 
 Agreed 2026-08-25, before any code. `PLAN.md` remains the authority on scope; this records
 the decisions and why, in the same spirit as `md/2026-08-24-1900-tui-design.md`.
@@ -9,7 +9,7 @@ the decisions and why, in the same spirit as `md/2026-08-24-1900-tui-design.md`.
 |---|---|---|
 | Destructive actions | **No confirms.** Everything is instant and `u` undoes it | confirming deletes; confirming anything destructive |
 | Editing | **Quick keys for the common fields, `e` for a form over the rest** | inline in the preview; a full-screen editor |
-| Quick-add | **A status-line prompt, parsed live** — *and* a `criax add 'text'` subcommand | a prompt with no feedback; a modal |
+| Quick-add | **A status-line prompt, parsed live** — *and* a `tui-do add 'text'` subcommand | a prompt with no feedback; a modal |
 | Undo | **Unlimited within a session**, cleared on exit | persistent across restarts; single level |
 
 ## Why no confirms
@@ -54,20 +54,20 @@ Session-scoped, deliberately. A persistent stack sounds strictly better until an
 built yesterday meets a task the server has changed since — the rollback then fights a
 newer truth, and the failure is confusing in a way that "the stack starts empty" is not.
 
-## `criax add`
+## `tui-do add`
 
 ```sh
-criax add 'Call the VA *urgent !3 +Legal tomorrow'
+tui-do add 'Call the VA *urgent !3 +Legal tomorrow'
 ```
 
-Parses with the same `criax-core::quickadd`, applies and queues through the same
+Parses with the same `tui-do-core::quickadd`, applies and queues through the same
 `Store::queue`, then pushes if the server is reachable. If it is not, it says the task is
 queued and the next run syncs it — which is the whole local-first thesis, in a form that
 works from a script or a phone over ssh.
 
 **It reads names from the local store, and asks the server when that is not enough.**
 Resolving `+Legal` needs the project list, and local-first means reading it from a cache
-that may never have been filled — `criax add` on a fresh machine used to fail with a
+that may never have been filled — `tui-do add` on a fresh machine used to fail with a
 reachable server sitting right there. When a name matches nothing, it now pulls the
 project and label lists (one request each, against seventy-eight pages for the tasks) and
 tries again. That covers both an empty cache and one merely older than the project it
@@ -100,7 +100,7 @@ up for free.
 ## Order of work
 
 1. The write path, `d`, and undo/redo — the loop end to end, provable.
-2. Quick-add: the prompt with live parse feedback, then `criax add`.
+2. Quick-add: the prompt with live parse feedback, then `tui-do add`.
 3. The quick keys and the `Space` actions.
 4. The edit form.
 5. Delete.
