@@ -36,6 +36,14 @@ pub enum Effect {
     /// Read per-project task counts for the sidebar.
     LoadCounts,
 
+    /// Read how many changes are still queued, and answer with
+    /// [`crate::Msg::PendingLoaded`].
+    ///
+    /// The outbox is shared: `criax add` in another terminal writes to the same one, and
+    /// so does a second interface. A count carried forward from the last sync report is
+    /// only ever right by luck.
+    LoadPending,
+
     /// Remember the project to open on next launch. `None` means "everything".
     RememberProject(Option<ProjectId>),
 
