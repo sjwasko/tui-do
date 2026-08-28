@@ -37,7 +37,7 @@ use crate::error::{CoreError, Result};
 pub use labels::{LabelFilter, LabelOrder, LabelSort};
 pub use outbox::{is_provisional, Mutation, OutboxEntry};
 pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
-pub use state::{CURRENT_USER, LAST_PROJECT, LAST_PULL, PAGE_CAP};
+pub use state::{CURRENT_USER, LAST_PROJECT, LAST_PULL, LAST_RECONCILE, PAGE_CAP};
 pub use tasks::{ProjectCounts, ServerApply, TaskCount, TaskFilter, TaskOrder, TaskSort};
 
 /// A handle to the local store.

@@ -85,6 +85,26 @@ listing did not mention, so a server that quietly omitted done tasks would erase
 user's entire completed history in one pass. `tests/live.rs` asserts it differentially,
 and reports "inconclusive" rather than passing quietly if dev holds no done tasks.
 
+**Only a full pull may delete.** A pull comes in two reaches (`sync::Reach`). `Full` asks
+for the whole listing — 78 pages and 15s against dev — and deletes every local task those
+pages did not mention. `Incremental` asks `updated > <watermark>`, which is one page, and
+**must not run the retain step**: a filtered listing names what changed, and every task
+that did not change is missing from it, so retaining against that list would erase all but
+the last few days of the user's tasks. That is the whole reason the enum exists, and it is
+asserted by `an_incremental_pull_does_not_delete_what_it_did_not_mention`.
+
+The cost is real and is the user's decision, taken 2026-08-28: `r` is incremental and
+cannot see a task deleted in another client, so `R` is bound to a full pull and `r` names
+it in its toast. Startup and the timer stay full.
+
+Two state keys, because they stopped being the same fact: `LAST_PULL` is "everything up to
+here has been seen" and both reaches advance it; `LAST_RECONCILE` is "and nothing else is
+gone", which only `Full` can claim. The watermark is stamped from **before** the requests,
+not after — a task edited while the pages were being fetched may or may not have landed in
+one of them — and the filter reaches a further two minutes back, because the watermark
+comes from this machine's clock and `updated` from the server's, and a few seconds of
+disagreement would drop a task in the gap permanently.
+
 **Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
 from the body, and an empty `assignees` clears them. Labels are the opposite: they are
 attached and detached through their own endpoints and the body's `labels` field is ignored.

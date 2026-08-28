@@ -515,8 +515,25 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             // The pull still runs, and its own reload lands when it finishes. This is
             // the local-first claim applied to the refresh key itself: the cache answers
             // now, the server confirms later.
+            // Named at the keystroke, because the difference between the two keys is
+            // invisible from the outside until it bites: `r` cannot see a deletion made
+            // in another client, and someone watching for one to disappear has no other
+            // way to learn that `R` is the key that would.
+            model.toast(Toast::info("Syncing changes — R for everything"));
             let mut effects = reload_everything(model);
             effects.push(Effect::SyncNow);
+            effects
+        }
+        Action::SyncFull => {
+            model.status.sync = SyncStatus::Working {
+                detail: "starting".to_string(),
+            };
+            // The slow one, asked for deliberately, so it says so: `r` is a second and
+            // `R` is fifteen, and a key that looks identical to the fast one while
+            // taking fifteen times as long reads as a hang.
+            model.toast(Toast::info("Fetching everything"));
+            let mut effects = reload_everything(model);
+            effects.push(Effect::SyncFull);
             effects
         }
         Action::CommandPalette => {

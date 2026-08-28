@@ -41,7 +41,19 @@ use tui_do_api::models::{ProjectId, Task, TaskId};
 use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
-use crate::store::{Mutation, OutboxEntry, Store, CURRENT_USER, LAST_PULL, PAGE_CAP};
+use crate::store::{
+    Mutation, OutboxEntry, Store, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
+};
+
+/// How far back an incremental pull reaches beyond the watermark.
+///
+/// The watermark is stamped from *this* machine's clock and compared against the
+/// server's `updated` column, so the two disagreeing by a few seconds is enough to drop
+/// a task that changed in the gap — silently, and permanently, because the next pull
+/// asks from an even later point. Reaching back re-fetches a handful of tasks that were
+/// already stored, which costs one page and changes nothing: an upsert of a row that is
+/// already right is a no-op.
+const CLOCK_SKEW_MARGIN_SECONDS: i64 = 120;
 
 /// Which direction a pass is going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +62,26 @@ pub enum Phase {
     Push,
     /// Reading the server's state into the store.
     Pull,
+}
+
+/// How much of the server a pull asks for.
+///
+/// The two differ in exactly one way that matters, and it is not speed: only a
+/// [`Reach::Full`] pull can tell that something was *deleted*. A filtered listing names
+/// what changed, and a task removed on another client changes nothing it could name — so
+/// an incremental pull must not run the retain step, and the rows it leaves behind are
+/// the price of not fetching seventy-eight pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reach {
+    /// Every task the user can see, and delete every local row the listing did not
+    /// mention. What startup and the timer ask for.
+    #[default]
+    Full,
+    /// Only tasks the server says changed since the watermark, and delete nothing.
+    ///
+    /// Falls back to [`Self::Full`] when there is no watermark to ask from, which is
+    /// every first run.
+    Incremental,
 }
 
 /// Which collection a pull is working through.
@@ -95,6 +127,12 @@ pub struct PullReport {
     pub skipped: usize,
     /// Rows removed because the server no longer has them.
     pub removed: usize,
+    /// Which kind of pull this was, so the interface can say so.
+    ///
+    /// Worth reporting rather than inferring: "`r` did not remove the task I deleted in
+    /// the browser" is a reasonable thing to be confused by, and the answer is which
+    /// pass ran.
+    pub reach: Reach,
 }
 
 /// What a full pass did.
@@ -212,7 +250,7 @@ impl Sync {
         self
     }
 
-    /// Push, then pull.
+    /// Push, then pull everything.
     ///
     /// A push failure does not skip the pull: the server still has news, and the queue
     /// keeps what could not be sent.
@@ -221,8 +259,23 @@ impl Sync {
     /// Whatever the pull returns. A push failure is reported as an event and in the
     /// report rather than as an error, because the queue surviving *is* the handling.
     pub async fn once(&self) -> Result<SyncReport> {
+        self.pass(Reach::Full).await
+    }
+
+    /// Push, then pull only what changed.
+    ///
+    /// What `r` asks for. Measured against dev: an unfiltered pull is 78 pages and 15
+    /// seconds, and the same instance filtered to three days of changes is one page.
+    ///
+    /// # Errors
+    /// As [`Self::once`].
+    pub async fn delta(&self) -> Result<SyncReport> {
+        self.pass(Reach::Incremental).await
+    }
+
+    async fn pass(&self, reach: Reach) -> Result<SyncReport> {
         let push = self.push().await?;
-        let pull = self.pull().await?;
+        let pull = self.pull_with(reach).await?;
         let report = SyncReport { push, pull };
         self.emit(SyncEvent::Finished(report));
         Ok(report)
@@ -374,14 +427,32 @@ impl Sync {
     /// A pull is all-or-nothing about its own bookkeeping: [`crate::store::LAST_PULL`]
     /// only moves when every stage finished.
     pub async fn pull(&self) -> Result<PullReport> {
+        self.pull_with(Reach::Full).await
+    }
+
+    /// Refresh the store from the server, reaching as far as `reach` says.
+    ///
+    /// # Errors
+    /// As [`Self::pull`].
+    pub async fn pull_with(&self, reach: Reach) -> Result<PullReport> {
         self.emit(SyncEvent::Started(Phase::Pull));
+        // Stamped *before* the requests, not after. A task edited while the pages were
+        // being fetched may or may not have landed in one of them, and a watermark taken
+        // at the end would put it in the past of a pull that never saw it -- so the next
+        // incremental pull would skip it and it would be wrong until a full one ran.
+        let started = chrono::Utc::now();
         let mut report = PullReport::default();
 
-        match self.pull_inner(&mut report).await {
+        match self.pull_inner(reach, &mut report).await {
             Ok(()) => {
                 self.store
-                    .set_state(LAST_PULL, chrono::Utc::now().to_rfc3339())
+                    .set_state(LAST_PULL, started.to_rfc3339())
                     .await?;
+                if report.reach == Reach::Full {
+                    self.store
+                        .set_state(LAST_RECONCILE, started.to_rfc3339())
+                        .await?;
+                }
                 Ok(report)
             }
             Err(error) => {
@@ -430,7 +501,7 @@ impl Sync {
         Ok(report)
     }
 
-    async fn pull_inner(&self, report: &mut PullReport) -> Result<()> {
+    async fn pull_inner(&self, reach: Reach, report: &mut PullReport) -> Result<()> {
         // The page cap comes from the server, never from a constant. Reading it also
         // teaches the client's paginators what to ask for.
         let info = self.client.info().await?;
@@ -449,12 +520,37 @@ impl Sync {
         report.labels = lists.labels;
         report.removed += lists.removed;
 
+        // An incremental pull with no watermark is a full one: there is nothing to ask
+        // "since" and "since the epoch" is every task anyway. Decided here rather than
+        // at the call site so that the report says what actually happened.
+        let since = match reach {
+            Reach::Full => None,
+            Reach::Incremental => self.store.last_pull().await?,
+        };
+        report.reach = if since.is_some() {
+            Reach::Incremental
+        } else {
+            Reach::Full
+        };
+
         // Unfiltered: every task the user can see, done ones included -- confirmed on
         // dev, where the listing returned the same 1,942 done tasks that `done = true`
         // does. A view would not do: a project's default List view filters
         // `done = false`, so pulling through one would make every completed task look
         // deleted to the retain step below.
-        let mut pager = self.client.tasks(&TaskQuery::new())?;
+        //
+        // The filtered form asks the same question of a narrower window. It is the same
+        // collection endpoint, so the same reasoning about done tasks holds.
+        let query = match since {
+            None => TaskQuery::new(),
+            Some(watermark) => {
+                let from = watermark - chrono::TimeDelta::seconds(CLOCK_SKEW_MARGIN_SECONDS);
+                let from = from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                tracing::debug!(%from, "pulling only what changed");
+                TaskQuery::new().filter(format!("updated > '{from}'"))
+            }
+        };
+        let mut pager = self.client.tasks(&query)?;
         let mut seen: Vec<TaskId> = Vec::new();
         while let Some(page) = pager.next_page().await? {
             seen.extend(page.items.iter().map(|task| task.id));
@@ -467,7 +563,13 @@ impl Sync {
                 pages: pager.total_pages(),
             });
         }
-        report.removed += self.store.retain_tasks(Vec::new(), seen).await?;
+        // Only a full listing may delete. `seen` from a filtered one names what changed,
+        // and every unchanged task in the store is absent from it -- retaining against
+        // that list would erase all but the last few days of the user's tasks. This is
+        // the whole cost of an incremental pull and the reason `R` exists.
+        if report.reach == Reach::Full {
+            report.removed += self.store.retain_tasks(Vec::new(), seen).await?;
+        }
 
         Ok(())
     }

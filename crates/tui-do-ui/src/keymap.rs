@@ -226,8 +226,10 @@ pub enum Action {
     Undo,
     /// Put back what was undone.
     Redo,
-    /// Sync now rather than waiting for the timer.
+    /// Sync now rather than waiting for the timer, fetching only what changed.
     SyncNow,
+    /// Sync now, fetching everything, so that deletions made elsewhere are noticed.
+    SyncFull,
     /// Show the help modal.
     Help,
     /// Run a command by name.
@@ -542,7 +544,14 @@ pub const KEYMAP: &[Binding] = &[
         action: Action::SyncNow,
         context: Context::Global,
         group: Group::Application,
-        doc: "Sync now",
+        doc: "Sync changes",
+    },
+    Binding {
+        keys: &[chord![Key::char('R')]],
+        action: Action::SyncFull,
+        context: Context::Global,
+        group: Group::Application,
+        doc: "Sync everything",
     },
     Binding {
         keys: &[chord![Key::char(':')]],

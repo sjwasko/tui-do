@@ -14,12 +14,13 @@
     clippy::panic
 )]
 
+use chrono::TimeZone;
 use serde_json::json;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tui_do_api::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_api::{Client, Credentials};
-use tui_do_core::store::{Mutation, Store};
-use tui_do_core::sync::{Sync, SyncEvent};
+use tui_do_core::store::{Mutation, Store, LAST_PULL};
+use tui_do_core::sync::{Reach, Sync, SyncEvent};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -925,4 +926,144 @@ async fn a_create_that_names_a_missing_project_is_still_a_rejection() {
     assert!(events(&mut rx)
         .iter()
         .any(|event| matches!(event, SyncEvent::Rejected { .. })));
+}
+
+/// What the mock was asked for, as a query string.
+fn filters_asked_for(requests: &[wiremock::Request]) -> Vec<String> {
+    requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/tasks"))
+        .filter_map(|request| {
+            request
+                .url
+                .query_pairs()
+                .find(|(key, _)| key == "filter")
+                .map(|(_, value)| value.into_owned())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_incremental_pull_with_no_watermark_fetches_everything() {
+    // Every first run. There is nothing to ask "since", and "since the epoch" is the
+    // whole listing anyway -- so it is a full pull, and it says so rather than
+    // reporting an incremental one that quietly did not skip anything.
+    let server = MockServer::start().await;
+    mount_pull(&server, vec![task_json(1, "still there")]).await;
+    let store = Store::in_memory().unwrap();
+    store
+        .upsert_tasks(vec![task(1, "still there"), task(2, "deleted elsewhere")])
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.pull_with(Reach::Incremental).await.unwrap();
+
+    assert_eq!(report.reach, Reach::Full);
+    assert!(
+        filters_asked_for(&server.received_requests().await.unwrap()).is_empty(),
+        "asked the server to filter with no watermark to filter by"
+    );
+    assert!(
+        store.task(TaskId(2)).await.unwrap().is_none(),
+        "it retained"
+    );
+}
+
+#[tokio::test]
+async fn an_incremental_pull_asks_only_for_what_changed_since_the_watermark() {
+    let server = MockServer::start().await;
+    mount_pull(&server, vec![task_json(1, "edited since")]).await;
+    let store = Store::in_memory().unwrap();
+    let watermark = chrono::Utc.with_ymd_and_hms(2026, 8, 25, 12, 0, 0).unwrap();
+    store
+        .set_state(LAST_PULL, watermark.to_rfc3339())
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.pull_with(Reach::Incremental).await.unwrap();
+
+    assert_eq!(report.reach, Reach::Incremental);
+    // Two minutes before the watermark, not at it: the watermark comes from this
+    // machine's clock and `updated` from the server's, and the two disagreeing by a few
+    // seconds would drop a task in the gap permanently -- the next pull asks from an
+    // even later point. Re-fetching a handful of already-stored tasks costs one page.
+    assert_eq!(
+        filters_asked_for(&server.received_requests().await.unwrap()),
+        vec!["updated > '2026-08-25T11:58:00Z'".to_string()],
+    );
+}
+
+#[tokio::test]
+async fn an_incremental_pull_does_not_delete_what_it_did_not_mention() {
+    // The whole reason `Reach` exists. A filtered listing names what changed, and every
+    // unchanged task is absent from it -- so retaining against that list would erase all
+    // but the last few days of the user's tasks in one pass.
+    let server = MockServer::start().await;
+    mount_pull(&server, vec![task_json(1, "edited since")]).await;
+    let store = Store::in_memory().unwrap();
+    store
+        .upsert_tasks(vec![
+            task(1, "edited since"),
+            task(2, "untouched for months"),
+            task(3, "deleted elsewhere"),
+        ])
+        .await
+        .unwrap();
+    store
+        .set_state(LAST_PULL, chrono::Utc::now().to_rfc3339())
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.pull_with(Reach::Incremental).await.unwrap();
+
+    assert_eq!(report.removed, 0);
+    assert!(store.task(TaskId(2)).await.unwrap().is_some());
+    // And the documented cost, asserted so that it is a decision rather than a surprise:
+    // a task deleted in another client survives an incremental pull. `R` is what removes
+    // it.
+    assert!(store.task(TaskId(3)).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn only_a_full_pull_says_that_deletions_have_been_reconciled() {
+    let server = MockServer::start().await;
+    mount_pull(&server, vec![task_json(1, "still there")]).await;
+    let store = Store::in_memory().unwrap();
+    let (sync, _rx) = engine(&server, &store);
+
+    sync.pull().await.unwrap();
+    let reconciled = store.last_reconcile().await.unwrap().expect("a full pull");
+
+    // The incremental pull that follows advances the watermark -- everything up to now
+    // has been seen -- without advancing the reconcile stamp, because it could not have
+    // noticed a deletion.
+    sync.pull_with(Reach::Incremental).await.unwrap();
+
+    assert_eq!(store.last_reconcile().await.unwrap(), Some(reconciled));
+    assert!(
+        store.last_pull().await.unwrap().unwrap() >= reconciled,
+        "the watermark did not move"
+    );
+}
+
+#[tokio::test]
+async fn the_watermark_is_stamped_from_before_the_requests_not_after() {
+    // A task edited while the pages were being fetched may or may not have landed in one
+    // of them. A watermark taken at the end would put it in the past of a pull that
+    // never saw it, so the next incremental pull would skip it and it would stay wrong
+    // until a full one ran.
+    let server = MockServer::start().await;
+    mount_pull(&server, vec![task_json(1, "a task")]).await;
+    let store = Store::in_memory().unwrap();
+    let (sync, _rx) = engine(&server, &store);
+
+    let before = chrono::Utc::now();
+    sync.pull().await.unwrap();
+    let after = chrono::Utc::now();
+
+    let stamped = store.last_pull().await.unwrap().expect("a watermark");
+    assert!(stamped >= before && stamped <= after);
 }

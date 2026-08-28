@@ -55,8 +55,19 @@ pub enum Effect {
     /// a tick is the lag this project exists to remove.
     Apply(Mutation),
 
-    /// Run a sync pass now rather than waiting for the timer.
+    /// Push, then fetch only what the server says has changed.
+    ///
+    /// What `r` asks for, and the reason it is not [`Self::SyncFull`]: against the dev
+    /// instance a complete listing is seventy-eight pages and fifteen seconds, where the
+    /// same pull filtered to what changed is one page. The trade is that it cannot see
+    /// a *deletion* — a filtered listing names what changed, and a task removed
+    /// elsewhere changes nothing it could name.
     SyncNow,
+
+    /// Push, then fetch everything and remove what the server no longer has.
+    ///
+    /// What startup and the timer do anyway; `R` is for wanting it before either.
+    SyncFull,
 
     /// Leave the application.
     Quit,
