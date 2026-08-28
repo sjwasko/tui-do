@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use tui_do_core::config::{migrate, Config};
 
 mod runtime;
@@ -90,6 +90,34 @@ enum Command {
     /// translation: it reads cria's config, writes tui-do's, and says what did not carry
     /// across.
     Migrate(MigrateArgs),
+
+    /// Print a shell completion script.
+    ///
+    /// Writes to stdout, so it is piped or redirected wherever the shell keeps them.
+    /// This is what makes `tui-do add --<TAB>` offer `--help` and `--offline` rather
+    /// than falling back to filenames.
+    ///
+    /// It is also the only way to get the greyed-out suggestion that appears ahead of
+    /// the cursor. No program can paint that itself — it belongs to the shell, and each
+    /// one wants something different:
+    ///
+    ///   fish    completions alone are enough; the suggestion is built in
+    ///   zsh     needs the zsh-autosuggestions plugin, told to ask completions and not
+    ///           only history:
+    ///             ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+    ///   bash    completes on TAB; there is no inline suggestion to enable
+    ///
+    /// INSTALLING
+    ///
+    ///   fish  tui-do completions fish > ~/.config/fish/completions/tui-do.fish
+    ///   zsh   tui-do completions zsh  > ~/.zfunc/_tui-do
+    ///         # with ~/.zfunc on $fpath, ahead of compinit
+    ///   bash  tui-do completions bash > ~/.local/share/bash-completion/completions/tui-do
+    ///
+    /// Re-run it after upgrading tui-do: the script is generated from the same command
+    /// table as `--help`, so a stale one offers flags that have moved.
+    #[command(verbatim_doc_comment)]
+    Completions(CompletionsArgs),
 }
 
 /// Options for `tui-do add`.
@@ -99,12 +127,28 @@ struct AddArgs {
     ///
     /// See `tui-do add --help` for every token, and for how to name a project or label
     /// that has a space in it.
-    #[arg(required = true, num_args = 1.., value_name = "TEXT")]
+    // `Other` rather than the default, which lets a shell fall back to filenames: the
+    // argument is a sentence, and offering the contents of the working directory to
+    // someone typing a task title is worse than offering nothing at all.
+    #[arg(
+        required = true,
+        num_args = 1..,
+        value_name = "TEXT",
+        value_hint = clap::ValueHint::Other
+    )]
     text: Vec<String>,
 
     /// Queue the task without trying to send it.
     #[arg(long)]
     offline: bool,
+}
+
+/// Options for `tui-do completions`.
+#[derive(Debug, Args)]
+struct CompletionsArgs {
+    /// Which shell to generate for.
+    #[arg(value_name = "SHELL")]
+    shell: clap_complete::Shell,
 }
 
 /// Options for `tui-do migrate`.
@@ -133,6 +177,10 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::Add(args)) => run_add(&args, cli.config.as_deref(), cli.i_know_this_is_prod),
         Some(Command::Migrate(args)) => run_migrate(&args, cli.config.as_deref()),
+        Some(Command::Completions(args)) => {
+            run_completions(args.shell);
+            Ok(())
+        }
         None => start(cli),
     }
 }
@@ -159,6 +207,16 @@ fn start(cli: Cli) -> anyhow::Result<()> {
         .build()
         .context("could not start the async runtime")?
         .block_on(runtime::run(config, path))
+}
+
+/// Write a completion script for `shell` to stdout.
+///
+/// Generated from the same command table `--help` is built from, rather than written by
+/// hand, so a flag cannot exist in one and not the other.
+fn run_completions(shell: clap_complete::Shell) {
+    let mut command = Cli::command();
+    let name = command.get_name().to_string();
+    clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
 }
 
 /// Refuse to start against production unless it was asked for explicitly.
@@ -276,6 +334,55 @@ fn redacted(config: &Config) -> Config {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// Generate a completion script into a string.
+    fn completions(shell: clap_complete::Shell) -> String {
+        let mut command = Cli::command();
+        let mut out: Vec<u8> = Vec::new();
+        clap_complete::generate(shell, &mut command, "tui-do", &mut out);
+        String::from_utf8(out).expect("a completion script is text")
+    }
+
+    #[test]
+    fn the_command_table_is_well_formed() {
+        // clap's own audit -- duplicate flags, a long help that will not render, an
+        // argument that cannot be reached. It costs nothing and it is the check that
+        // fails first when a subcommand is added carelessly.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn every_shell_gets_a_script_that_knows_the_subcommands() {
+        for shell in [
+            clap_complete::Shell::Bash,
+            clap_complete::Shell::Zsh,
+            clap_complete::Shell::Fish,
+        ] {
+            let script = completions(shell);
+            for expected in ["add", "migrate", "completions", "offline"] {
+                assert!(
+                    script.contains(expected),
+                    "the {shell} script does not mention {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_task_text_does_not_complete_to_filenames() {
+        // The argument is a sentence. A shell offering the working directory to someone
+        // typing a task title is worse than offering nothing, and it is what happens by
+        // default -- an unhinted positional falls through to path completion.
+        let script = completions(clap_complete::Shell::Bash);
+        let add = script
+            .split("tui__subcmd__do__subcmd__add)")
+            .nth(1)
+            .expect("the add subcommand has an arm");
+        let arm = add.split("tui__subcmd").next().unwrap_or(add);
+        // `--config` legitimately takes a path; nothing else in the arm may.
+        let paths = arm.matches("compgen -f").count();
+        assert_eq!(paths, 1, "only --config completes a path:\n{arm}");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tui-do-cli-{}-{name}", std::process::id()));
