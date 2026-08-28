@@ -137,12 +137,23 @@ reach `27aug26` at all — so `p3`, `v1.2.3`, `covid-19`, `3rd`, `separate` and 
 all reach the date code and none of them may come back a date. Add a task whose title
 contains each and confirm the title survives whole.
 
-**B9 — A date in the past is allowed, and said loudly.** `D`, then `27/08/2024`. It must
-be accepted — overdue is a real state and backdating something you have been carrying is
-a real thing to want — but the toast must be the **warning** colour and say "that date
-has passed". A quiet "Due 2 years ago" would bless `2024` typed where `2026` was meant.
-The status line shows the same thing before Enter, in the overdue colour, which is the
-signal that costs nothing to read.
+**B9 — A date in the past is allowed, and said loudly, by all three ways in.** There are
+three: `D`, the edit form's Due field, and a bare date in quick-add. Try `27/08/2024`
+through each. Every one must accept it — overdue is a real state and backdating something
+you have been carrying is a real thing to want — and every one must answer in the
+**warning** colour saying "that date has passed". A quiet "Due 2 years ago" would bless
+`2024` typed where `2026` was meant. The status line shows the same before Enter, in the
+overdue colour, which is the signal that costs nothing to read.
+
+*This was broken:* only `D` said anything. The edit form answered "Saved" and quick-add
+answered "Added", which is exactly the quiet confirmation the rule exists to prevent, and
+`tui-do add` said nothing either. Check the fourth surface too:
+`tui-do add 'Test 27/08/2024'` must print a `Note:` line.
+
+Saving the edit form on a task that was *already* overdue, without touching its date, must
+say plainly "Saved" — a warning that fires when nothing moved is one the user learns to
+read past. Note the field compares by **day**, not by instant, because the field shows a
+date and the parser gives it 23:59.
 
 If this turns out to be the wrong trade, the alternative is refusing dates before today
 outright and needing a flag to override — say so and it is a small change.
