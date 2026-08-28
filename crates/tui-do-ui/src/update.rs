@@ -5,6 +5,7 @@
 //! cannot touch a store — every one of those arrives as a [`Msg`] and leaves as an
 //! [`Effect`]. That is what keeps the render loop from ever blocking.
 
+use chrono::{DateTime, Utc};
 use tui_do_core::config::{QuickAction, QuickActionKind};
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
@@ -1170,6 +1171,18 @@ fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
         .collect();
     after.labels = resolved;
 
+    // Read before `after` is moved into the mutation. Only when the form *moved* the
+    // date: a task that was already overdue and had some other field edited is not
+    // something the user just backdated, and warning on every save would train them to
+    // ignore the warning that matters.
+    // By day, not by instant: the field shows a date and the parser gives it a time, so
+    // re-saving an untouched form moves 09:00 to 23:59 and an instant comparison would
+    // call that a backdate on every save of anything overdue.
+    let day = |task: &Task| task.due_date.get().map(|due| due.date_naive());
+    let backdated = (day(&after) != day(&before))
+        .then(|| past_due_note(after.due_date.get(), model.now))
+        .flatten();
+
     if after != before {
         effects.extend(edit(
             model,
@@ -1201,7 +1214,10 @@ fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
     if effects.is_empty() {
         model.toast(Toast::info("Nothing changed"));
     } else if notes.is_empty() {
-        model.toast(Toast::info("Saved"));
+        model.toast(match backdated {
+            Some(note) => Toast::warning(format!("Saved — {note}")),
+            None => Toast::info("Saved"),
+        });
     }
     if !notes.is_empty() {
         model.toast(Toast::error(notes.join(" · ")));
@@ -1242,6 +1258,10 @@ fn add_task(model: &mut Model, text: &str) -> Vec<Effect> {
     let project = model
         .project(built.task.project_id)
         .map_or_else(String::new, |project| project.title.clone());
+    // Read before the task is moved into the mutation. A bare date in quick-add is the
+    // easiest of the three ways to set one by accident, because nothing was aimed at a
+    // date field -- the text simply had a date in it.
+    let backdated = past_due_note(built.task.due_date.get(), model.now);
     let mut effects = edit(
         model,
         Mutation::CreateTask {
@@ -1259,6 +1279,7 @@ fn add_task(model: &mut Model, text: &str) -> Vec<Effect> {
     if built.ambiguous_project {
         notes.push(format!("more than one project is called {project}"));
     }
+    notes.extend(backdated);
     model.toast(if notes.is_empty() {
         Toast::info(format!("Added \"{title}\""))
     } else {
@@ -1325,6 +1346,27 @@ fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
     real()
         .find(|project| project.title.eq_ignore_ascii_case(spec))
         .map(|project| project.id)
+}
+
+/// What a date already in the past earns saying, if it is one.
+///
+/// A past due date is allowed — overdue is a real state, and backdating something you
+/// have been carrying is a real thing to want — but it is never confirmed quietly,
+/// because `2024` typed where `2026` was meant is indistinguishable from a deliberate
+/// backdate the moment it is stored.
+///
+/// Here rather than at each call site because there are three ways to set a due date —
+/// `D`, the edit form and quick-add — and only `D` said it. The other two answered
+/// "Saved" and "Added", which is the quiet confirmation this rule exists to prevent.
+pub fn past_due_note(due: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<String> {
+    let due = due.filter(|due| *due < now)?;
+    // The date in parentheses rather than leading, because this is appended to a message
+    // that already has a subject: "Saved — that date has passed (due Aug 27, 24)". `D`
+    // keeps its own phrasing, where the date *is* the subject and leads.
+    Some(format!(
+        "that date has passed (due {})",
+        rows::relative_date(Some(due), now)
+    ))
 }
 
 /// Match label names against the ones that exist, and report the ones that do not.
@@ -1421,8 +1463,20 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
             model.list.offset = 0;
         }
         Mutation::UpdateTask { after, .. } => {
-            if let Some(existing) = tasks.iter_mut().find(|task| task.id == after.id) {
-                *existing = (**after).clone();
+            if let Some(at) = tasks.iter().position(|task| task.id == after.id) {
+                // A task marked done leaves a list that is not showing done tasks, and it
+                // leaves it *here* rather than on the reload that follows. The reload
+                // cannot tell "the selected row left this list" from "this is a different
+                // list", so it falls back to the first row -- which sent the cursor to the
+                // top of the list on every `d`, where `x` holds its place. Removing it
+                // here means the selection moves down one, exactly as a delete does.
+                if after.done && !model.query.include_done {
+                    tasks.remove(at);
+                    let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
+                    model.list.selected = next.map(|task| task.id);
+                } else {
+                    tasks[at] = (**after).clone();
+                }
             }
         }
         Mutation::DeleteTask { before } => {

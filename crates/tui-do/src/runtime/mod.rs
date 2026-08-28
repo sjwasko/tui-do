@@ -674,6 +674,9 @@ pub async fn add(
 
     let title = built.task.title.clone();
     let project_id = built.task.project_id;
+    // Read before the task is moved into the mutation. Same rule as the interface: a date
+    // already gone by is allowed, never confirmed quietly.
+    let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), chrono::Utc::now());
     let project = projects
         .iter()
         .find(|project| project.id == project_id)
@@ -693,6 +696,9 @@ pub async fn add(
         );
     } else {
         println!("Added \"{title}\" to {project}");
+    }
+    if let Some(note) = backdated {
+        println!("Note: {note}.");
     }
     if !built.unknown_labels.is_empty() {
         println!(

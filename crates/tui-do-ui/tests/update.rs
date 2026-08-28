@@ -737,11 +737,13 @@ fn marking_done_shows_before_it_is_stored() {
     let mut model = loaded();
     assert!(!model.selected_task().unwrap().done);
 
+    let first = model.selected_task().unwrap().id;
     let effects = press(&mut model, 'd');
 
-    // The frame after the keystroke already has it, without waiting for the store.
-    assert!(model.selected_task().unwrap().done);
-    assert!(model.selected_task().unwrap().done_at.get().is_some());
+    // The frame after the keystroke already shows it, without waiting for the store: in a
+    // list that hides done tasks, "shows it" means the row has left, the same way `x`
+    // leaves. The stamped `done_at` rides along in the mutation below.
+    assert!(!model.data.tasks.iter().any(|task| task.id == first));
 
     // And the durable half was asked for, carrying what it looked like before.
     match applied(&effects).expect("a write was queued") {
@@ -825,20 +827,34 @@ fn a_task_key_works_from_whichever_pane_has_focus() {
     press_code(&mut model, KeyCode::BackTab);
     assert_eq!(model.focus, Focus::Sidebar);
 
+    let before = model.data.tasks.len();
     let effects = press(&mut model, 'd');
     assert!(applied(&effects).is_some());
-    assert!(model.data.tasks.iter().any(|task| task.done));
+    assert_eq!(
+        model.data.tasks.len(),
+        before - 1,
+        "the key reached the list"
+    );
 }
 
 #[test]
 fn undo_queues_the_inverse_like_any_other_change() {
     let mut model = loaded();
+    let first = model.selected_task().unwrap().clone();
     press(&mut model, 'd');
-    assert!(model.selected_task().unwrap().done);
     assert_eq!(model.undo.len(), 1);
 
     let effects = press(&mut model, 'u');
-    assert!(!model.selected_task().unwrap().done, "the list went back");
+    // The row left the list when it was marked done, so what an undo restores is checked
+    // in the mutation it queues. The runtime reloads after every `Effect::Apply`, which
+    // is what puts the row back on screen.
+    match applied(&effects).expect("undo queued a write") {
+        Mutation::UpdateTask { after, .. } => {
+            assert_eq!(after.id, first.id);
+            assert!(!after.done, "undo un-does the tick");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
     assert!(
         applied(&effects).is_some(),
         "undo is a queued mutation, not a parallel mechanism"
@@ -854,11 +870,14 @@ fn redo_puts_it_back_and_a_new_edit_clears_the_stack() {
     press(&mut model, 'u');
     assert_eq!(model.redo.len(), 1);
 
-    update(
+    let effects = update(
         &mut model,
         Msg::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
     );
-    assert!(model.selected_task().unwrap().done);
+    match applied(&effects).expect("redo queued a write") {
+        Mutation::UpdateTask { after, .. } => assert!(after.done),
+        other => panic!("wrong mutation: {other:?}"),
+    }
     assert!(model.redo.is_empty());
 
     press(&mut model, 'u');
@@ -869,18 +888,24 @@ fn redo_puts_it_back_and_a_new_edit_clears_the_stack() {
 #[test]
 fn undo_goes_back_as_far_as_the_session_does() {
     let mut model = loaded();
+    let before = model.data.tasks.len();
+    assert!(before >= 3, "the fixture needs three tasks to tick off");
+    // No `j` between them: `d` advances to the next row itself, the way `x` does, so
+    // three presses tick off three different tasks.
     for _ in 0..3 {
         press(&mut model, 'd');
-        press(&mut model, 'j');
     }
     assert_eq!(model.undo.len(), 3);
-    assert_eq!(model.data.tasks.iter().filter(|task| task.done).count(), 3);
+    assert_eq!(model.data.tasks.len(), before - 3);
 
+    // Each undo queues the inverse write. The rows return with the reload the runtime
+    // fires after every `Effect::Apply`, not from here.
     for _ in 0..3 {
-        press(&mut model, 'u');
+        let effects = press(&mut model, 'u');
+        assert!(applied(&effects).is_some());
     }
-    assert_eq!(model.data.tasks.iter().filter(|task| task.done).count(), 0);
     assert!(model.undo.is_empty());
+    assert_eq!(model.redo.len(), 3);
 
     // And the bottom of the stack says so rather than doing something arbitrary.
     let effects = press(&mut model, 'u');
@@ -2249,4 +2274,123 @@ fn a_due_date_in_the_future_is_confirmed_quietly() {
     press_code(&mut model, KeyCode::Enter);
     let toast = model.status.toast.as_ref().expect("the user is told");
     assert_eq!(toast.level, tui_do_ui::model::Level::Info);
+}
+
+#[test]
+fn every_way_of_setting_a_past_due_date_says_so() {
+    // Allowed -- overdue is a real state and backdating something you have been carrying
+    // is a real thing to want -- but never confirmed quietly, because `2024` typed where
+    // `2026` was meant is indistinguishable from a deliberate backdate once it is stored.
+    // There are three ways in, and for a long time only `D` said anything: the edit form
+    // answered "Saved" and quick-add answered "Added", which is precisely the quiet
+    // confirmation this rule exists to prevent.
+
+    // `D`, where the date is the subject and leads the message.
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Char('D'));
+    for _ in 0..20 {
+        press_code(&mut model, KeyCode::Backspace);
+    }
+    for c in "27/08/2024".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    let toast = model.status.toast.clone().expect("D said nothing");
+    assert_eq!(toast.level, tui_do_ui::model::Level::Warning, "{toast:?}");
+    assert!(toast.text.contains("that date has passed"), "{toast:?}");
+
+    // The edit form.
+    let mut model = loaded();
+    let state = open_edit(&mut model);
+    state.focus = tui_do_ui::modal::EditField::Due;
+    for _ in 0..20 {
+        state.handle(
+            Key::from_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)).unwrap(),
+        );
+    }
+    type_into(state, "27/08/2024");
+    save(&mut model);
+    let toast = model.status.toast.clone().expect("the form said nothing");
+    assert_eq!(toast.level, tui_do_ui::model::Level::Warning, "{toast:?}");
+    assert!(toast.text.contains("that date has passed"), "{toast:?}");
+
+    // Quick-add, where the date is incidental -- nothing was aimed at a date field, the
+    // text simply had a date in it, which makes this the easiest one to do by accident.
+    let mut model = loaded();
+    press(&mut model, 'a');
+    for c in "buy stamps 27/08/2024".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    let toast = model.status.toast.clone().expect("quick-add said nothing");
+    assert_eq!(toast.level, tui_do_ui::model::Level::Warning, "{toast:?}");
+    assert!(toast.text.contains("that date has passed"), "{toast:?}");
+}
+
+#[test]
+fn saving_an_already_overdue_task_does_not_warn_about_a_date_it_did_not_move() {
+    // Otherwise every edit to anything overdue carries the warning, and a warning that
+    // fires when nothing happened is one the user learns to read past.
+    let mut model = loaded();
+    let mut first = task(1, "first");
+    first.due_date = Some(Utc.with_ymd_and_hms(2024, 8, 27, 9, 0, 0).unwrap()).into();
+    answer(&mut model, vec![first]);
+
+    let state = open_edit(&mut model);
+    type_into(state, "!");
+    save(&mut model);
+
+    let toast = model.status.toast.clone().expect("a toast");
+    assert_eq!(toast.text, "Saved", "{toast:?}");
+}
+
+#[test]
+fn marking_done_holds_its_place_in_the_list_the_way_deleting_does() {
+    // `x` moves the selection to the row that slid into the gap. `d` used to leave it on
+    // a task that the reload then dropped from the list -- and `TasksLoaded` cannot tell
+    // "the selected row left this list" from "this is a different list", so it fell back
+    // to the first row. Holding `d` down a list sent the cursor to the top every press.
+    let mut model = loaded();
+    answer(
+        &mut model,
+        vec![task(1, "first"), task(2, "second"), task(3, "third")],
+    );
+    assert!(
+        !model.query.include_done,
+        "done tasks are hidden by default"
+    );
+
+    press(&mut model, 'd');
+    assert_eq!(
+        model.selected_task().map(|task| task.id),
+        Some(TaskId(2)),
+        "the selection should step down to the next row, not jump to the top"
+    );
+    press(&mut model, 'd');
+    assert_eq!(model.selected_task().map(|task| task.id), Some(TaskId(3)));
+
+    // The last row has nothing below it, so the selection steps up rather than vanishing.
+    press(&mut model, 'd');
+    assert_eq!(model.data.tasks.len(), 0);
+    assert_eq!(model.selected_task().map(|task| task.id), None);
+}
+
+#[test]
+fn marking_done_leaves_the_row_in_place_when_done_tasks_are_shown() {
+    // The row belongs in this list either way, so it stays put and simply gains a tick.
+    let mut model = loaded();
+    answer(&mut model, vec![task(1, "first"), task(2, "second")]);
+    press(&mut model, 't');
+    answer(&mut model, vec![task(1, "first"), task(2, "second")]);
+    assert!(model.query.include_done);
+
+    press(&mut model, 'd');
+
+    assert_eq!(model.selected_task().map(|task| task.id), Some(TaskId(1)));
+    assert!(model.selected_task().expect("still selected").done);
+    assert_eq!(
+        model.data.tasks.len(),
+        2,
+        "nothing should have left the list"
+    );
 }
