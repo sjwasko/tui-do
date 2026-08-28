@@ -215,6 +215,21 @@ top. *This was broken:* the sidebar carried an `offset` from the first day and *
 ever wrote to it**, so the selection walked on into rows nobody could see. Collapsing a
 project with `h` must settle it too — the tree gets shorter and every row below moves.
 
+**E6 — `d` holds its place down a list, the way `x` does.** With completed tasks hidden,
+put the cursor a few rows down and press `d` repeatedly. Each press must tick the task off,
+drop it from the list, and leave the cursor on the row that slid up into the gap — so a run
+of presses works straight down the list. The last row is the exception: with nothing below
+it the cursor steps up rather than vanishing. *This was broken:* `d` left the row in place
+with a tick, the reload then dropped it, and `TasksLoaded` cannot tell "the selected row
+left this list" from "this is a different list" — so it fell back to the first row and
+every press sent the cursor to the top.
+
+With `t` on, so completed tasks are shown, the opposite must hold: the row belongs in the
+list either way, so it stays put and simply gains a tick.
+
+`u` immediately after must bring the row back. It returns on the reload the runtime fires
+after every write, not instantly, so give it a moment before calling it broken.
+
 **E4 — A tree that shrinks does not leave an empty pane.** Scroll the sidebar to the
 bottom, then do something that shortens it: collapse a parent, or let a pull drop a
 project. The pane must not draw blank over a list that is still there.
