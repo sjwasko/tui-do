@@ -46,6 +46,42 @@ enum Command {
     /// Applies locally and queues for the server, exactly as the interface does. If the
     /// server cannot be reached the task is queued and the next run sends it, which is
     /// the point: `tui-do add` works on a plane.
+    ///
+    /// SYNTAX
+    ///
+    /// Tokens may appear anywhere in the line and are taken out of the title. These are
+    /// not the interface's keys — `p3` and `D` are ordinary words here, and stay in the
+    /// title where you typed them.
+    ///
+    ///   +project          file it in a project, by title or id: +Legal, +#12
+    ///   *label            attach a label that already exists: *urgent
+    ///   @user             assign someone: @admin
+    ///   !1 .. !5          priority, 1 lowest to 5 highest
+    ///   a date            tomorrow, next friday, 27/08/26, 27aug26, 2026-08-27
+    ///   due <date>        the same, said explicitly
+    ///   start <date>      when work can begin
+    ///   every <n> <unit>  repeat: every 2 weeks, every month
+    ///
+    /// NAMES WITH SPACES
+    ///
+    /// Wrap the value in brackets or quotes, which is what keeps the second word from
+    /// falling back into the title:
+    ///
+    ///   tui-do add "+[Dinner Places] Book a table"
+    ///   tui-do add '+"Dinner Places" Book a table'
+    ///   tui-do add "*[needs review] Draft the memo"
+    ///
+    /// Brackets are usually the easier of the two from a shell, because the shell strips
+    /// quotes before tui-do ever sees them.
+    ///
+    /// EXAMPLES
+    ///
+    ///   tui-do add "Call the VA *urgent !3 +Legal tomorrow"
+    ///   tui-do add "Renew the passport +[Life Admin] 27aug26"
+    ///   tui-do add "Water the plants every 3 days"
+    // Verbatim, because the syntax above is a table and clap reflows a doc comment into
+    // one paragraph by default -- which turns the whole of it into an unreadable run-on.
+    #[command(verbatim_doc_comment)]
     Add(AddArgs),
 
     /// Import a cria configuration into tui-do's own format.
@@ -60,6 +96,9 @@ enum Command {
 #[derive(Debug, Args)]
 struct AddArgs {
     /// The task, in quick-add syntax: `Call the VA *urgent !3 +Legal tomorrow`.
+    ///
+    /// See `tui-do add --help` for every token, and for how to name a project or label
+    /// that has a space in it.
     #[arg(required = true, num_args = 1.., value_name = "TEXT")]
     text: Vec<String>,
 
