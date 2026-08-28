@@ -208,6 +208,38 @@ fn the_help_modal_is_the_keymap() {
 }
 
 #[test]
+fn the_help_modal_folds_rather_than_scrolling_where_there_is_room() {
+    // Thirty-five bindings and four headings need forty-four rows, so a forty-row
+    // terminal used to open help already scrolled -- with `q  Quit` below the fold, on
+    // the one screen whose whole job is telling you which key does what.
+    let mut model = fixture((120, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(
+        drawn.contains("q / C-c     Quit"),
+        "the last binding is off screen:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("j/k scrolls"),
+        "it folded and should not still be advertising a scroll:\n{drawn}"
+    );
+
+    // Too narrow to fold, so it scrolls and says so rather than drawing two columns of
+    // truncated descriptions.
+    let mut narrow = fixture((80, 24));
+    update(
+        &mut narrow,
+        Msg::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+    );
+    let drawn = draw(&narrow);
+    assert!(drawn.contains("j/k scrolls"), "{drawn}");
+    assert!(drawn.contains("Navigation"), "{drawn}");
+}
+
+#[test]
 fn the_project_picker() {
     let mut model = fixture((120, 40));
     for key in ['g', 'p'] {

@@ -189,3 +189,16 @@ project with `h` must settle it too — the tree gets shorter and every row belo
 **E4 — A tree that shrinks does not leave an empty pane.** Scroll the sidebar to the
 bottom, then do something that shortens it: collapse a parent, or let a pull drop a
 project. The pane must not draw blank over a list that is still there.
+
+**E5 — Help folds into two columns rather than scrolling.** On a normal terminal — 120
+columns by 40 rows or better — `?` must open with the whole reference on screen: the
+title plain `Keys` with no `j/k scrolls`, `Navigation` at the head of the left column,
+`Application` and `q / C-c  Quit` visible at the foot of the right one. *This was the
+state before:* thirty-five bindings and four headings need forty-four rows, so help
+opened already scrolled, with the key for quitting below the fold on the one screen whose
+whole job is saying which key does what.
+
+Then narrow the terminal to eighty columns. Two columns no longer fit, so it must go back
+to one, scroll, and say `j/k scrolls` in the title — not draw two columns of truncated
+descriptions. The fold is only ever at a heading, so no section is split across the
+gutter; the empty space under the shorter column is that rule's cost and is deliberate.
