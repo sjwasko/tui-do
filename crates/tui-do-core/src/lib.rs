@@ -21,4 +21,4 @@ pub use tui_do_api::models;
 pub use config::Config;
 pub use error::{CoreError, Result};
 pub use store::Store;
-pub use sync::{Sync, SyncEvent, SyncReport};
+pub use sync::{Reach, Sync, SyncEvent, SyncReport};

@@ -585,7 +585,8 @@ fn the_palette_offers_no_motions_and_shows_the_key_beside_each_command() {
         .iter()
         .map(|candidate| candidate.title.as_str())
         .collect();
-    assert!(titles.contains(&"Sync now"));
+    assert!(titles.contains(&"Sync changes"));
+    assert!(titles.contains(&"Sync everything"));
     // The motions by name, not by prefix: "Move to another project" is a command and
     // starts the same way, and a prefix test would have called it a motion.
     assert!(!titles.contains(&"Move down"));
@@ -596,7 +597,7 @@ fn the_palette_offers_no_motions_and_shows_the_key_beside_each_command() {
     let sync = picker
         .candidates
         .iter()
-        .find(|candidate| candidate.title == "Sync now")
+        .find(|candidate| candidate.title == "Sync changes")
         .expect("sync is offered");
     assert_eq!(sync.hint, "r");
 }
@@ -1096,6 +1097,27 @@ fn asking_to_sync_reads_the_store_before_it_waits_on_the_server() {
         effects.contains(&Effect::SyncNow),
         "and still ask the server"
     );
+}
+
+#[test]
+fn the_two_sync_keys_ask_for_different_amounts_of_server() {
+    // `r` is a page and `R` is seventy-eight. They are separate keys because only the
+    // full one can notice a task deleted in another client, and a user watching for one
+    // to disappear has no way to learn that from the outside.
+    let mut model = loaded();
+    assert!(press(&mut model, 'r').contains(&Effect::SyncNow));
+    assert!(press(&mut model, 'R').contains(&Effect::SyncFull));
+
+    // Which one `r` is has to be said somewhere the user will read it, and the toast at
+    // the keystroke is the only place they are looking.
+    let mut model = loaded();
+    press(&mut model, 'r');
+    let said = model
+        .status
+        .toast
+        .as_ref()
+        .is_some_and(|toast| toast.text.contains('R'));
+    assert!(said, "r must name the key that fetches everything");
 }
 
 #[test]

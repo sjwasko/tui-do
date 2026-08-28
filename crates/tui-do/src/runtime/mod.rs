@@ -247,6 +247,11 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         Effect::SyncNow => {
             if let Some(sync) = sync {
+                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Delta);
+            }
+        }
+        Effect::SyncFull => {
+            if let Some(sync) = sync {
                 spawn_sync(Arc::clone(sync), tx.clone(), Pass::Full);
             }
         }
@@ -300,7 +305,13 @@ enum Pass {
     /// Send queued changes and nothing else. What an edit asks for: it is one request per
     /// entry, where a pull of this instance is seventy-eight pages.
     Push,
-    /// Push, then pull. What the timer asks for.
+    /// Push, then pull only what the server says has changed. What `r` asks for.
+    ///
+    /// Between a push and a full pass in every sense: it costs a page rather than
+    /// seventy-eight, and it sees everything a full pass does except deletions.
+    Delta,
+    /// Push, then pull everything, removing what the server no longer has. What startup,
+    /// the timer, and `R` ask for.
     Full,
 }
 
@@ -309,13 +320,17 @@ enum Pass {
 const NOTHING_AGAIN: u8 = 0;
 /// A push was asked for while a pass was running.
 const PUSH_AGAIN: u8 = 1;
-/// A full pass was asked for while a pass was running. Ordered above a push on purpose:
-/// `fetch_max` then keeps the more thorough of the two.
-const FULL_AGAIN: u8 = 2;
+/// An incremental pass was asked for while a pass was running.
+const DELTA_AGAIN: u8 = 2;
+/// A full pass was asked for while a pass was running. Ordered above the other two on
+/// purpose: `fetch_max` then keeps the most thorough of what was asked for, and each
+/// does everything the one below it does.
+const FULL_AGAIN: u8 = 3;
 
 const fn again_code(pass: Pass) -> u8 {
     match pass {
         Pass::Push => PUSH_AGAIN,
+        Pass::Delta => DELTA_AGAIN,
         Pass::Full => FULL_AGAIN,
     }
 }
@@ -351,6 +366,7 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
         let engine = (*sync).clone().with_events(events_tx);
         let outcome = match pass {
             Pass::Push => engine.push().await.map(|_| ()),
+            Pass::Delta => engine.delta().await.map(|_| ()),
             Pass::Full => engine.once().await.map(|_| ()),
         };
         if let Err(error) = outcome {

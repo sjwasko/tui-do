@@ -35,6 +35,6 @@ Projects               │ Shi│  C-d / PgDn  Page down                        
                        │    │  H           Previous column layout                          │
                        │    │                                                              │
                        │    │Application                                                   │
-                       │    │  r           Sync now                                        │
-                       │    │  :           Run a command by name                           │
+                       │    │  r           Sync changes                                    │
+                       │    │  R           Sync everything                                 │
 4 tasks                     └──────────────────────────────────────────────────────────────┘help  /:search  g:go  q:quit

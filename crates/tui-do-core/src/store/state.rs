@@ -10,8 +10,21 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::Store;
 use crate::error::Result;
 
-/// When the last complete pull finished.
+/// The watermark: every server-side change up to this instant has been seen.
+///
+/// Advanced by both kinds of pull, and set to the moment a pull *started* rather than
+/// the moment it finished — a task edited while seventy-eight pages were being fetched
+/// may or may not have made it into the pages, and the next incremental pull has to ask
+/// for it again either way.
 pub const LAST_PULL: &str = "last_pull";
+
+/// When a pull last reconciled deletions, which only a full one does.
+///
+/// Separate from [`LAST_PULL`] because they stopped being the same fact the moment an
+/// incremental pull existed: it can say "everything up to here has been seen" without
+/// being able to say "and nothing else is gone", since a listing filtered to what
+/// changed never mentions what was deleted.
+pub const LAST_RECONCILE: &str = "last_reconcile";
 
 /// The server's `max_items_per_page`, read from `/info`.
 ///
@@ -71,12 +84,32 @@ impl Store {
         self.write(move |tx| write_state(tx, &key, &value)).await
     }
 
-    /// When the last complete pull finished, if there has been one.
+    /// The watermark: every server-side change up to here has been seen.
+    ///
+    /// `None` means no pull has ever completed, which is what makes an incremental pull
+    /// fall back to a full one rather than asking for "everything since the epoch".
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn last_pull(&self) -> Result<Option<DateTime<Utc>>> {
-        Ok(self.state(LAST_PULL).await?.and_then(|raw| {
+        self.timestamp(LAST_PULL).await
+    }
+
+    /// When a full pull last reconciled deletions, if one ever has.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn last_reconcile(&self) -> Result<Option<DateTime<Utc>>> {
+        self.timestamp(LAST_RECONCILE).await
+    }
+
+    /// Read a state value that was written as RFC 3339.
+    ///
+    /// A value that will not parse reads as absent rather than as an error: the caller's
+    /// answer to "no watermark" is to fetch everything, which is the safe thing to do
+    /// about a watermark nobody can read.
+    async fn timestamp(&self, key: &str) -> Result<Option<DateTime<Utc>>> {
+        Ok(self.state(key).await?.and_then(|raw| {
             DateTime::parse_from_rfc3339(&raw)
                 .ok()
                 .map(|dt| dt.with_timezone(&Utc))
