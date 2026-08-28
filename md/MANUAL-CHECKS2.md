@@ -11,6 +11,24 @@ Run it on the **release** binary — `~/.local/bin/tui-do` is a symlink to
 `target/release/tui-do`, so a debug build proves the tests pass and changes nothing you
 are looking at.
 
+## What has been driven, and when
+
+A check nobody has run is not a check. This is the only record of which of these have
+faced a human, since the suite cannot tell you and a green CI run says nothing about any
+of them.
+
+| section | | last driven |
+|---|---|---|
+| **A1–A8** | the quick keys | never |
+| **B1–B9** | dates | never |
+| **C1** | `tui-do add` syntax | never |
+| **D1** | a task shown twice | seen once 2026-08-27, never reproduced |
+| **E1–E5** | short windows | **2026-08-28 — all pass** |
+
+E was driven first because it needed nothing but a tiled terminal, and because three of
+the four defects found on 2026-08-27 lived there. E5 was added the same day and passed on
+its first drive.
+
 ---
 
 ## A. The quick keys
