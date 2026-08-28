@@ -612,3 +612,69 @@ fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
         "the two paragraphs must be on consecutive rows, not joined:\n{screen}"
     );
 }
+
+#[test]
+fn a_clipped_modal_scrolls_to_its_highlight_rather_than_truncating() {
+    // *This was broken:* every list modal is sized to its content and then clipped by
+    // `centered` to whatever the terminal has. On a short window the bottom rows went
+    // away with nothing to scroll them back, so the highlight moved off the edge and the
+    // arrow keys read as doing nothing at all.
+    let mut model = fixture((80, 8));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+    );
+    // The task is priority 5, the last row, and the box has room for five of six.
+    let drawn = draw(&model);
+    assert!(
+        drawn.contains("5  DO NOW"),
+        "the highlight is on screen:\n{drawn}"
+    );
+    assert!(
+        !drawn.contains("0  Unset"),
+        "and the row it scrolled past is not"
+    );
+
+    // Wrapping back to 0 brings the top of the list with it.
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(
+        drawn.contains("0  Unset"),
+        "the highlight is on screen:\n{drawn}"
+    );
+    assert!(!drawn.contains("5  DO NOW"));
+}
+
+#[test]
+fn a_short_sidebar_draws_the_window_the_selection_is_in() {
+    let mut model = fixture((120, 12));
+    // More projects than the pane has rows, which is the only case that scrolls.
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(
+            (1..=15)
+                .map(|id| Project {
+                    id: ProjectId(id),
+                    title: format!("Project {id:02}"),
+                    ..Project::default()
+                })
+                .collect(),
+        ),
+    );
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)),
+    );
+    for _ in 0..14 {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
+        );
+    }
+    // The last project, not the first: the pane holds nine rows and the tree is
+    // seventeen, so the window has to have moved for this to be drawable at all.
+    golden("120x12-sidebar-scrolled.txt", &draw(&model));
+}

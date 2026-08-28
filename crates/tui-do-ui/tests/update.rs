@@ -586,7 +586,11 @@ fn the_palette_offers_no_motions_and_shows_the_key_beside_each_command() {
         .map(|candidate| candidate.title.as_str())
         .collect();
     assert!(titles.contains(&"Sync now"));
-    assert!(!titles.iter().any(|title| title.starts_with("Move ")));
+    // The motions by name, not by prefix: "Move to another project" is a command and
+    // starts the same way, and a prefix test would have called it a motion.
+    assert!(!titles.contains(&"Move down"));
+    assert!(!titles.contains(&"Move up"));
+    assert!(titles.contains(&"Move to another project"));
     assert!(!titles.contains(&"Run a command by name"));
 
     let sync = picker
@@ -1543,4 +1547,684 @@ fn shift_enter_writes_a_newline_in_the_description() {
         tui_do_ui::modal::EditField::Description,
         "Shift-Enter must not move to the next field"
     );
+}
+
+/// Every mutation a keystroke queued, in order.
+fn all_applied(effects: &[Effect]) -> Vec<&Mutation> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Apply(mutation) => Some(mutation),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A model whose selected task carries `labels`, with `known` on the server.
+fn with_labels(known: Vec<Label>, held: Vec<Label>) -> Model {
+    let mut model = loaded();
+    update(&mut model, Msg::LabelsLoaded(known));
+    let mut first = task(1, "first");
+    first.labels = held;
+    answer(&mut model, vec![first, task(2, "second"), task(3, "third")]);
+    model
+}
+
+fn label(id: i64, title: &str) -> Label {
+    Label {
+        id: LabelId(id),
+        title: title.to_string(),
+        ..Label::default()
+    }
+}
+
+/// The priority field, or a panic naming what opened instead.
+fn priority_field(model: &Model) -> &tui_do_ui::modal::PriorityState {
+    match model.modals.last() {
+        Some(Modal::Priority(state)) => state,
+        other => panic!("p opens the priority field: {other:?}"),
+    }
+}
+
+#[test]
+fn the_priority_field_opens_on_what_the_task_holds() {
+    let mut model = loaded();
+    press(&mut model, 'p');
+    let state = priority_field(&model);
+    assert_eq!(state.current, 0);
+    assert_eq!(
+        state.selected, 0,
+        "the highlight starts where the task stands"
+    );
+    assert_eq!(state.typed, "", "and nothing has been typed yet");
+}
+
+#[test]
+fn the_priority_field_takes_only_digits_that_leave_a_valid_priority() {
+    let mut model = loaded();
+    press(&mut model, 'p');
+
+    // *This was broken:* the picker fuzzy-matched `0005` against "0  Unset" and friends,
+    // matched nothing, and Enter then did nothing at all -- so the key read as broken
+    // rather than as refusing the input.
+    for c in "0005".chars() {
+        press(&mut model, c);
+    }
+    let state = priority_field(&model);
+    assert_eq!(state.typed, "00", "the third digit had nowhere valid to go");
+    assert_eq!(state.selected, 0);
+
+    // Every other character is refused outright, printable or not.
+    for c in ['9', 'p', '-', '.', ' '] {
+        press(&mut model, c);
+    }
+    assert_eq!(priority_field(&model).typed, "00");
+}
+
+#[test]
+fn a_leading_zero_is_the_one_two_character_priority() {
+    let mut model = loaded();
+    press(&mut model, 'p');
+    press(&mut model, '0');
+    press(&mut model, '5');
+    let state = priority_field(&model);
+    assert_eq!(state.typed, "05");
+    assert_eq!(state.selected, 5, "`05` is five, not fifty-five");
+
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.selected_task().unwrap().priority, 5);
+    assert!(applied(&effects).is_some());
+}
+
+#[test]
+fn a_priority_digit_and_the_arrows_agree_about_the_highlight() {
+    let mut model = loaded();
+    press(&mut model, 'p');
+    press(&mut model, '3');
+    assert_eq!(priority_field(&model).selected, 3);
+
+    press_code(&mut model, KeyCode::Down);
+    let state = priority_field(&model);
+    assert_eq!(state.selected, 4);
+    assert_eq!(state.typed, "4", "the field follows the highlight");
+
+    // Rubbing the field out puts the highlight back where the task stands, so Enter
+    // after a full erase changes nothing rather than setting zero.
+    press_code(&mut model, KeyCode::Backspace);
+    let state = priority_field(&model);
+    assert_eq!(state.typed, "");
+    assert_eq!(state.selected, 0);
+}
+
+#[test]
+fn picking_a_priority_sets_it_optimistically() {
+    let mut model = loaded();
+    press(&mut model, 'p');
+    press(&mut model, '4');
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    assert_eq!(model.selected_task().unwrap().priority, 4, "on screen now");
+    match applied(&effects).expect("a write was queued") {
+        Mutation::UpdateTask { before, after } => {
+            assert_eq!(before.priority, 0);
+            assert_eq!(after.priority, 4);
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("Urgent"), "{}", toast.text);
+}
+
+#[test]
+fn setting_the_priority_it_already_has_queues_nothing() {
+    let mut model = loaded();
+    press(&mut model, 'p');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(
+        applied(&effects).is_none(),
+        "a write the server would answer with the same row is not worth sending"
+    );
+    assert!(model.undo.is_empty(), "and it is not worth undoing either");
+}
+
+#[test]
+fn the_due_prompt_opens_on_what_the_task_already_says() {
+    let mut model = loaded();
+    let mut first = task(1, "first");
+    first.due_date = Some(Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()).into();
+    answer(&mut model, vec![first]);
+
+    press_code(&mut model, KeyCode::Char('D'));
+    let Some(Modal::Due(state)) = model.modals.last() else {
+        panic!("D opens the due prompt: {:?}", model.modals);
+    };
+    assert_eq!(state.input.value(), "24/12/2026");
+}
+
+#[test]
+fn a_due_date_goes_through_the_quick_add_parser_not_a_date_format() {
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Char('D'));
+    for c in "tomorrow".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    let due = model
+        .selected_task()
+        .unwrap()
+        .due_date
+        .get()
+        .expect("a date was understood");
+    assert_eq!(due.date_naive(), now().date_naive().succ_opt().unwrap());
+    assert!(applied(&effects).is_some());
+}
+
+#[test]
+fn an_empty_due_field_clears_the_date_rather_than_cancelling() {
+    let mut model = loaded();
+    let mut first = task(1, "first");
+    first.due_date = Some(Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()).into();
+    answer(&mut model, vec![first]);
+
+    press_code(&mut model, KeyCode::Char('D'));
+    for _ in 0..10 {
+        press_code(&mut model, KeyCode::Backspace);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    assert!(model.selected_task().unwrap().due_date.get().is_none());
+    // Esc is how you back out without changing anything; an empty field is a request.
+    match applied(&effects).expect("a write was queued") {
+        Mutation::UpdateTask { before, after } => {
+            assert!(before.due_date.get().is_some());
+            assert!(after.due_date.get().is_none());
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_due_date_nobody_can_parse_is_reported_rather_than_silently_dropped() {
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Char('D'));
+    for c in "zzzz".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    assert!(applied(&effects).is_none());
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("not a date"), "{}", toast.text);
+}
+
+#[test]
+fn moving_offers_only_projects_that_accept_writes() {
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![
+            project(1, "Alpha", 0),
+            // The server invents these -- Favorites, My Open Tasks, Inbox -- and every
+            // one of them rejects a write.
+            project(-1, "Favorites", 0),
+            Project {
+                is_archived: true,
+                ..project(4, "Archived", 0)
+            },
+        ]),
+    );
+    press(&mut model, 'm');
+
+    let Some(Modal::Picker(picker)) = model.modals.last() else {
+        panic!("m opens a picker: {:?}", model.modals);
+    };
+    let titles: Vec<&str> = picker
+        .candidates
+        .iter()
+        .map(|candidate| candidate.title.as_str())
+        .collect();
+    assert_eq!(titles, ["Alpha"]);
+}
+
+#[test]
+fn moving_a_task_writes_the_new_project_and_says_which() {
+    let mut model = loaded();
+    press(&mut model, 'm');
+    for c in "Personal".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    assert_eq!(model.selected_task().unwrap().project_id, ProjectId(3));
+    match applied(&effects).expect("a write was queued") {
+        Mutation::UpdateTask { before, after } => {
+            assert_eq!(before.project_id, ProjectId(1));
+            assert_eq!(after.project_id, ProjectId(3));
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("Personal"), "{}", toast.text);
+}
+
+#[test]
+fn the_label_form_opens_with_the_tasks_own_labels_ticked() {
+    let mut model = with_labels(
+        vec![label(1, "urgent"), label(2, "backend")],
+        vec![label(2, "backend")],
+    );
+    press(&mut model, 'l');
+
+    let Some(Modal::Labels(state)) = model.modals.last() else {
+        panic!("l opens the label form: {:?}", model.modals);
+    };
+    assert!(state.is_chosen(LabelId(2)));
+    assert!(!state.is_chosen(LabelId(1)));
+}
+
+#[test]
+fn ticking_labels_attaches_and_detaches_rather_than_writing_the_task() {
+    let mut model = with_labels(
+        vec![label(1, "urgent"), label(2, "backend")],
+        vec![label(2, "backend")],
+    );
+    press(&mut model, 'l');
+    // Space toggles `urgent` on, then move down and toggle `backend` off.
+    press(&mut model, ' ');
+    press_code(&mut model, KeyCode::Down);
+    press(&mut model, ' ');
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    let mutations = all_applied(&effects);
+    assert_eq!(mutations.len(), 2, "one per label, {mutations:?}");
+    // Labels do not travel in the task body, so an UpdateTask carrying a new list would
+    // be a write the server ignores.
+    assert!(
+        !mutations
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::UpdateTask { .. })),
+        "{mutations:?}"
+    );
+    match mutations[0] {
+        Mutation::AttachLabel { label, .. } => assert_eq!(label.title, "urgent"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    match mutations[1] {
+        Mutation::DetachLabel { label, .. } => assert_eq!(label.title, "backend"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn applying_the_labels_a_task_already_has_queues_nothing() {
+    let mut model = with_labels(vec![label(1, "urgent")], vec![label(1, "urgent")]);
+    press(&mut model, 'l');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(applied(&effects).is_none());
+}
+
+#[test]
+fn the_label_key_leaves_the_sidebars_own_l_alone() {
+    // `l` expands a project in the tree, which is the vim meaning nobody should have to
+    // unlearn -- so the label form is the one that gives way.
+    let mut model = with_labels(vec![label(1, "urgent")], vec![]);
+    press_code(&mut model, KeyCode::BackTab);
+    assert_eq!(model.focus, Focus::Sidebar);
+
+    press(&mut model, 'l');
+    assert!(
+        !matches!(model.modals.last(), Some(Modal::Labels(_))),
+        "the sidebar's l stays the sidebar's"
+    );
+}
+
+#[test]
+fn space_lists_what_was_configured_and_the_key_runs_it() {
+    // `Config::example` binds `u` to priority 5 and `w` to the Work project.
+    let mut model = loaded();
+    press(&mut model, ' ');
+
+    let Some(Modal::QuickActions(state)) = model.modals.last() else {
+        panic!("Space opens the quick-action menu: {:?}", model.modals);
+    };
+    assert_eq!(state.rows.len(), 2);
+    assert_eq!(state.rows[0].0, 'u');
+    assert!(state.rows[0].1.contains("DO NOW"), "{}", state.rows[0].1);
+
+    let effects = press(&mut model, 'u');
+    assert_eq!(model.selected_task().unwrap().priority, 5);
+    assert!(applied(&effects).is_some());
+    assert!(model.modals.is_empty(), "the menu closes once it has run");
+}
+
+#[test]
+fn a_quick_action_naming_something_that_does_not_exist_says_so_when_pressed() {
+    // `w` moves to "Work", and this model has no such project. Reporting it at startup
+    // would be a line nobody reads; reporting it here is the moment it matters.
+    let mut model = loaded();
+    press(&mut model, ' ');
+    let effects = press(&mut model, 'w');
+
+    assert!(applied(&effects).is_none());
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("No project called"), "{}", toast.text);
+}
+
+#[test]
+fn an_unconfigured_quick_action_key_leaves_the_menu_up() {
+    let mut model = loaded();
+    press(&mut model, ' ');
+    press(&mut model, 'z');
+    assert!(
+        matches!(model.modals.last(), Some(Modal::QuickActions(_))),
+        "the list of keys that do work is still on screen"
+    );
+    // And the key that opened it closes it.
+    press(&mut model, ' ');
+    assert!(model.modals.is_empty());
+}
+
+#[test]
+fn a_label_quick_action_toggles_rather_than_only_adding() {
+    let mut model = with_labels(vec![label(1, "urgent")], vec![]);
+    model.quick_actions = vec![tui_do_core::config::QuickAction {
+        key: 'i',
+        kind: tui_do_core::config::QuickActionKind::Label("urgent".to_string()),
+    }];
+
+    press(&mut model, ' ');
+    let effects = press(&mut model, 'i');
+    match applied(&effects).expect("a write was queued") {
+        Mutation::AttachLabel { label, .. } => assert_eq!(label.title, "urgent"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+
+    press(&mut model, ' ');
+    let effects = press(&mut model, 'i');
+    match applied(&effects).expect("a write was queued") {
+        Mutation::DetachLabel { label, .. } => assert_eq!(label.title, "urgent"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn space_with_nothing_configured_says_so_instead_of_opening_an_empty_box() {
+    let mut model = loaded();
+    model.quick_actions.clear();
+    press(&mut model, ' ');
+    assert!(model.modals.is_empty());
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("quick_actions"), "{}", toast.text);
+}
+
+#[test]
+fn every_quick_key_with_nothing_selected_says_so() {
+    let mut model = loaded();
+    let id = model.query_id;
+    update(&mut model, Msg::TasksLoaded { id, tasks: vec![] });
+    update(&mut model, Msg::LabelsLoaded(vec![label(1, "urgent")]));
+
+    for key in ['p', 'D', 'm', 'l', ' '] {
+        model.status.toast = None;
+        let effects = update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+        );
+        assert!(applied(&effects).is_none(), "{key} queued a write");
+        assert!(model.modals.is_empty(), "{key} opened a modal anyway");
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(
+            toast.text.contains("No task selected"),
+            "{key}: {}",
+            toast.text
+        );
+    }
+}
+
+#[test]
+fn the_label_form_can_take_off_a_label_the_labels_table_has_not_caught_up_with() {
+    // A pull stores tasks and labels in separate passes, so a task can carry one the
+    // list has never seen. A form that could not show it could not take it off either.
+    let mut model = with_labels(vec![label(1, "urgent")], vec![label(9, "from a pull")]);
+    press(&mut model, 'l');
+
+    let Some(Modal::Labels(state)) = model.modals.last() else {
+        panic!("l opens the label form: {:?}", model.modals);
+    };
+    assert_eq!(state.labels.len(), 2);
+    assert!(state.is_chosen(LabelId(9)));
+
+    // Move to it and untick it.
+    press_code(&mut model, KeyCode::Down);
+    press(&mut model, ' ');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("a detach was queued") {
+        Mutation::DetachLabel { label, .. } => assert_eq!(label.title, "from a pull"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn ctrl_u_clears_a_prefilled_field_rather_than_making_the_user_backspace_it() {
+    let mut model = loaded();
+    let mut first = task(1, "first");
+    first.due_date = Some(Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()).into();
+    answer(&mut model, vec![first]);
+
+    press_code(&mut model, KeyCode::Char('D'));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+    );
+    let Some(Modal::Due(state)) = model.modals.last() else {
+        panic!("the due prompt is still open: {:?}", model.modals);
+    };
+    assert_eq!(state.input.value(), "");
+
+    // And the field then takes a fresh date rather than appending to the old one.
+    for c in "tomorrow".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    let due = model.selected_task().unwrap().due_date.get().unwrap();
+    assert_eq!(due.date_naive(), now().date_naive().succ_opt().unwrap());
+}
+
+#[test]
+fn the_edit_forms_priority_field_has_the_same_hard_limit() {
+    // It used to take any text and report "not a priority between 0 and 5" on save,
+    // which is a slower and less honest way of saying the field cannot hold it.
+    let mut model = loaded();
+    press(&mut model, 'e');
+    // Tab to Priority: Title, Description, Priority.
+    press_code(&mut model, KeyCode::Tab);
+    press_code(&mut model, KeyCode::Tab);
+
+    for c in "0005".chars() {
+        press(&mut model, c);
+    }
+    for c in ['9', 'p'] {
+        press(&mut model, c);
+    }
+    let Some(Modal::Edit(state)) = model.modals.last() else {
+        panic!("the form is still open: {:?}", model.modals);
+    };
+    assert_eq!(state.priority.value(), "00");
+}
+
+#[test]
+fn a_date_written_any_of_the_ways_people_write_them_reaches_the_task() {
+    // The `D` prompt hands its text to the same parser quick-add uses, so one table
+    // covers both. Fixed `now` is 2026-08-24 in these tests.
+    for (typed, expected) in [
+        ("27/08/26", "2026-08-27"),
+        ("8/27/26", "2026-08-27"),
+        ("2026-08-27", "2026-08-27"),
+        ("27aug26", "2026-08-27"),
+        ("27-Aug-2026", "2026-08-27"),
+        ("27 August 2026", "2026-08-27"),
+        ("tomorrow", "2026-08-25"),
+    ] {
+        let mut model = loaded();
+        press_code(&mut model, KeyCode::Char('D'));
+        for c in typed.chars() {
+            press(&mut model, c);
+        }
+        press_code(&mut model, KeyCode::Enter);
+        let due = model
+            .selected_task()
+            .unwrap()
+            .due_date
+            .get()
+            .unwrap_or_else(|| panic!("{typed:?} was not understood"));
+        assert_eq!(due.date_naive().to_string(), expected, "{typed:?}");
+    }
+}
+
+#[test]
+fn quick_add_leaves_a_key_name_in_the_title_rather_than_acting_on_it() {
+    // `tui-do add 'Go to the shop p3 D 26Aug27 l Scooby'` landed with the whole tail in
+    // the title, because `p`, `D` and `l` are *interface keys* and quick-add has its own
+    // syntax. The date is the one part of that line the parser should now take.
+    let mut model = loaded();
+    press(&mut model, 'a');
+    for c in "Buy milk p3 l Scooby".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("a create was queued") {
+        Mutation::CreateTask { task } => {
+            assert_eq!(task.title, "Buy milk p3 l Scooby");
+            assert_eq!(task.priority, 0, "`p3` is not priority syntax; `!3` is");
+            assert!(task.labels.is_empty(), "`l x` is not label syntax; `*x` is");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+/// A model with a deep enough tree that the sidebar cannot show all of it.
+fn tall_tree(height: u16) -> Model {
+    let mut model = Model::new(&Config::example(), Scope::All, now(), (160, height));
+    let _ = reload_everything(&mut model);
+    answer(&mut model, vec![task(1, "first")]);
+    let projects = (1..=20)
+        .map(|id| project(id, &format!("Project {id:02}"), 0))
+        .collect();
+    update(&mut model, Msg::ProjectsLoaded(projects));
+    model
+}
+
+#[test]
+fn the_sidebar_scrolls_to_follow_the_selection() {
+    // *This was broken:* the sidebar carried an offset from the first day and nothing
+    // ever wrote to it, so a tree taller than the pane stopped at the bottom edge and
+    // the selection walked on into rows nobody could see.
+    let mut model = tall_tree(12);
+    press_code(&mut model, KeyCode::BackTab);
+    assert_eq!(model.focus, Focus::Sidebar);
+    assert_eq!(model.sidebar.offset, 0);
+
+    for _ in 0..20 {
+        press(&mut model, 'j');
+    }
+    assert!(
+        model.sidebar.offset > 0,
+        "twenty rows down a twelve-row pane and it never scrolled"
+    );
+
+    let height = usize::from(
+        model
+            .frames()
+            .sidebar
+            .expect("the sidebar is showing")
+            .height,
+    );
+    let rows = tui_do_ui::sidebar::rows(&model.data.projects, &model.data.counts, &model.sidebar);
+    let index = rows
+        .iter()
+        .position(|row| row.target() == Some(model.sidebar.selected))
+        .expect("the selection is a row");
+    assert!(
+        (model.sidebar.offset..model.sidebar.offset + height).contains(&index),
+        "row {index} is outside the drawn window {}..{}",
+        model.sidebar.offset,
+        model.sidebar.offset + height
+    );
+
+    // And back up again.
+    for _ in 0..20 {
+        press(&mut model, 'k');
+    }
+    assert_eq!(model.sidebar.offset, 0, "the top is reachable again");
+}
+
+#[test]
+fn a_shrinking_tree_does_not_leave_the_sidebar_scrolled_past_its_end() {
+    let mut model = tall_tree(12);
+    press_code(&mut model, KeyCode::BackTab);
+    for _ in 0..20 {
+        press(&mut model, 'j');
+    }
+    assert!(model.sidebar.offset > 0);
+
+    // Every project vanishes -- an archive, a filter, a pull that dropped them.
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "Alpha", 0)]),
+    );
+    let rows = tui_do_ui::sidebar::rows(&model.data.projects, &model.data.counts, &model.sidebar);
+    assert!(
+        model.sidebar.offset < rows.len(),
+        "the pane would have drawn empty over a list that is still there"
+    );
+}
+
+#[test]
+fn a_taller_terminal_scrolls_the_sidebar_back_to_the_top() {
+    let mut model = tall_tree(12);
+    press_code(&mut model, KeyCode::BackTab);
+    for _ in 0..20 {
+        press(&mut model, 'j');
+    }
+    assert!(model.sidebar.offset > 0);
+
+    update(&mut model, Msg::Resize(160, 60));
+    assert_eq!(
+        model.sidebar.offset, 0,
+        "the whole tree fits now, so there is nothing to scroll past"
+    );
+}
+
+#[test]
+fn a_due_date_in_the_past_is_allowed_but_said_loudly() {
+    // Overdue is a real state and backdating is a real thing to want, so it is not
+    // refused. It is not confirmed as though it were ordinary either: `2024` where
+    // `2026` was meant is a typo, and a quiet "Due ..." would bless it.
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Char('D'));
+    for c in "27/08/2024".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    assert!(applied(&effects).is_some(), "the write still happens");
+    let due = model.selected_task().unwrap().due_date.get().unwrap();
+    assert_eq!(due.date_naive().to_string(), "2024-08-27");
+
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert_eq!(toast.level, tui_do_ui::model::Level::Warning);
+    assert!(toast.text.contains("has passed"), "{}", toast.text);
+}
+
+#[test]
+fn a_due_date_in_the_future_is_confirmed_quietly() {
+    let mut model = loaded();
+    press_code(&mut model, KeyCode::Char('D'));
+    for c in "27/08/2027".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert_eq!(toast.level, tui_do_ui::model::Level::Info);
 }

@@ -5,7 +5,8 @@
 //! cannot touch a store — every one of those arrives as a [`Msg`] and leaves as an
 //! [`Effect`]. That is what keeps the render loop from ever blocking.
 
-use tui_do_core::models::{Label, Project, ProjectId, Task, TaskId};
+use tui_do_core::config::{QuickAction, QuickActionKind};
+use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
 use tui_do_core::store::Mutation;
 use tui_do_core::sync::{Phase, Stage};
@@ -15,8 +16,8 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, EditDraft, EditState, HelpState, Modal, Outcome, Pick, PickerKind, PickerState,
-    SearchState, Submission, TextInput,
+    Candidate, DueState, EditDraft, EditState, HelpState, LabelsState, Modal, Outcome, Pick,
+    PickerKind, PickerState, PriorityState, QuickActionsState, SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -35,6 +36,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.size = (width, height);
             settle_focus(model);
             keep_selection_visible(model);
+            keep_sidebar_visible(model);
             Vec::new()
         }
         Msg::Tick(now) => {
@@ -66,6 +68,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::ProjectsLoaded(projects) => {
             model.data.projects = projects;
+            keep_sidebar_visible(model);
             Vec::new()
         }
         Msg::LabelsLoaded(labels) => {
@@ -202,8 +205,13 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         }
         Submission::Add(text) => add_task(model, &text),
         Submission::Edited(draft) => apply_edit(model, *draft),
+        Submission::Priority(value) => set_priority(model, value),
+        Submission::Due(text) => set_due(model, &text),
+        Submission::Labels(chosen) => set_labels(model, &chosen),
+        Submission::QuickAction(index) => run_quick_action(model, index),
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
+        Submission::Picked(Pick::MoveTo(id)) => move_task(model, id),
         // A command chosen by name does exactly what its key does. One implementation,
         // so the two can never disagree about what "toggle the sidebar" means.
         Submission::Picked(Pick::Command(action)) => act(model, action),
@@ -379,6 +387,101 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             }
             None => nothing_selected(model),
         },
+        Action::SetPriority => match model.selected_task() {
+            Some(task) => {
+                model
+                    .modals
+                    .push(Modal::Priority(PriorityState::new(task.priority)));
+                Vec::new()
+            }
+            None => nothing_selected(model),
+        },
+        Action::SetDue => match model.selected_task() {
+            Some(task) => {
+                let current = task
+                    .due_date
+                    .get()
+                    .map(|due| due.format("%d/%m/%Y").to_string())
+                    .unwrap_or_default();
+                model.modals.push(Modal::Due(DueState::new(&current)));
+                Vec::new()
+            }
+            None => nothing_selected(model),
+        },
+        Action::MoveTask => match model.selected_task() {
+            Some(task) => {
+                // Pseudo-projects reject writes, so the ones the server invents -- `-1`
+                // Favorites and the rest -- must not be offered as somewhere to move to.
+                let current = task.project_id;
+                let candidates = model
+                    .data
+                    .projects
+                    .iter()
+                    .filter(|project| project.id.get() > 0 && !project.is_archived)
+                    .map(|project| {
+                        Candidate::hinted(
+                            Pick::MoveTo(project.id),
+                            &project.title,
+                            if project.id == current { "current" } else { "" },
+                        )
+                    })
+                    .collect();
+                model.modals.push(Modal::Picker(PickerState::new(
+                    PickerKind::MoveProject,
+                    sorted(candidates),
+                )));
+                Vec::new()
+            }
+            None => nothing_selected(model),
+        },
+        Action::SetLabels => match model.selected_task() {
+            Some(task) => {
+                let held: Vec<LabelId> = task.labels.iter().map(|label| label.id).collect();
+                // Every label that exists, *plus* any the task carries that the labels
+                // table has not caught up with. A pull stores tasks and labels in
+                // separate passes, so a task can hold one this list has never seen --
+                // and a form that could not show it could not take it off either.
+                let mut labels = model.data.labels.clone();
+                for label in &task.labels {
+                    if !labels.iter().any(|known| known.id == label.id) {
+                        labels.push(label.clone());
+                    }
+                }
+                if labels.is_empty() {
+                    // tui-do cannot create labels yet, so an empty form would be a box
+                    // with nothing in it and no way to fill it.
+                    model.toast(Toast::info("No labels exist yet"));
+                    return Vec::new();
+                }
+                model
+                    .modals
+                    .push(Modal::Labels(LabelsState::new(labels, held)));
+                Vec::new()
+            }
+            None => nothing_selected(model),
+        },
+        Action::QuickAction => {
+            if model.selected_task().is_none() {
+                return nothing_selected(model);
+            }
+            if model.quick_actions.is_empty() {
+                // Named as configuration rather than as a missing feature: the key works,
+                // there is simply nothing bound under it yet.
+                model.toast(Toast::info(
+                    "No quick actions configured — see quick_actions in the config",
+                ));
+                return Vec::new();
+            }
+            let rows = model
+                .quick_actions
+                .iter()
+                .map(|action| (action.key, quick_action_doc(&action.kind)))
+                .collect();
+            model
+                .modals
+                .push(Modal::QuickActions(QuickActionsState::new(rows)));
+            Vec::new()
+        }
         Action::Undo => match model.undo.pop() {
             Some(mutation) => {
                 model.redo.push(mutation.inverse());
@@ -544,6 +647,9 @@ fn expand_or_open(model: &mut Model) -> Vec<Effect> {
     if let SidebarTarget::Project(id) = model.sidebar.selected {
         if has_children(&model.data.projects, id) && model.sidebar.collapsed.contains(&id) {
             model.sidebar.collapsed.remove(&id);
+            // Expanding lengthens the tree under the cursor; collapsing shortens it. Both
+            // move every row below, so both have to settle the scroll.
+            keep_sidebar_visible(model);
             return Vec::new();
         }
     }
@@ -558,6 +664,7 @@ fn collapse_or_parent(model: &mut Model) -> Vec<Effect> {
     };
     if has_children(&model.data.projects, id) && !model.sidebar.collapsed.contains(&id) {
         model.sidebar.collapsed.insert(id);
+        keep_sidebar_visible(model);
         return Vec::new();
     }
     match sidebar::parent_of(&model.data.projects, id) {
@@ -578,6 +685,7 @@ fn has_children(projects: &[Project], id: ProjectId) -> bool {
 /// `Enter`. Racing queries are what [`crate::query::QueryId`] is for.
 fn select_target(model: &mut Model, target: SidebarTarget) -> Vec<Effect> {
     model.sidebar.selected = target;
+    keep_sidebar_visible(model);
     let scope = match target {
         SidebarTarget::AllTasks => Scope::All,
         SidebarTarget::Favorites => Scope::Favorites,
@@ -732,6 +840,242 @@ fn build_task(parsed: &quickadd::Parsed, project: ProjectId, labels: Vec<Label>)
 /// them separately: labels are attached and detached through their own endpoints and a
 /// task write ignores the body's `labels`. That means a form that changed both is two or
 /// three entries in the undo stack rather than one, which is honest about what was sent.
+/// Change the selected task through `change`, and toast `told` when it changed anything.
+///
+/// Every quick key ends here rather than building its own mutation: the `before`/`after`
+/// pair, the "nothing selected" answer and the "that is what it already said" answer are
+/// the same three cases each time, and writing them five times is five chances to write
+/// one of them differently.
+fn change_selected(
+    model: &mut Model,
+    told: impl FnOnce(&Task) -> Toast,
+    change: impl FnOnce(&mut Task),
+) -> Vec<Effect> {
+    let Some(before) = model.selected_task().cloned() else {
+        return nothing_selected(model);
+    };
+    let mut after = before.clone();
+    change(&mut after);
+    if after == before {
+        model.toast(Toast::info("Nothing changed"));
+        return Vec::new();
+    }
+    model.toast(told(&after));
+    edit(
+        model,
+        Mutation::UpdateTask {
+            before: Box::new(before),
+            after: Box::new(after),
+        },
+    )
+}
+
+/// Set the selected task's priority.
+fn set_priority(model: &mut Model, value: i64) -> Vec<Effect> {
+    change_selected(
+        model,
+        |task| {
+            Toast::info(if task.priority == 0 {
+                "Priority cleared".to_string()
+            } else {
+                format!(
+                    "Priority {} — {}",
+                    task.priority,
+                    rows::priority_name(task.priority)
+                )
+            })
+        },
+        |task| task.priority = value,
+    )
+}
+
+/// Move the selected task into `project`.
+fn move_task(model: &mut Model, project: ProjectId) -> Vec<Effect> {
+    let name = model.project(project).map_or_else(
+        || format!("#{}", project.get()),
+        |project| project.title.clone(),
+    );
+    change_selected(
+        model,
+        |_| Toast::info(format!("Moved to {name}")),
+        |task| task.project_id = project,
+    )
+}
+
+/// Set the selected task's due date from `text`, which is empty to clear it.
+fn set_due(model: &mut Model, text: &str) -> Vec<Effect> {
+    let text = text.trim();
+    // Through the quick-add parser, not a date format, so the field understands
+    // `tomorrow` and `next friday` -- exactly what the edit form's Due field does.
+    let parsed = if text.is_empty() {
+        None
+    } else {
+        match quickadd::parse(text, &model.now).due_date {
+            Some(due) => Some(due),
+            None => {
+                model.toast(Toast::error(format!(
+                    "{text:?} is not a date tui-do understands"
+                )));
+                return Vec::new();
+            }
+        }
+    };
+    let now = model.now;
+    change_selected(
+        model,
+        move |task| match task.due_date.get() {
+            // A date in the past is allowed -- overdue is a real state, and backdating a
+            // task you have been carrying is a real thing to want. It is *loud*, though:
+            // `2024` where `2026` was meant is a typo the toast would otherwise confirm
+            // as though it were what the user asked for.
+            Some(due) if due < now => Toast::warning(format!(
+                "Due {} — that date has passed",
+                rows::relative_date(Some(due), now)
+            )),
+            Some(due) => Toast::info(format!("Due {}", rows::relative_date(Some(due), now))),
+            None => Toast::info("Due date cleared".to_string()),
+        },
+        |task| task.due_date = parsed.into(),
+    )
+}
+
+/// Make `chosen`, exactly `chosen`, the selected task's labels.
+fn set_labels(model: &mut Model, chosen: &[LabelId]) -> Vec<Effect> {
+    let Some(task) = model.selected_task().cloned() else {
+        return nothing_selected(model);
+    };
+    // Labels do not travel in the task body -- they are attached and detached through
+    // their own endpoints -- so this is a set difference against what the task holds,
+    // never an `UpdateTask` carrying a new list.
+    let attach: Vec<Label> = model
+        .data
+        .labels
+        .iter()
+        .filter(|label| {
+            chosen.contains(&label.id) && !task.labels.iter().any(|held| held.id == label.id)
+        })
+        .cloned()
+        .collect();
+    let detach: Vec<Label> = task
+        .labels
+        .iter()
+        .filter(|held| !chosen.contains(&held.id))
+        .cloned()
+        .collect();
+
+    if attach.is_empty() && detach.is_empty() {
+        model.toast(Toast::info("Nothing changed"));
+        return Vec::new();
+    }
+    let told = match (attach.len(), detach.len()) {
+        (added, 0) => format!("{added} label{} added", plural(added)),
+        (0, removed) => format!("{removed} label{} removed", plural(removed)),
+        (added, removed) => format!("{added} added, {removed} removed"),
+    };
+    model.toast(Toast::info(told));
+
+    let mut effects = Vec::new();
+    for label in attach {
+        effects.extend(edit(
+            model,
+            Mutation::AttachLabel {
+                task: task.id,
+                label: Box::new(label),
+            },
+        ));
+    }
+    for label in detach {
+        effects.extend(edit(
+            model,
+            Mutation::DetachLabel {
+                task: task.id,
+                label: Box::new(label),
+            },
+        ));
+    }
+    effects
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+/// Attach `label` to the selected task, or detach it if it is already on.
+fn toggle_label(model: &mut Model, label: &Label) -> Vec<Effect> {
+    let Some(task) = model.selected_task().cloned() else {
+        return nothing_selected(model);
+    };
+    let held = task.labels.iter().any(|on| on.id == label.id);
+    let mutation = if held {
+        model.toast(Toast::info(format!("Removed *{}", label.title)));
+        Mutation::DetachLabel {
+            task: task.id,
+            label: Box::new(label.clone()),
+        }
+    } else {
+        model.toast(Toast::info(format!("Added *{}", label.title)));
+        Mutation::AttachLabel {
+            task: task.id,
+            label: Box::new(label.clone()),
+        }
+    };
+    edit(model, mutation)
+}
+
+/// What the quick-action menu prints beside a key.
+fn quick_action_doc(kind: &QuickActionKind) -> String {
+    match kind {
+        QuickActionKind::Project(name) => format!("Move to {name}"),
+        QuickActionKind::Priority(value) => {
+            format!(
+                "Priority {value} — {}",
+                rows::priority_name(i64::from(*value))
+            )
+        }
+        QuickActionKind::Label(name) => format!("Toggle *{name}"),
+    }
+}
+
+/// Run the configured quick action at `index`.
+///
+/// Resolving happens here rather than when the config is read, because a project or a
+/// label named in the config may not exist -- and the honest moment to say so is when the
+/// key is pressed, not at startup where it would be one more line nobody reads.
+fn run_quick_action(model: &mut Model, index: usize) -> Vec<Effect> {
+    let Some(QuickAction { kind, .. }) = model.quick_actions.get(index).cloned() else {
+        return Vec::new();
+    };
+    match kind {
+        QuickActionKind::Priority(value) => set_priority(model, i64::from(value)),
+        QuickActionKind::Project(name) => match resolve_project(&model.data.projects, &name) {
+            Some(id) => move_task(model, id),
+            None => {
+                model.toast(Toast::error(format!("No project called {name:?}")));
+                Vec::new()
+            }
+        },
+        QuickActionKind::Label(name) => {
+            match model
+                .data
+                .labels
+                .iter()
+                .find(|label| label.title.eq_ignore_ascii_case(name.trim()))
+                .cloned()
+            {
+                Some(label) => toggle_label(model, &label),
+                None => {
+                    model.toast(Toast::error(format!("No label called {name:?}")));
+                    Vec::new()
+                }
+            }
+        }
+    }
+}
+
 fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
     let mut notes: Vec<String> = Vec::new();
     let before = *draft.before;
@@ -1192,6 +1536,39 @@ fn settle_focus(model: &mut Model) {
 }
 
 /// Scroll the list so the selection is on screen.
+/// Scroll the sidebar so the selected row is on screen.
+///
+/// *This was broken:* the sidebar carried an `offset` from the first day and nothing ever
+/// wrote to it, so a tree taller than the pane stopped dead at the bottom edge and the
+/// selection walked on into rows nobody could see. The task list had the same fault and
+/// was fixed; this is the same fix, and it is simpler because sidebar rows are one line
+/// each.
+fn keep_sidebar_visible(model: &mut Model) {
+    let Some(area) = model.frames().sidebar else {
+        return;
+    };
+    let rows = sidebar::rows(&model.data.projects, &model.data.counts, &model.sidebar);
+    // One line per row, unlike the task list, where a row wraps to as many as three and
+    // the offset has to be measured rather than counted.
+    let height = usize::from(area.height).max(1);
+    if let Some(index) = rows
+        .iter()
+        .position(|row| row.target() == Some(model.sidebar.selected))
+    {
+        if index < model.sidebar.offset {
+            model.sidebar.offset = index;
+        } else if index >= model.sidebar.offset + height {
+            model.sidebar.offset = index + 1 - height;
+        }
+    }
+    // Unconditionally, and not as an `else`: a tree that shrank -- a collapse, an
+    // archive, a pull that dropped a project -- leaves the offset past the end, and a
+    // selection that vanished along with it is precisely the case where the branch above
+    // has nothing to correct it by. Skipping this was drawing an empty pane over a list
+    // that was still there.
+    model.sidebar.offset = model.sidebar.offset.min(rows.len().saturating_sub(height));
+}
+
 fn keep_selection_visible(model: &mut Model) {
     let Some(index) = model.selected_index() else {
         model.list.offset = 0;

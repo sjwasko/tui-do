@@ -190,3 +190,8 @@ Not bugs. Listed so they are not reported as such.
 - A repeating task toggled done: Vikunja advances its due date rather than marking it
   done. tui-do shows a tick optimistically and the reload corrects it. **Unmeasured** —
   worth watching.
+
+---
+
+Everything added after the quick keys lives in `md/MANUAL-CHECKS2.md`, lettered
+afresh from `A` so neither file needs scrolling to reach its own end.
