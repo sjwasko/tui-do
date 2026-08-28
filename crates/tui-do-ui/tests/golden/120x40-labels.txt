@@ -10,18 +10,18 @@ Projects               │ Ship the release        Work                Tomorrow 
                        │                                                        │ Labels    urgent  backend
                        │                                                        │
                        │                                                        │ The refresh call needs the cookie set
-                       │      ┌Run a command─────────────────────────────────────────────┐/login.
-                       │      │> la                                                      │
-                       │      │ Go to a label                                        g l │
-                       │      │ Next column layout                                     L │
-                       │      │ Previous column layout                                 H │
-                       │      │ Add or remove labels                                   l │
-                       │      │ Undo the last change                                   u │
-                       │      │ Back to the list, then out of a search               Esc │
-                       │      │ Show or hide completed tasks                           t │
-                       │      │ Open the selected task                             Enter │
-                       │      │ Edit the selected task                                 e │
-                       │      │ Delete the task                                        x │
+                       │      ┌Labels  —  Space toggles, Enter applies, Esc cancels──────┐/login.
+                       │      │>                                                         │
+                       │      │ [x] urgent                                               │
+                       │      │ [x] backend                                              │
+                       │      │                                                          │
+                       │      │                                                          │
+                       │      │                                                          │
+                       │      │                                                          │
+                       │      │                                                          │
+                       │      │                                                          │
+                       │      │                                                          │
+                       │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │

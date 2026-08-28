@@ -1,17 +1,16 @@
-tui-do  Work › List  Table  Kanban                                                                      ⟳ synced 2m ago
-────────────────────────────┌Keys──────────────────────────────────────────────────────────┐────────────────────────────
-  All tasks          4 │ Tit│Navigation                                                    │ken refresh that drops the
-  Favorites          2 │ Fix│  j / ↓       Move down                                       │
-Projects               │ Shi│  k / ↑       Move up                                         │────────────────────────────
-▾ Home               1 │ Ren│  C-d / PgDn  Page down                                       │ork
-    Errands            │ A t│  C-u / PgUp  Page up                                         │ORK-42
-  Work               3 │    │  g g / Home  Jump to the top                                 │ days ago
-                       │    │  G / End     Jump to the bottom                              │5
-                       │    │  Tab         Focus the next pane                             │urgent  backend
-                       │    │  S-Tab       Focus the previous pane                         │
-                       │    │  Esc         Back to the list, then out of a search          │h call needs the cookie set
-                       │    │  g p         Go to a project                                 │ogin.
-                       │    │  g l         Go to a label                                   │
+tui-do  Work › List  Table  ┌Keys — j/k scrolls────────────────────────────────────────────┐            ⟳ synced 2m ago
+────────────────────────────│Navigation                                                    │────────────────────────────
+  All tasks          4 │ Tit│  j / ↓       Move down                                       │ken refresh that drops the
+  Favorites          2 │ Fix│  k / ↑       Move up                                         │
+Projects               │ Shi│  C-d / PgDn  Page down                                       │────────────────────────────
+▾ Home               1 │ Ren│  C-u / PgUp  Page up                                         │ork
+    Errands            │ A t│  g g / Home  Jump to the top                                 │ORK-42
+  Work               3 │    │  G / End     Jump to the bottom                              │ days ago
+                       │    │  Tab         Focus the next pane                             │5
+                       │    │  S-Tab       Focus the previous pane                         │urgent  backend
+                       │    │  Esc         Back to the list, then out of a search          │
+                       │    │  g p         Go to a project                                 │h call needs the cookie set
+                       │    │  g l         Go to a label                                   │ogin.
                        │    │  /           Search the current list                         │
                        │    │  Enter       Open the selected task                          │
                        │    │                                                              │
@@ -19,6 +18,11 @@ Projects               │ Shi│  k / ↑       Move up                        
                        │    │  a           Add a task                                      │
                        │    │  e           Edit the selected task                          │
                        │    │  d           Mark done, or not done                          │
+                       │    │  p           Set priority                                    │
+                       │    │  D           Set the due date                                │
+                       │    │  m           Move to another project                         │
+                       │    │  l           Add or remove labels                            │
+                       │    │  Space       Configured quick actions                        │
                        │    │  x           Delete the task                                 │
                        │    │  u           Undo the last change                            │
                        │    │  C-r         Redo                                            │
@@ -33,8 +37,4 @@ Projects               │ Shi│  k / ↑       Move up                        
                        │    │Application                                                   │
                        │    │  r           Sync now                                        │
                        │    │  :           Run a command by name                           │
-                       │    │  ?           Show this help                                  │
-                       │    │  q / C-c     Quit                                            │
-                       │    └──────────────────────────────────────────────────────────────┘
-                       │                                                        │
-4 tasks                                                                                   ?:help  /:search  g:go  q:quit
+4 tasks                     └──────────────────────────────────────────────────────────────┘help  /:search  g:go  q:quit

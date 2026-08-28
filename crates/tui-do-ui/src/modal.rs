@@ -12,7 +12,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use tui_do_core::models::{LabelId, ProjectId, Task};
+use tui_do_core::models::{Label, LabelId, ProjectId, Task};
 
 use crate::keymap::{help_rows, Action, Context, Key};
 
@@ -77,6 +77,14 @@ impl TextInput {
     /// returns what should happen to the modal.
     pub fn press(&mut self, key: Key) -> bool {
         match key.code {
+            // Readline's kill-line, and the reason a prefilled field is practical: `D`
+            // opens on the date the task already has, and replacing it would otherwise
+            // mean ten presses of Backspace before the first useful keystroke.
+            KeyCode::Char('u') if key.mods.contains(KeyModifiers::CONTROL) => {
+                self.value.clear();
+                self.cursor = 0;
+                true
+            }
             KeyCode::Char(c) if !key.mods.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 let at = self.byte_offset(self.cursor);
                 self.value.insert(at, c);
@@ -145,6 +153,12 @@ pub enum Pick {
     Label(LabelId),
     /// Run this action, exactly as its key would.
     Command(Action),
+    /// Move the selected task into this project.
+    ///
+    /// Distinct from [`Pick::Project`], which *shows* one. Both carry a `ProjectId` and
+    /// mean opposite things, which is precisely why they are two variants and not one
+    /// with a flag beside it.
+    MoveTo(ProjectId),
 }
 
 /// One thing a picker can offer.
@@ -190,6 +204,8 @@ pub enum PickerKind {
     Label,
     /// A command to run.
     Command,
+    /// A project to move the selected task into.
+    MoveProject,
 }
 
 impl PickerKind {
@@ -200,8 +216,33 @@ impl PickerKind {
             Self::Project => "Go to project",
             Self::Label => "Go to label",
             Self::Command => "Run a command",
+            Self::MoveProject => "Move to project",
         }
     }
+}
+
+/// Indices of `titles` matching `query`, best match first.
+///
+/// Shared by every modal that filters as it is typed, so "does this match what I typed"
+/// has one answer rather than one per modal. Ties break on the original order, which is
+/// what stops the list reshuffling under someone who is still typing.
+fn fuzzy_order<'a>(titles: impl Iterator<Item = &'a str>, query: &str) -> Vec<usize> {
+    let titles: Vec<&str> = titles.collect();
+    if query.is_empty() {
+        return (0..titles.len()).collect();
+    }
+    let matcher = SkimMatcherV2::default();
+    let mut scored: Vec<(i64, usize)> = titles
+        .iter()
+        .enumerate()
+        .filter_map(|(index, title)| {
+            matcher
+                .fuzzy_match(title, query)
+                .map(|score| (score, index))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, index)| index).collect()
 }
 
 /// A fuzzy picker over a fixed candidate list.
@@ -252,26 +293,12 @@ impl PickerState {
     }
 
     fn refilter(&mut self) {
-        let query = self.input.value();
-        if query.is_empty() {
-            self.matches = (0..self.candidates.len()).collect();
-        } else {
-            let matcher = SkimMatcherV2::default();
-            let mut scored: Vec<(i64, usize)> = self
-                .candidates
+        self.matches = fuzzy_order(
+            self.candidates
                 .iter()
-                .enumerate()
-                .filter_map(|(index, candidate)| {
-                    matcher
-                        .fuzzy_match(&candidate.title, query)
-                        .map(|score| (score, index))
-                })
-                .collect();
-            // Highest score first, ties broken by the original order so the list does not
-            // shuffle while the user is still typing.
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            self.matches = scored.into_iter().map(|(_, index)| index).collect();
-        }
+                .map(|candidate| candidate.title.as_str()),
+            self.input.value(),
+        );
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
 }
@@ -322,6 +349,14 @@ pub enum Modal {
     Picker(PickerState),
     /// Editing every field of one task.
     Edit(Box<EditState>),
+    /// Choosing one task's priority.
+    Priority(PriorityState),
+    /// Typing one task's due date.
+    Due(DueState),
+    /// Ticking labels on and off one task.
+    Labels(LabelsState),
+    /// Waiting for a configured quick-action key.
+    QuickActions(QuickActionsState),
 }
 
 /// What a modal decided about a key.
@@ -348,6 +383,14 @@ pub enum Submission {
     Add(String),
     /// Apply this filled-in edit form.
     Edited(Box<EditDraft>),
+    /// Set the selected task's priority to this, 0 to 5.
+    Priority(i64),
+    /// Set the selected task's due date from this text. Empty clears it.
+    Due(String),
+    /// Make these, exactly these, the selected task's labels.
+    Labels(Vec<LabelId>),
+    /// Run the configured quick action at this index.
+    QuickAction(usize),
 }
 
 /// Which field of the edit form has the keyboard.
@@ -558,6 +601,20 @@ impl ModalView for EditState {
                 self.focus = self.focus.step(true);
                 Outcome::Consumed
             }
+            // The same hard limit the `p` key has. The form used to take any text here
+            // and report "not a priority between 0 and 5" on save, which is a slower and
+            // less honest way of saying the field cannot hold it.
+            KeyCode::Char(c)
+                if self.focus == EditField::Priority
+                    && !key.mods.contains(KeyModifiers::CONTROL) =>
+            {
+                let mut candidate = self.priority.value().to_string();
+                candidate.push(c);
+                if is_priority_text(&candidate) {
+                    self.priority.press(key);
+                }
+                Outcome::Consumed
+            }
             _ => {
                 self.current().press(key);
                 Outcome::Consumed
@@ -567,6 +624,309 @@ impl ModalView for EditState {
 
     fn title(&self) -> String {
         "Edit task  —  Tab moves, Ctrl-S saves, Esc cancels".to_string()
+    }
+}
+
+/// The highest priority Vikunja has.
+pub const MAX_PRIORITY: i64 = 5;
+
+/// Whether a priority field may hold `text` — empty, `0`–`5`, or `00`–`05`.
+///
+/// The field is checked *before* the keystroke lands rather than after, so an invalid
+/// priority is never something the form can be holding. That is the difference between a
+/// hard limit and an error message: `0005` cannot be typed at all, instead of being typed
+/// and then rejected on save.
+#[must_use]
+pub fn is_priority_text(text: &str) -> bool {
+    match text.as_bytes() {
+        [] => true,
+        [only] => only.is_ascii_digit() && i64::from(only - b'0') <= MAX_PRIORITY,
+        // A leading zero is the only two-character form: `05` is five, `55` is nothing.
+        [b'0', second] => second.is_ascii_digit() && i64::from(second - b'0') <= MAX_PRIORITY,
+        _ => false,
+    }
+}
+
+/// One task's priority, 0 to 5.
+///
+/// A field of its own rather than the fuzzy picker every other list uses, because a
+/// priority is a number in a fixed range and fuzzy-matching a number is nonsense: `0005`
+/// typed into the picker matched no candidate at all, so Enter did nothing and the key
+/// read as broken. Here the keystroke is refused instead — only a digit, and only one
+/// that leaves a valid priority behind, ever reaches the field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorityState {
+    /// What has been typed. Always empty or a valid priority; never anything else.
+    pub typed: String,
+    /// The row under the cursor, which is what Enter applies.
+    pub selected: i64,
+    /// What the task holds now, marked on its row.
+    pub current: i64,
+}
+
+impl PriorityState {
+    /// A field over a task whose priority is `current`.
+    #[must_use]
+    pub fn new(current: i64) -> Self {
+        Self {
+            typed: String::new(),
+            selected: current.clamp(0, MAX_PRIORITY),
+            current,
+        }
+    }
+
+    /// Take a digit, if it leaves the field valid. Returns whether it was taken.
+    fn digit(&mut self, c: char) -> bool {
+        let mut candidate = self.typed.clone();
+        candidate.push(c);
+        if !c.is_ascii_digit() || !is_priority_text(&candidate) {
+            return false;
+        }
+        // Safe by construction: `is_priority_text` accepted it, so it is one or two
+        // digits naming 0 to 5.
+        self.selected = i64::from(c as u8 - b'0');
+        self.typed = candidate;
+        true
+    }
+
+    /// Move the highlight, rewriting the field to match so the two cannot disagree.
+    fn step(&mut self, delta: i64) {
+        self.selected = (self.selected + delta).rem_euclid(MAX_PRIORITY + 1);
+        self.typed = self.selected.to_string();
+    }
+}
+
+impl ModalView for PriorityState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            KeyCode::Esc => Outcome::Dismiss,
+            KeyCode::Enter => Outcome::Submit(Submission::Priority(self.selected)),
+            KeyCode::Down | KeyCode::Tab => {
+                self.step(1);
+                Outcome::Consumed
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.step(-1);
+                Outcome::Consumed
+            }
+            KeyCode::Backspace => {
+                self.typed.pop();
+                if self.typed.is_empty() {
+                    // Emptying the field puts the highlight back where it started, so
+                    // Enter after a full rub-out changes nothing rather than setting 0.
+                    self.selected = self.current.clamp(0, MAX_PRIORITY);
+                }
+                Outcome::Consumed
+            }
+            KeyCode::Char('u') if key.mods.contains(KeyModifiers::CONTROL) => {
+                self.typed.clear();
+                self.selected = self.current.clamp(0, MAX_PRIORITY);
+                Outcome::Consumed
+            }
+            // Every other key, printable or not, is refused outright. That is what the
+            // hard limit means: there is no keystroke that puts a `9` or a `p` in here.
+            KeyCode::Char(c) => {
+                self.digit(c);
+                Outcome::Consumed
+            }
+            _ => Outcome::Consumed,
+        }
+    }
+
+    fn title(&self) -> String {
+        "Set priority  —  0 to 5".to_string()
+    }
+}
+
+/// One task's due date, being typed.
+///
+/// A field rather than a picker because a date is not a list: the quick-add parser takes
+/// `tomorrow`, `next friday` and `24/12/2026`, and no menu of presets covers what someone
+/// will actually want. The status line shows what the parser made of it as it is typed,
+/// so the guess is visible before Enter commits to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueState {
+    /// What has been typed. Prefilled with the date the task already has.
+    pub input: TextInput,
+}
+
+impl DueState {
+    /// A field prefilled with `current`, which is empty when the task has no due date.
+    #[must_use]
+    pub fn new(current: &str) -> Self {
+        Self {
+            input: TextInput::new(current),
+        }
+    }
+}
+
+impl ModalView for DueState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            KeyCode::Esc => Outcome::Dismiss,
+            // Deliberately submits an empty field rather than treating it as a cancel:
+            // clearing a due date is a thing people want, and Esc is already the way to
+            // back out without changing anything.
+            KeyCode::Enter => Outcome::Submit(Submission::Due(self.input.value().to_string())),
+            _ => {
+                self.input.press(key);
+                Outcome::Consumed
+            }
+        }
+    }
+
+    fn title(&self) -> String {
+        "Due date".to_string()
+    }
+}
+
+/// Labels being ticked on and off one task.
+///
+/// Multi-select, so Enter cannot mean "choose this one" the way it does in a picker: it
+/// means "these are the labels now". `chosen` is the whole answer rather than a list of
+/// changes, because `update` is what knows the task's labels and can work out the attach
+/// and detach sets against them -- the same split the edit form already makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelsState {
+    /// The filter typed so far.
+    pub input: TextInput,
+    /// Every label that exists, unfiltered.
+    pub labels: Vec<Label>,
+    /// The ids ticked right now, starting from the ones the task holds.
+    pub chosen: Vec<LabelId>,
+    /// Indices into `labels`, best match first.
+    pub matches: Vec<usize>,
+    /// Which match is highlighted, as a position in `matches`.
+    pub selected: usize,
+}
+
+impl LabelsState {
+    /// A form over `labels`, with the task's own `held` already ticked.
+    #[must_use]
+    pub fn new(labels: Vec<Label>, held: Vec<LabelId>) -> Self {
+        let matches = (0..labels.len()).collect();
+        Self {
+            input: TextInput::default(),
+            labels,
+            chosen: held,
+            matches,
+            selected: 0,
+        }
+    }
+
+    /// The label under the cursor.
+    #[must_use]
+    pub fn current(&self) -> Option<&Label> {
+        self.matches
+            .get(self.selected)
+            .and_then(|index| self.labels.get(*index))
+    }
+
+    /// Whether `label` is ticked.
+    #[must_use]
+    pub fn is_chosen(&self, label: LabelId) -> bool {
+        self.chosen.contains(&label)
+    }
+
+    /// Tick the highlighted label, or untick it.
+    fn toggle(&mut self) {
+        let Some(id) = self.current().map(|label| label.id) else {
+            return;
+        };
+        match self.chosen.iter().position(|held| *held == id) {
+            Some(at) => {
+                self.chosen.remove(at);
+            }
+            None => self.chosen.push(id),
+        }
+    }
+
+    fn refilter(&mut self) {
+        self.matches = fuzzy_order(
+            self.labels.iter().map(|label| label.title.as_str()),
+            self.input.value(),
+        );
+        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+    }
+}
+
+impl ModalView for LabelsState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            KeyCode::Esc => Outcome::Dismiss,
+            KeyCode::Enter => Outcome::Submit(Submission::Labels(self.chosen.clone())),
+            // Space toggles rather than typing a space. A label whose title has one in it
+            // is still reachable: the filter is fuzzy, so `inprog` finds `in progress`.
+            KeyCode::Char(' ') => {
+                self.toggle();
+                Outcome::Consumed
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if !self.matches.is_empty() {
+                    self.selected = (self.selected + 1) % self.matches.len();
+                }
+                Outcome::Consumed
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                if !self.matches.is_empty() {
+                    self.selected = self
+                        .selected
+                        .checked_sub(1)
+                        .unwrap_or(self.matches.len() - 1);
+                }
+                Outcome::Consumed
+            }
+            _ => {
+                if self.input.press(key) {
+                    self.refilter();
+                }
+                Outcome::Consumed
+            }
+        }
+    }
+
+    fn title(&self) -> String {
+        "Labels  —  Space toggles, Enter applies, Esc cancels".to_string()
+    }
+}
+
+/// The configured quick actions, waiting for one of their keys.
+///
+/// Holds `(key, description)` pairs rather than the config type, so the modal cannot
+/// resolve a project name or a priority itself -- it reports which row was pressed and
+/// `update` decides what that row means, the same way every other modal here works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickActionsState {
+    /// One row per configured action: the key that triggers it, and what it does.
+    pub rows: Vec<(char, String)>,
+}
+
+impl QuickActionsState {
+    /// A menu over `rows`.
+    #[must_use]
+    pub fn new(rows: Vec<(char, String)>) -> Self {
+        Self { rows }
+    }
+}
+
+impl ModalView for QuickActionsState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            // Space cancels as well as Esc, so the key that opened this closes it -- which
+            // is what a second press of a mode key should do.
+            KeyCode::Esc | KeyCode::Char(' ') => Outcome::Dismiss,
+            KeyCode::Char(c) => match self.rows.iter().position(|(bound, _)| *bound == c) {
+                Some(index) => Outcome::Submit(Submission::QuickAction(index)),
+                // Stays open on an unconfigured key. The menu listing every key that *is*
+                // configured is on screen, so there is nothing left to explain.
+                None => Outcome::Consumed,
+            },
+            _ => Outcome::Consumed,
+        }
+    }
+
+    fn title(&self) -> String {
+        "Quick actions".to_string()
     }
 }
 
@@ -697,6 +1057,10 @@ impl Modal {
             Self::Add(state) => state,
             Self::Picker(state) => state,
             Self::Edit(state) => state.as_mut(),
+            Self::Priority(state) => state,
+            Self::Due(state) => state,
+            Self::Labels(state) => state,
+            Self::QuickActions(state) => state,
         }
     }
 
@@ -714,6 +1078,10 @@ impl Modal {
             Self::Search(state) => state.title(),
             Self::Add(state) => state.title(),
             Self::Picker(state) => state.title(),
+            Self::Priority(state) => state.title(),
+            Self::Due(state) => state.title(),
+            Self::Labels(state) => state.title(),
+            Self::QuickActions(state) => state.title(),
         }
     }
 }
@@ -828,6 +1196,72 @@ mod tests {
             Outcome::Submit(Submission::Search(String::new())),
             "an empty string clears the filter"
         );
+    }
+
+    fn a_label(id: i64, title: &str) -> Label {
+        Label {
+            id: LabelId(id),
+            title: title.to_string(),
+            ..Label::default()
+        }
+    }
+
+    #[test]
+    fn space_toggles_a_label_and_a_title_with_a_space_in_it_is_still_reachable() {
+        let mut form = LabelsState::new(
+            vec![a_label(1, "urgent"), a_label(2, "in progress")],
+            vec![],
+        );
+        // Space is the toggle, so the filter can never hold one -- which would be a
+        // problem if the match were a substring. It is fuzzy, so it is not.
+        for c in "inprog".chars() {
+            form.handle(key(c));
+        }
+        assert_eq!(form.current().unwrap().title, "in progress");
+
+        form.handle(key(' '));
+        assert!(form.is_chosen(LabelId(2)));
+        assert_eq!(
+            form.input.value(),
+            "inprog",
+            "the space did not type itself"
+        );
+
+        form.handle(key(' '));
+        assert!(!form.is_chosen(LabelId(2)), "and it toggles back off");
+
+        assert_eq!(
+            form.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::Labels(Vec::new()))
+        );
+    }
+
+    #[test]
+    fn toggling_with_nothing_matched_changes_nothing_rather_than_panicking() {
+        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        for c in "zzz".chars() {
+            form.handle(key(c));
+        }
+        assert!(form.current().is_none());
+        form.handle(key(' '));
+        assert!(form.chosen.is_empty());
+    }
+
+    #[test]
+    fn the_due_field_submits_an_empty_value_but_esc_still_abandons() {
+        let mut modal = Modal::Due(DueState::new("24/12/2026"));
+        for _ in 0..10 {
+            modal.handle(code(KeyCode::Backspace));
+        }
+        // Clearing the date is a request, not a cancellation.
+        assert_eq!(
+            modal.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::Due(String::new()))
+        );
+
+        let mut abandoned = Modal::Due(DueState::new("24/12/2026"));
+        abandoned.handle(key('x'));
+        assert_eq!(abandoned.handle(code(KeyCode::Esc)), Outcome::Dismiss);
     }
 
     #[test]

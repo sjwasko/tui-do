@@ -835,6 +835,23 @@ fn read_entity(chars: &[char], at: usize) -> Option<(char, usize)> {
     Some((decoded, end + 1))
 }
 
+/// What Vikunja calls a priority, so tui-do and the web UI say the same word.
+///
+/// The list column shows `P3` because it has four characters to work with; anywhere with
+/// room -- the picker, the quick-action menu, a toast -- says "High" instead, because
+/// nobody should have to remember which end of the scale is urgent.
+#[must_use]
+pub const fn priority_name(priority: i64) -> &'static str {
+    match priority {
+        1 => "Low",
+        2 => "Medium",
+        3 => "High",
+        4 => "Urgent",
+        5 => "DO NOW",
+        _ => "Unset",
+    }
+}
+
 /// A due date as a person would say it.
 #[must_use]
 pub fn relative_date(date: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {

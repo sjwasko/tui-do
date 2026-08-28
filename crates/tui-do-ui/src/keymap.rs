@@ -210,6 +210,16 @@ pub enum Action {
     EditTask,
     /// Mark the selected task done, or not done.
     ToggleDone,
+    /// Set the selected task's priority.
+    SetPriority,
+    /// Set the selected task's due date.
+    SetDue,
+    /// Move the selected task into another project.
+    MoveTask,
+    /// Add labels to the selected task, or take them off.
+    SetLabels,
+    /// Wait for a configured quick-action key.
+    QuickAction,
     /// Delete the selected task.
     DeleteTask,
     /// Take back the last change.
@@ -466,6 +476,45 @@ pub const KEYMAP: &[Binding] = &[
         context: Context::Global,
         group: Group::Task,
         doc: "Mark done, or not done",
+    },
+    Binding {
+        keys: &[chord![Key::char('p')]],
+        action: Action::SetPriority,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Set priority",
+    },
+    Binding {
+        keys: &[chord![Key::char('D')]],
+        action: Action::SetDue,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Set the due date",
+    },
+    Binding {
+        keys: &[chord![Key::char('m')]],
+        action: Action::MoveTask,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Move to another project",
+    },
+    Binding {
+        // List-only, where every other task key is global: `l` already means "expand" in
+        // the sidebar, and that is the vim meaning nobody should have to unlearn. The
+        // cost is that `l` does nothing while the preview has focus; `:` reaches it by
+        // name from anywhere, and taking the sidebar's `l` away would be the worse trade.
+        keys: &[chord![Key::char('l')]],
+        action: Action::SetLabels,
+        context: Context::List,
+        group: Group::Task,
+        doc: "Add or remove labels",
+    },
+    Binding {
+        keys: &[chord![Key::char(' ')]],
+        action: Action::QuickAction,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Configured quick actions",
     },
     Binding {
         keys: &[chord![Key::char('x')]],

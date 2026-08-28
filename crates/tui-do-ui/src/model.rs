@@ -7,7 +7,7 @@
 
 use chrono::{DateTime, Utc};
 use tui_do_core::config::columns::ColumnLayout;
-use tui_do_core::config::{Config, ViewConfig};
+use tui_do_core::config::{Config, QuickAction, ViewConfig};
 use tui_do_core::models::{Label, Project, ProjectId, Task, TaskId};
 use tui_do_core::store::{Mutation, ProjectCounts};
 
@@ -288,6 +288,12 @@ pub struct Model {
     /// Held as the user wrote it rather than as an id, because a title can only be
     /// resolved once the projects have loaded and this is built before they have.
     pub default_project: Option<String>,
+    /// The single-key edits the user configured, in the order they wrote them.
+    ///
+    /// Held as written, names and all, for the same reason [`Model::default_project`] is:
+    /// a project title can only be resolved once the projects have loaded, and this is
+    /// built before they have.
+    pub quick_actions: Vec<QuickAction>,
     /// Cleared when the user quits; the runtime stops when this goes false.
     pub running: bool,
 }
@@ -352,6 +358,7 @@ impl Model {
             undo: Vec::new(),
             redo: Vec::new(),
             default_project: config.view.default_project.clone(),
+            quick_actions: config.quick_actions.clone(),
             running: true,
         }
     }

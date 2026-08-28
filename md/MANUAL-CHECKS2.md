@@ -1,0 +1,191 @@
+# tui-do — the manual checks, part two
+
+Continues `md/MANUAL-CHECKS.md`, which runs A through G and is closed. Lettered afresh
+from `A` so neither file needs scrolling to reach its own end; everything new goes here.
+
+Same rules as part one. What automated tests cannot tell us, each entry saying *what went
+wrong* rather than just what to press. Live, not a fixture: run against the dev instance
+with a warm cache. `deploy/reset-dev.sh` restores the seeded baseline.
+
+Run it on the **release** binary — `~/.local/bin/tui-do` is a symlink to
+`target/release/tui-do`, so a debug build proves the tests pass and changes nothing you
+are looking at.
+
+---
+
+## A. The quick keys
+
+Every one of these is a *write*, so each check ends the same way: look at the web UI and
+confirm the server agrees. Part one's section B applies to every one of them — these keys
+queue the same mutations `e` does, through the same outbox.
+
+**A1 — `p` refuses what it cannot hold.** The field lists 0 to 5 by number with Vikunja's
+own words beside them and marks the one in force `current`. Type `0005`: the field must
+stop at `00` and the last two keystrokes must do nothing at all. `9`, `p`, `-`, `.` and
+space must be refused the same way — the limit is on the *keystroke*, so an invalid
+priority is never something the form is holding. `05` is five; `55` is unreachable.
+*This was broken:* `p` opened a fuzzy picker, `0005` matched none of its six rows, and
+Enter then did nothing — a hard limit and a broken key look identical from the outside.
+
+Arrows and digits must agree: `3` then `↓` highlights 4 **and** rewrites the field to `4`.
+Backspace to empty puts the highlight back on what the task holds, so Enter after a full
+rub-out changes nothing rather than setting 0. Picking the priority it already has must
+queue **nothing** and say "Nothing changed".
+
+Do this on a **short** window as well as a tall one — see E1, which is where the arrows
+went wrong the first time.
+
+The **edit form's** Priority field takes the same limit — `e`, Tab to Priority, and try
+`0005` there too. It used to accept any text and report "not a priority between 0 and 5"
+on save.
+
+**A2 — `D` opens on the date the task already has.** Prefilled, not empty: `D` then Enter
+on an untouched field is a no-op, which is what stops a hesitant press from clearing a
+date. `C-u` clears the field, and the status line shows what the parser made of the text
+*as it is typed* — `next friday` should resolve before Enter commits to it. An empty field
+submitted with Enter clears the date; `Esc` abandons without changing anything.
+
+**A3 — `m` offers only projects that accept writes.** No `Favorites`, no `My Open Tasks`,
+no `Inbox` pseudo-project, nothing archived — they reject writes, and Vikunja invents them
+into `/projects` anyway. The task must move in the web UI, and the list on screen must
+stop showing it if you were looking at the project it left.
+
+**A4 — `l` ticks the labels the task holds.** Space toggles, Enter applies, `Esc` changes
+nothing. Applying an unchanged set must queue nothing. Watch the *shape* of what it
+queues: labels do not travel in the task body, so a change must appear as `AttachLabel`
+and `DetachLabel` rows and never as an `UpdateTask` carrying a new list — that write would
+be one the server silently ignores.
+
+**A5 — `l` is the one task key the sidebar keeps.** With the sidebar focused, `l` expands a
+project, because that is the vim meaning nobody should have to unlearn. In the list it
+opens the label form. It does nothing with the *preview* focused, which is the cost of
+that trade; `:` reaches it by name from anywhere.
+
+**A6 — `Space` runs what the config says.** With `quick_actions` set, `Space` lists them
+with the key on the left; the key applies it and the menu closes. An unconfigured key
+leaves the menu up rather than closing on a keystroke that did nothing, and a second
+`Space` closes it. A label quick action **toggles** — press it twice and the label goes on
+and comes back off.
+
+**A7 — A quick action naming something that does not exist reports it when pressed.**
+Point one at a project or label that is not there. It must say so at the keystroke, not at
+startup, and queue nothing. With no `quick_actions` at all, `Space` names the config key
+rather than opening an empty box.
+
+**A8 — Every quick key with nothing selected says so.** Filter the list down to nothing,
+then `p`, `D`, `m`, `l` and `Space` in turn. Each must say "No task selected" and open no
+modal — a key that quietly does nothing reads as a broken key.
+
+---
+
+## B. Dates, which people write a dozen ways
+
+`D` hands its text to the same parser quick-add uses, so anything here can be checked from
+either. The status line shows what the parser made of it *as it is typed*, which is the
+only place these are visible before they are committed — read it rather than pressing
+Enter and checking afterwards.
+
+**B1 — The same day, written both ways.** `27/08/26` and `8/27/26` must both be 27 August
+2026. Neither is the house style: only one of them can be read day-first, so the other
+falls through to month-first on its own. Likewise `24/12/2026` and `12/24/2026` are both
+Christmas Eve. *This was broken:* only day-first parsed, so `12/24/2026` was left sitting
+in the title as though it were a word.
+
+**B2 — An ambiguous date goes to Vikunja's reading.** `08/09/26` is **8 September**, not 9
+August. Both numbers could be either, so the tie has to go somewhere, and it goes where
+the web UI would put it — otherwise the same input means two different days in the two
+clients. This is the one rule worth remembering, and it is the only case where being
+explicit (`8 sep 26`) is worth the extra keystrokes.
+
+**B3 — The military form.** `27Aug26`, `27aug2026`, `27-Aug-26` and `aug-27-26` are all 27
+August 2026. Day-first here too, so `26Aug27` is the **26th of August 2027** — the same
+rule, not a special case.
+
+**B4 — Four digits lead.** `2026-08-27`, `2026/08/27` and `2026.08.27` need no guessing at
+all: a four-digit part can only be a year.
+
+**B5 — Two-digit years pivot where `strftime` puts them.** `68` is 2068 and `69` is 1969.
+Worth knowing before typing a birthday.
+
+**B6 — Months spell out to any length.** `27/september/2026`, `27sept26`, `27 August 2026`
+and `august 27 2026`. Single-digit days and months are as good as two: `3/9/2026`.
+
+**B7 — A year-less date still resolves forward.** `17/02`, `2/17` and `17feb` all land on
+the next 17 February, the same rule `feb 17` has always followed.
+
+**B8 — A word that merely looks like a date stays in the title.** This is the check that
+matters most, because the parser now splits on the boundary between digits and letters to
+reach `27aug26` at all — so `p3`, `v1.2.3`, `covid-19`, `3rd`, `separate` and `13/13/26`
+all reach the date code and none of them may come back a date. Add a task whose title
+contains each and confirm the title survives whole.
+
+**B9 — A date in the past is allowed, and said loudly.** `D`, then `27/08/2024`. It must
+be accepted — overdue is a real state and backdating something you have been carrying is
+a real thing to want — but the toast must be the **warning** colour and say "that date
+has passed". A quiet "Due 2 years ago" would bless `2024` typed where `2026` was meant.
+The status line shows the same thing before Enter, in the overdue colour, which is the
+signal that costs nothing to read.
+
+If this turns out to be the wrong trade, the alternative is refusing dates before today
+outright and needing a flag to override — say so and it is a small change.
+
+---
+
+## C. What `tui-do add` understands, which is not what the keys do
+
+**C1 — The keys are not the syntax.** `tui-do add 'Go to the shop p3 D 26Aug27 l Scooby'`
+lands with the whole tail in the **title**, and it is right to: `p`, `D` and `l` are
+*interface keys*, not add syntax. The syntax is `!3` for priority, `*Scooby` for a label,
+`+Project`, `@user`, and a bare date. The same line written `Go to the shop !3 26Aug27
+*Scooby` must set all three. Verified on dev 2026-08-27 as task `#1228` (id 3939), which
+landed titled `Go to the Grocery Store p3 D 26Aug27 l Scooby` with priority 0, no due
+date and no labels — only `+Groceries` was understood.
+
+Worth deciding rather than leaving: there is no legend on `tui-do add` the way there is on
+the `a` prompt, which shows `*label +project !1-5 @user a date` the moment it opens.
+
+---
+
+## D. Seen once, not yet explained
+
+**D1 — A created task appearing twice.** Reported 2026-08-27: `a` a task, and the list
+showed it both as a provisional row (a negative id, drawn as `#-050`) and as the adopted
+one (`#2093`). By the time it was investigated the server held exactly one task, the
+store held exactly one row, and the outbox was empty — so whatever produced it had
+already reconciled and it could not be reproduced.
+
+`settle_create` deletes the provisional row inside the same transaction that upserts the
+server's copy, so the *store* is never able to hold both. That points at the model rather
+than the store: `adopt` retargets the row in `model.data.tasks` and then reloads, and a
+reload landing out of order with an adoption is the shape to look for. **Unmeasured.**
+If it happens again, note whether a sync was running and whether `r` had just been
+pressed.
+
+---
+
+## E. Short windows, where the drawing gives up
+
+The task list was fixed for this in part one's E5. Everything else that draws a list had
+the same fault and was fixed together; these are the checks that keep it fixed. **Tile
+the terminal short — ten or twelve rows — before starting.**
+
+**E1 — The priority field scrolls to its highlight.** `p` on a task, then hold `↓`. The
+highlighted row must stay on screen the whole way round, including the wrap from 5 back to
+0. *This was broken:* the modal is sized to its content and then clipped to whatever the
+terminal has, and the body truncated instead of scrolling — so the highlight walked off
+the bottom edge and **the arrow keys read as doing nothing at all**. They were working the
+whole time; there was simply nothing left on screen to show it.
+
+**E2 — Every other list modal, the same way.** `g p` (projects), `g l` (labels), `:` (the
+palette) and `l` (the label form) all hold lists and all clip the same way. Type enough to
+leave a long list, then hold `↓` and watch the highlight stay put.
+
+**E3 — The project pane scrolls.** Focus the sidebar with `S-Tab` and hold `j` past the
+bottom of the pane. The tree must follow the selection, and `k` must bring it back to the
+top. *This was broken:* the sidebar carried an `offset` from the first day and **nothing
+ever wrote to it**, so the selection walked on into rows nobody could see. Collapsing a
+project with `h` must settle it too — the tree gets shorter and every row below moves.
+
+**E4 — A tree that shrinks does not leave an empty pane.** Scroll the sidebar to the
+bottom, then do something that shortens it: collapse a parent, or let a pull drop a
+project. The pane must not draw blank over a list that is still there.

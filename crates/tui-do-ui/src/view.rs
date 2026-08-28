@@ -12,7 +12,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::keymap::{help_rows, HelpRow};
-use crate::modal::{EditField, EditState, Modal, PickerState, SearchState, TextInput};
+use crate::modal::{
+    DueState, EditField, EditState, LabelsState, Modal, PickerState, PriorityState,
+    QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
+};
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
 use crate::rows::{self, MeasuredColumn, RowContext};
@@ -563,6 +566,10 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         add_prompt(model, input, frame);
         return;
     }
+    if let Modal::Due(state) = modal {
+        due_prompt(model, state, frame);
+        return;
+    }
 
     let rows = match modal {
         Modal::Help(state) => help_rows(state.context),
@@ -574,8 +581,14 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         Modal::Help(_) => (64, rows.len() as u16 + 2),
         // Both draw as prompts and return before this is reached; the arm exists so
         // adding a modal is a compile error until it has been given a size.
-        Modal::Search(_) | Modal::Add(_) => (60, 3),
-        Modal::Picker(_) => (60, 16),
+        Modal::Search(_) | Modal::Add(_) | Modal::Due(_) => (60, 3),
+        Modal::Picker(_) | Modal::Labels(_) => (60, 16),
+        // One row per priority plus the field and the border: the whole range is on
+        // screen at once, which is the point of a fixed scale.
+        Modal::Priority(_) => (44, MAX_PRIORITY as u16 + 4),
+        // Sized to what was configured, plus the border: a menu that cut off the last
+        // quick action would be a menu that hid the key the user was reaching for.
+        Modal::QuickActions(state) => (48, state.rows.len() as u16 + 2),
         // One line per field, the description given room to be a description, plus the
         // border and the hint. Sized to its content for the same reason the help modal
         // is: a fixed height is how a row goes missing.
@@ -614,12 +627,181 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
             frame.render_widget(Paragraph::new(lines), inner);
         }
         // Drawn as prompts above, never as boxes.
-        Modal::Search(_) | Modal::Add(_) => {}
+        Modal::Search(_) | Modal::Add(_) | Modal::Due(_) => {}
         Modal::Edit(state) => edit_body(state, frame, inner, theme),
         Modal::Picker(picker) => {
             picker_body(picker, frame, inner, theme);
         }
+        Modal::Priority(state) => priority_body(state, frame, inner, theme),
+        Modal::Labels(state) => labels_body(state, frame, inner, theme),
+        Modal::QuickActions(state) => quick_actions_body(state, frame, inner, theme),
     }
+}
+
+/// Where a scrolling list has to start so `selected` is on screen.
+///
+/// Every modal that holds a list is sized to its content, and `centered` then clips it to
+/// whatever the terminal actually has. On a short window that clipping used to take the
+/// bottom rows away with nothing to scroll them back: the highlight moved off the edge
+/// and the arrow keys read as doing nothing at all, because the one thing on screen that
+/// would have shown otherwise was gone.
+fn scrolled_to(selected: usize, count: usize, height: usize) -> usize {
+    if height == 0 || count <= height {
+        return 0;
+    }
+    let last_start = count - height;
+    // Keep the highlight one row inside the edge where there is room, so there is always
+    // a hint that the list continues.
+    selected.saturating_sub(height - 1).min(last_start)
+}
+
+/// The priority field: every level on screen, with the one in force marked.
+fn priority_body(state: &PriorityState, frame: &mut Frame, area: Rect, theme: Theme) {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("> ", theme.accent()),
+        Span::styled(state.typed.clone(), theme.text()),
+    ])];
+    // The field occupies the first line, so the rows have one less than the box.
+    let rows = usize::from(area.height).saturating_sub(1);
+    let first = scrolled_to(state.selected.clamp(0, MAX_PRIORITY) as usize, 6, rows);
+    for value in (first as i64)..=MAX_PRIORITY {
+        let selected = value == state.selected;
+        let style = if selected {
+            theme.selected(true)
+        } else {
+            // Priority 4 and 5 are the colours the list column uses, so the scale reads
+            // the same here as it does on the row.
+            theme.priority(value)
+        };
+        let hint = if value == state.current {
+            "current"
+        } else {
+            ""
+        };
+        let left = format!(" {value}  {}", rows::priority_name(value));
+        let room = area.width.saturating_sub(rows::display_width(hint) + 2);
+        let gap = usize::from(room.saturating_sub(rows::display_width(&left))) + 1;
+        lines.push(Line::from(vec![
+            Span::styled(left, style),
+            Span::styled(" ".repeat(gap), style),
+            Span::styled(
+                hint.to_string(),
+                if selected { style } else { theme.muted() },
+            ),
+        ]));
+    }
+    lines.truncate(usize::from(area.height));
+    frame.render_widget(Paragraph::new(lines), area);
+    let cursor = state.typed.chars().count() as u16;
+    if area.x + 2 + cursor < area.right() {
+        frame.set_cursor_position((area.x + 2 + cursor, area.y));
+    }
+}
+
+/// The due-date prompt, on the status line.
+///
+/// A prompt rather than a box for the same reason the search is one: the task it is about
+/// is in the list, and a panel in the middle of the screen would cover it. The right-hand
+/// side shows what the parser made of the text, so `next friday` can be checked before
+/// Enter commits to it.
+fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
+    let theme = model.theme;
+    let area = model.frames().status;
+    if area.height == 0 {
+        return;
+    }
+
+    let typed = state.input.value().trim();
+    let right = if typed.is_empty() {
+        vec![Span::styled(
+            "empty clears the date   Enter:set  Esc:cancel",
+            theme.muted(),
+        )]
+    } else {
+        match tui_do_core::quickadd::parse(typed, &model.now).due_date {
+            Some(due) => vec![
+                Span::styled(
+                    rows::relative_date(Some(due), model.now),
+                    theme.due(Some(due), false, model.now),
+                ),
+                Span::styled("  Enter:set  C-u:clear  Esc:cancel", theme.muted()),
+            ],
+            // Named as not-understood while it is still being typed, because half of
+            // `tomorrow` is not a date either and the user is mid-word.
+            None => vec![Span::styled(
+                "not a date yet   C-u:clear  Esc:cancel",
+                theme.muted(),
+            )],
+        }
+    };
+    let left = vec![
+        Span::styled("due ", theme.accent()),
+        Span::styled(state.input.value().to_string(), theme.text()),
+    ];
+    let padding = usize::from(
+        area.width
+            .saturating_sub(line_width(&left) + line_width(&right)),
+    );
+    let mut spans = fit(left, area.width.saturating_sub(line_width(&right) + 1));
+    spans.push(Span::raw(" ".repeat(padding)));
+    spans.extend(right);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    place_cursor(frame, area, &state.input, 4);
+}
+
+/// The label form: every label, with the ones on the task ticked.
+fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme) {
+    let mut lines = vec![input_line(&state.input, theme)];
+    let rows = usize::from(area.height).saturating_sub(1);
+    let first = scrolled_to(state.selected, state.matches.len(), rows);
+    for (position, index) in state.matches.iter().enumerate().skip(first) {
+        let Some(label) = state.labels.get(*index) else {
+            continue;
+        };
+        let selected = position == state.selected;
+        let style = if selected {
+            theme.selected(true)
+        } else {
+            theme.text()
+        };
+        // A box rather than a colour, so which labels are on the task survives a terminal
+        // with no colour at all and a reader who cannot tell two of them apart.
+        let tick = if state.is_chosen(label.id) {
+            "[x] "
+        } else {
+            "[ ] "
+        };
+        let room = area.width.saturating_sub(5);
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {tick}"), style),
+            Span::styled(rows::truncate(&label.title, room), style),
+        ]));
+    }
+    if state.matches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " nothing matches".to_string(),
+            theme.muted(),
+        )));
+    }
+    lines.truncate(usize::from(area.height));
+    frame.render_widget(Paragraph::new(lines), area);
+    place_cursor(frame, area, &state.input, 2);
+}
+
+/// The quick-action menu: one line per configured key.
+fn quick_actions_body(state: &QuickActionsState, frame: &mut Frame, area: Rect, theme: Theme) {
+    let lines: Vec<Line<'static>> = state
+        .rows
+        .iter()
+        .map(|(key, doc)| {
+            Line::from(vec![
+                Span::styled(format!(" {key}  "), theme.accent()),
+                Span::styled(doc.clone(), theme.text()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// How many lines the description field is given inside the edit form.
@@ -831,7 +1013,9 @@ fn place_cursor(frame: &mut Frame, area: Rect, input: &TextInput, prefix: u16) {
 
 fn picker_body(picker: &PickerState, frame: &mut Frame, area: Rect, theme: Theme) {
     let mut lines = vec![input_line(&picker.input, theme)];
-    for (position, index) in picker.matches.iter().enumerate() {
+    let rows = usize::from(area.height).saturating_sub(1);
+    let first = scrolled_to(picker.selected, picker.matches.len(), rows);
+    for (position, index) in picker.matches.iter().enumerate().skip(first) {
         let Some(candidate) = picker.candidates.get(*index) else {
             continue;
         };
