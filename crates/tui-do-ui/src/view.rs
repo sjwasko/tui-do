@@ -575,10 +575,12 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         Modal::Help(state) => help_rows(state.context),
         _ => Vec::new(),
     };
+    let help = matches!(modal, Modal::Help(_)).then(|| help_layout(&rows, frame.area()));
     let (width, height) = match modal {
         // Sized to what it has to say, so adding a binding cannot silently push the last
-        // one off the bottom -- which is exactly what binding Esc did.
-        Modal::Help(_) => (64, rows.len() as u16 + 2),
+        // one off the bottom -- which is exactly what binding Esc did. How wide, and
+        // whether that is one column or two, depends on the terminal: see `help_layout`.
+        Modal::Help(_) => help.map_or((64, 0), |layout| (layout.width, layout.height)),
         // Both draw as prompts and return before this is reached; the arm exists so
         // adding a modal is a compile error until it has been given a size.
         Modal::Search(_) | Modal::Add(_) | Modal::Due(_) => (60, 3),
@@ -595,7 +597,7 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         Modal::Edit(_) => (72, EditField::ALL.len() as u16 + EDIT_DESCRIPTION_LINES + 3),
     };
     let area = centered(frame.area(), width, height);
-    let truncated = matches!(modal, Modal::Help(_)) && area.height < rows.len() as u16 + 2;
+    let truncated = help.is_some_and(|layout| area.height < layout.height);
     let title = if truncated {
         // On a terminal too short to hold it, the title says so rather than leaving the
         // reader to guess that the list continues.
@@ -610,21 +612,8 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
 
     match modal {
         Modal::Help(state) => {
-            let lines: Vec<Line<'static>> = rows
-                .into_iter()
-                .skip(state.offset)
-                .map(|row| match row {
-                    HelpRow::Heading(text) => {
-                        Line::from(Span::styled(text.to_string(), theme.heading()))
-                    }
-                    HelpRow::Binding(binding) => Line::from(vec![
-                        Span::styled(format!("  {:<12}", binding.keys_display()), theme.accent()),
-                        Span::styled(binding.doc.to_string(), theme.text()),
-                    ]),
-                    HelpRow::Blank => Line::default(),
-                })
-                .collect();
-            frame.render_widget(Paragraph::new(lines), inner);
+            let layout = help.unwrap_or_else(|| help_layout(&rows, frame.area()));
+            help_body(&rows, layout, state.offset, frame, inner, theme);
         }
         // Drawn as prompts above, never as boxes.
         Modal::Search(_) | Modal::Add(_) | Modal::Due(_) => {}
@@ -636,6 +625,186 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         Modal::Labels(state) => labels_body(state, frame, inner, theme),
         Modal::QuickActions(state) => quick_actions_body(state, frame, inner, theme),
     }
+}
+
+/// The gap between the help modal's two columns.
+const HELP_GUTTER: u16 = 3;
+/// The two spaces a binding's keys are indented by.
+const HELP_INDENT: usize = 2;
+/// What a binding's keys are padded out to before its description begins.
+const HELP_KEYS_WIDTH: usize = 12;
+/// The narrowest a help column is drawn, which is what it was before it could be two.
+const HELP_MIN_COLUMN: u16 = 62;
+
+/// How the help modal is laid out.
+///
+/// The one decision in this file that depends on the terminal rather than only on the
+/// model, which is why it is a value computed here and not a field somewhere: `view` is
+/// still a pure function of a `Model` and a size.
+#[derive(Debug, Clone, Copy)]
+struct HelpLayout {
+    /// Where the second column starts, or `None` for a single column.
+    split: Option<usize>,
+    /// Outer width, borders included.
+    width: u16,
+    /// Outer height, borders included.
+    height: u16,
+}
+
+/// Choose between one column and two.
+///
+/// One column is the better read whenever it fits: the bindings run top to bottom in the
+/// order the keymap declares them, and nothing has to be looked for twice. Two is for
+/// when it does not — thirty-five bindings and four headings need forty-four rows, so a
+/// forty-row terminal scrolls, and a *help* screen is the worst place to have to scroll
+/// to find `q  Quit`. A hundred and twenty columns has room for both halves side by
+/// side, so on that terminal the whole reference is on screen at once.
+fn help_layout(rows: &[HelpRow], screen: Rect) -> HelpLayout {
+    let column = help_column_width(rows);
+    let single = HelpLayout {
+        split: None,
+        // Never narrower than the single column always was: a keymap that lost its
+        // longest description should not make the box visibly shrink. The folded form
+        // takes the measured width instead, because two columns at the floor would not
+        // fit the terminal this exists for.
+        width: column.max(HELP_MIN_COLUMN) + 2,
+        height: u16::try_from(rows.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2),
+    };
+    if single.height <= screen.height {
+        return single;
+    }
+    let width = column * 2 + HELP_GUTTER + 2;
+    if width > screen.width {
+        // Too narrow to fold, so it scrolls — which is what the title says it does.
+        return single;
+    }
+    let split = help_split(rows);
+    let (left, right) = help_columns(rows, split);
+    if right.is_empty() {
+        return single;
+    }
+    HelpLayout {
+        split: Some(split),
+        width,
+        height: u16::try_from(left.len().max(right.len()))
+            .unwrap_or(u16::MAX)
+            .saturating_add(2),
+    }
+}
+
+/// How wide one column of help has to be to hold every row whole.
+fn help_column_width(rows: &[HelpRow]) -> u16 {
+    let widest = rows
+        .iter()
+        .map(|row| match row {
+            HelpRow::Heading(text) => text.chars().count(),
+            HelpRow::Binding(binding) => {
+                HELP_INDENT
+                    + binding.keys_display().chars().count().max(HELP_KEYS_WIDTH)
+                    + binding.doc.chars().count()
+            }
+            HelpRow::Blank => 0,
+        })
+        .max()
+        .unwrap_or(0);
+    u16::try_from(widest).unwrap_or(u16::MAX)
+}
+
+/// Where to fold the rows into two columns.
+///
+/// Only ever at a heading, so a section is never cut in half across the gutter — the
+/// reader would have no way to tell that the four bindings at the top of the right
+/// column belong to the heading at the foot of the left one.
+fn help_split(rows: &[HelpRow]) -> usize {
+    let mut best = rows.len();
+    let mut closest = usize::MAX;
+    for (index, row) in rows.iter().enumerate().skip(1) {
+        if !matches!(row, HelpRow::Heading(_)) {
+            continue;
+        }
+        let distance = index.abs_diff(rows.len() - index);
+        if distance < closest {
+            closest = distance;
+            best = index;
+        }
+    }
+    best
+}
+
+/// The rows either side of the fold.
+fn help_columns(rows: &[HelpRow], split: usize) -> (&[HelpRow], &[HelpRow]) {
+    let (left, right) = rows.split_at(split.min(rows.len()));
+    // The blank that separated the two sections is the gutter now, and leaving it at the
+    // foot of the left column would make the box a row taller for nothing.
+    let left = match left.last() {
+        Some(HelpRow::Blank) => &left[..left.len() - 1],
+        _ => left,
+    };
+    (left, right)
+}
+
+/// Draw the help modal's rows, in one column or two.
+fn help_body(
+    rows: &[HelpRow],
+    layout: HelpLayout,
+    offset: usize,
+    frame: &mut Frame,
+    area: Rect,
+    theme: Theme,
+) {
+    let Some(split) = layout.split else {
+        help_column(rows, offset, frame, area, theme);
+        return;
+    };
+    let (left, right) = help_columns(rows, split);
+    let width = area.width.saturating_sub(HELP_GUTTER) / 2;
+    help_column(left, offset, frame, Rect { width, ..area }, theme);
+    help_column(
+        right,
+        offset,
+        frame,
+        Rect {
+            x: area.x + width + HELP_GUTTER,
+            width: area.width.saturating_sub(width + HELP_GUTTER),
+            ..area
+        },
+        theme,
+    );
+}
+
+/// Draw one column of help, scrolled to `offset`.
+fn help_column(rows: &[HelpRow], offset: usize, frame: &mut Frame, area: Rect, theme: Theme) {
+    // Clamped to what is actually left below, so scrolling stops with the last row at the
+    // foot of the box rather than carrying on until the box is empty. The modal's own
+    // bound counts every row, which is right for one column and one column too many for
+    // two.
+    let last = rows.len().saturating_sub(area.height as usize);
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .skip(offset.min(last))
+        .map(|row| match row {
+            HelpRow::Heading(text) => {
+                Line::from(Span::styled((*text).to_string(), theme.heading()))
+            }
+            HelpRow::Binding(binding) => Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{:indent$}{:<width$}",
+                        "",
+                        binding.keys_display(),
+                        indent = HELP_INDENT,
+                        width = HELP_KEYS_WIDTH
+                    ),
+                    theme.accent(),
+                ),
+                Span::styled(binding.doc.to_string(), theme.text()),
+            ]),
+            HelpRow::Blank => Line::default(),
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Where a scrolling list has to start so `selected` is on screen.
