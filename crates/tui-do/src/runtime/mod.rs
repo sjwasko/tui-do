@@ -444,6 +444,26 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     }
 }
 
+/// A project whose title begins with `name` and carries on, if exactly one does.
+///
+/// Exactly one, because two would make the suggestion a guess; and the first *word* has
+/// to match rather than merely the prefix, so `Din` does not offer `Dinner Places` when
+/// the user simply mistyped a project that does not exist.
+fn longer_project(projects: &[tui_do_core::models::Project], name: &str) -> Option<String> {
+    let mut found = projects.iter().filter(|project| {
+        project.id.get() > 0
+            && !project.is_archived
+            && project
+                .title
+                .split_whitespace()
+                .next()
+                .is_some_and(|first| first.eq_ignore_ascii_case(name))
+            && !project.title.eq_ignore_ascii_case(name)
+    });
+    let first = found.next()?;
+    found.next().is_none().then(|| first.title.clone())
+}
+
 /// Read terminal events on a blocking thread.
 ///
 /// crossterm's reader blocks, so it lives on its own thread rather than in the async
@@ -614,10 +634,22 @@ pub async fn add(
     }
 
     let built = built.ok_or_else(|| match parsed.project.as_deref() {
-        Some(name) => anyhow::anyhow!(
-            "no project called \"{name}\" — tui-do knows of {}",
-            describe(&projects)
-        ),
+        Some(name) => match longer_project(&projects, name) {
+            // The commonest way to get here by far: `+Dinner Places` names the project
+            // `Dinner` and leaves `Places` in the title, because a token ends at the
+            // first space. Saying so here is the moment the bracket form is worth
+            // learning -- the alternative is an error that looks like the project is
+            // missing when it is only mis-typed.
+            Some(full) => anyhow::anyhow!(
+                "no project called \"{name}\" — did you mean +[{full}]? \
+                 A name with a space in it has to be bracketed or quoted, \
+                 or only its first word is read. See `tui-do add --help`."
+            ),
+            None => anyhow::anyhow!(
+                "no project called \"{name}\" — tui-do knows of {}",
+                describe(&projects)
+            ),
+        },
         None => anyhow::anyhow!(
             "no project to add to — tui-do knows of {}",
             describe(&projects)
@@ -684,6 +716,53 @@ mod tests {
     use tui_do_core::SyncEvent;
 
     use super::*;
+
+    fn a_project(id: i64, title: &str) -> tui_do_core::models::Project {
+        tui_do_core::models::Project {
+            id: tui_do_core::models::ProjectId(id),
+            title: title.to_string(),
+            ..tui_do_core::models::Project::default()
+        }
+    }
+
+    #[test]
+    fn a_truncated_project_name_offers_the_whole_one() {
+        // `tui-do add +Dinner Places ...` names the project `Dinner` and leaves `Places`
+        // in the title, because a token ends at the first space. The error is the moment
+        // the bracket form is worth learning.
+        let projects = vec![
+            a_project(1, "Dinner Places"),
+            a_project(2, "Legal"),
+            a_project(3, "Life Admin"),
+        ];
+        assert_eq!(
+            longer_project(&projects, "Dinner").as_deref(),
+            Some("Dinner Places")
+        );
+        assert_eq!(
+            longer_project(&projects, "dinner").as_deref(),
+            Some("Dinner Places")
+        );
+        // A project that exists under exactly that name is not a truncation.
+        assert_eq!(longer_project(&projects, "Legal"), None);
+        // Nor is a name that simply does not exist -- suggesting `Life Admin` for `Lif`
+        // would be a guess dressed up as an answer.
+        assert_eq!(longer_project(&projects, "Lif"), None);
+    }
+
+    #[test]
+    fn two_candidates_make_the_suggestion_a_guess_so_none_is_offered() {
+        let projects = vec![a_project(1, "Dinner Places"), a_project(2, "Dinner Ideas")];
+        assert_eq!(longer_project(&projects, "Dinner"), None);
+    }
+
+    #[test]
+    fn a_pseudo_project_is_never_suggested() {
+        // The server invents `-1 Favorites` and friends into `/projects`, and every one
+        // of them rejects a write.
+        let projects = vec![a_project(-1, "Favorites Everything")];
+        assert_eq!(longer_project(&projects, "Favorites"), None);
+    }
 
     /// The shape the sync pass runs in: a forwarder relaying the engine's events, and an
     /// engine that emits `Finished` as its very last act.
