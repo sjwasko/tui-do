@@ -19,6 +19,7 @@ tui-do-core.workspace = true
 tui-do-ui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 chrono.workspace = true
