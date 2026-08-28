@@ -239,6 +239,14 @@ fn simple_phrase(words: &[String], today: NaiveDate) -> Option<NaiveDate> {
         };
     }
 
+    // The spaced form of the same date: `27 aug 2026`, `august 27 2026`. Placed after
+    // `in 3 days` so it cannot steal that phrase.
+    if words.len() == 3 {
+        if let Some(date) = three_part_date(&words[0], &words[1], &words[2]) {
+            return Some(date);
+        }
+    }
+
     if words.len() == 1 {
         // A bare weekday means the next one.
         if let Some(weekday) = weekday(&words[0]) {
@@ -364,21 +372,165 @@ fn day_number(word: &str) -> Option<u32> {
 /// the American reading. cria used a US dialect here, so the same input meant different
 /// days in the two clients.
 fn literal_date(word: &str, today: NaiveDate) -> Option<NaiveDate> {
-    if let Ok(date) = NaiveDate::parse_from_str(word, "%Y-%m-%d") {
-        return Some(date);
+    let parts = date_parts(word)?;
+    match parts.len() {
+        3 => three_part_date(&parts[0], &parts[1], &parts[2]),
+        2 => two_part_date(&parts[0], &parts[1], today),
+        _ => None,
     }
-    for format in ["%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y"] {
-        if let Ok(date) = NaiveDate::parse_from_str(word, format) {
-            return Some(date);
+}
+
+/// Split a written date into its parts.
+///
+/// On `/`, `-` or `.`, and — when there is no separator at all — on each boundary between
+/// digits and letters, which is what makes the military `27aug26` one token rather than
+/// three. A part that is neither all digits nor all letters is not part of a date, and a
+/// single part is not a date at all: a bare `2026` is a number in a title.
+fn date_parts(word: &str) -> Option<Vec<String>> {
+    let word = word.trim_matches(['.', '/', '-']);
+    if word.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<String> = if word.contains(['/', '-', '.']) {
+        word.split(['/', '-', '.']).map(str::to_string).collect()
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        let mut run_is_digit: Option<bool> = None;
+        for c in word.chars() {
+            let is_digit = if c.is_ascii_digit() {
+                true
+            } else if c.is_ascii_alphabetic() {
+                false
+            } else {
+                return None;
+            };
+            match parts.last_mut() {
+                Some(last) if run_is_digit == Some(is_digit) => last.push(c),
+                _ => {
+                    parts.push(c.to_string());
+                    run_is_digit = Some(is_digit);
+                }
+            }
         }
+        parts
+    };
+
+    (parts.len() >= 2 && parts.len() <= 3 && parts.iter().all(|part| !part.is_empty()))
+        .then_some(parts)
+}
+
+/// A date carrying its year: `27/08/26`, `8/27/2026`, `2026-08-27`, `27aug26`, `aug-27-26`.
+///
+/// Read day-first, then month-first, then year-first, and the first reading that names a
+/// real day wins. That order is what lets `27/08/26` and `8/27/26` both mean 27 August
+/// without either having to be declared the house style — only one of them can be read
+/// day-first, so the other falls through to the next reading on its own.
+///
+/// Day-first leads because it is what Vikunja documents and what the web UI shows, so a
+/// date that is genuinely ambiguous — `08/09/26`, where both numbers could be either —
+/// is 8 September in both clients rather than one day here and another there. The cost is
+/// that `YY/MM/DD` is only reached when the two readings ahead of it are impossible:
+/// `26/08/27` is 26 August 2027, not 27 August 2026.
+fn three_part_date(a: &str, b: &str, c: &str) -> Option<NaiveDate> {
+    // A month by name pins itself. The two numbers around it can then only be the day and
+    // the year, so there is nothing left to guess.
+    if let Some(month) = month_name(b) {
+        return ymd(year_of(c), Some(month), number(a))
+            .or_else(|| ymd(year_of(a), Some(month), number(c)));
     }
-    // Year-less forms resolve within the coming twelve months.
-    for format in ["%d.%m.", "%d/%m"] {
-        if let Ok(parsed) = NaiveDate::parse_from_str(word, format) {
-            return on_or_after(today, parsed.month(), parsed.day());
-        }
+    if let Some(month) = month_name(a) {
+        return ymd(year_of(c), Some(month), number(b));
     }
-    None
+    if !is_number(a) || !is_number(b) || !is_number(c) {
+        return None;
+    }
+    // A four-digit year can only be a year, so `2026/08/27` needs no guessing at all.
+    if a.len() == 4 {
+        return ymd(year_of(a), number(b), number(c));
+    }
+    ymd(year_of(c), number(b), number(a))
+        .or_else(|| ymd(year_of(c), number(a), number(b)))
+        .or_else(|| ymd(year_of(a), number(b), number(c)))
+}
+
+/// A date with no year: `27/08`, `8/27`, `27aug`, `aug27`.
+///
+/// Resolved into the coming twelve months, the same as the spaced `feb 17`.
+fn two_part_date(a: &str, b: &str, today: NaiveDate) -> Option<NaiveDate> {
+    if let Some(month) = month_name(a) {
+        return on_or_after(today, month, number(b)?);
+    }
+    if let Some(month) = month_name(b) {
+        return on_or_after(today, month, number(a)?);
+    }
+    if !is_number(a) || !is_number(b) {
+        return None;
+    }
+    // Day-first, then month-first, for the reason `three_part_date` explains.
+    on_or_after(today, number(b)?, number(a)?)
+        .or_else(|| on_or_after(today, number(a)?, number(b)?))
+}
+
+/// Whether every character is a digit.
+fn is_number(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_digit())
+}
+
+/// A written number, of any width.
+fn number(text: &str) -> Option<u32> {
+    text.parse().ok()
+}
+
+/// A written year.
+///
+/// Two digits pivot where `strftime` puts them: `00`–`68` are this century, `69`–`99` the
+/// last. A three-digit year is nobody's shorthand and is refused.
+fn year_of(text: &str) -> Option<i32> {
+    let value: i32 = text.parse().ok()?;
+    match text.len() {
+        4 => Some(value),
+        1 | 2 => Some(if value <= 68 {
+            2000 + value
+        } else {
+            1900 + value
+        }),
+        _ => None,
+    }
+}
+
+/// Assemble a date from parts that may each have failed to parse.
+///
+/// Takes `Option`s so a reading can be tried and discarded without the `?` on one part
+/// abandoning the readings that come after it.
+fn ymd(year: Option<i32>, month: Option<u32>, day: Option<u32>) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(year?, month?, day?)
+}
+
+/// A month written out: `jan` through `dec`, `sept`, or the full name.
+///
+/// Whole-word, unlike [`month`], which matches on the first three letters because the
+/// spaced `feb 17` form has already been split into words by then. Here the part comes
+/// out of a run of letters that was never separated from anything, so `sep` inside
+/// `separate` would otherwise make a date out of a word.
+fn month_name(text: &str) -> Option<u32> {
+    const MONTHS: [(&str, &str, u32); 12] = [
+        ("jan", "january", 1),
+        ("feb", "february", 2),
+        ("mar", "march", 3),
+        ("apr", "april", 4),
+        ("may", "may", 5),
+        ("jun", "june", 6),
+        ("jul", "july", 7),
+        ("aug", "august", 8),
+        ("sep", "september", 9),
+        ("oct", "october", 10),
+        ("nov", "november", 11),
+        ("dec", "december", 12),
+    ];
+    MONTHS.iter().find_map(|(short, full, number)| {
+        (text == *short || text == *full || (*number == 9 && text == "sept")).then_some(*number)
+    })
 }
 
 /// The next occurrence of `month`/`day`, this year or next.
@@ -549,6 +701,87 @@ mod tests {
         assert_eq!(local("due 17/02/2027"), "2027-02-17 23:59");
         assert_eq!(local("due 17.02.2027"), "2027-02-17 23:59");
         assert_eq!(local("due 2027-02-17"), "2027-02-17 23:59");
+    }
+
+    #[test]
+    fn a_date_only_one_reading_can_explain_is_read_that_way() {
+        // The pair the user asked for: American and European spellings of 27 August 2026.
+        // Neither has to be declared the house style -- `8/27/26` cannot be read
+        // day-first, so it falls through to month-first on its own.
+        assert_eq!(local("due 27/08/26"), "2026-08-27 23:59");
+        assert_eq!(local("due 8/27/26"), "2026-08-27 23:59");
+        assert_eq!(local("due 12/24/2026"), "2026-12-24 23:59");
+        assert_eq!(local("due 24/12/2026"), "2026-12-24 23:59");
+    }
+
+    #[test]
+    fn an_ambiguous_date_is_day_first_the_way_vikunja_reads_it() {
+        // Both numbers could be either, so the tie has to go somewhere. It goes to the
+        // reading the web UI would show, or the same input would mean two different days
+        // in the two clients.
+        assert_eq!(local("due 08/09/26"), "2026-09-08 23:59");
+        assert_eq!(local("due 8/9/2026"), "2026-09-08 23:59");
+    }
+
+    #[test]
+    fn a_four_digit_year_leads_and_needs_no_guessing() {
+        assert_eq!(local("due 2027-02-17"), "2027-02-17 23:59");
+        assert_eq!(local("due 2027/02/17"), "2027-02-17 23:59");
+        assert_eq!(local("due 2027.02.17"), "2027-02-17 23:59");
+    }
+
+    #[test]
+    fn the_military_form_needs_no_separators() {
+        assert_eq!(local("due 27aug26"), "2026-08-27 23:59");
+        assert_eq!(local("due 27Aug2026"), "2026-08-27 23:59");
+        assert_eq!(local("due 27-aug-26"), "2026-08-27 23:59");
+        assert_eq!(local("due aug-27-26"), "2026-08-27 23:59");
+        // Day-first here too: `26aug27` is the 26th in 2027, not the 27th in 2026.
+        assert_eq!(local("due 26aug27"), "2027-08-26 23:59");
+    }
+
+    #[test]
+    fn a_month_can_be_spelled_out_at_any_length() {
+        assert_eq!(local("due 27/september/2026"), "2026-09-27 23:59");
+        assert_eq!(local("due 27sept26"), "2026-09-27 23:59");
+        assert_eq!(local("due 27 august 2026"), "2026-08-27 23:59");
+        assert_eq!(local("due august 27 2026"), "2026-08-27 23:59");
+    }
+
+    #[test]
+    fn a_single_digit_day_or_month_is_as_good_as_two() {
+        assert_eq!(local("due 3/9/2026"), "2026-09-03 23:59");
+        assert_eq!(local("due 03/09/2026"), "2026-09-03 23:59");
+        assert_eq!(local("due 3sep26"), "2026-09-03 23:59");
+    }
+
+    #[test]
+    fn a_two_digit_year_pivots_where_strftime_puts_it() {
+        assert_eq!(local("due 27/08/68"), "2068-08-27 23:59");
+        assert_eq!(local("due 27/08/69"), "1969-08-27 23:59");
+    }
+
+    #[test]
+    fn a_year_less_date_still_resolves_forward() {
+        // February has passed in 2026, so it means 2027 -- the same rule `feb 17` follows.
+        assert_eq!(local("due 17/02"), "2027-02-17 23:59");
+        assert_eq!(local("due 2/17"), "2027-02-17 23:59");
+        assert_eq!(local("due 17feb"), "2027-02-17 23:59");
+    }
+
+    #[test]
+    fn a_word_that_merely_looks_like_a_date_is_left_in_the_title() {
+        // Every one of these reaches `literal_date`, and none of them may come back a
+        // date: splitting on letter/digit runs is what makes `p3` and `v1.2.3` reachable
+        // at all, and a false positive here silently changes what the user typed.
+        for word in [
+            "p3", "v1.2.3", "covid-19", "separate", "3rd", "2026", "13/13/26",
+        ] {
+            assert!(
+                literal_date(word, now().date_naive()).is_none(),
+                "{word} was read as a date"
+            );
+        }
     }
 
     #[test]
