@@ -507,6 +507,25 @@ impl Client {
         self.labels()?.collect_all().await
     }
 
+    /// `GET /labels/{id}` — one label.
+    ///
+    /// The read half of read-merge-write. A queued rename is replayed onto whatever the
+    /// server holds now rather than sent as it was queued, because a label body clears
+    /// what it omits and Vikunja has no conditional write — so a rename built from a copy
+    /// this box read minutes ago reverts anything another box changed since.
+    ///
+    /// # Errors
+    /// Any transport or status failure. `404` with Vikunja code `8002` when the label is
+    /// gone, which is what a rename replayed after another box deleted it answers.
+    pub async fn label(&self, id: LabelId) -> Result<Label> {
+        self.require_auth("reading a label")?;
+        let call = Call::new(
+            Method::GET,
+            self.resolve(endpoints::LABEL, &[("id", &id.to_string())])?,
+        );
+        self.send::<Label>(call).await.map(|(label, _)| label)
+    }
+
     /// `GET /labels?s=` — every label whose title is exactly `title`.
     ///
     /// The search parameter matches *substrings*, so the exact comparison happens here: a

@@ -750,6 +750,87 @@ async fn a_task_round_trips_through_create_read_update_delete() {
     let attached = client.task_labels(created.id).await.expect("task labels");
     assert!(attached.iter().any(|l| l.id == label.id));
 
+    // The two label reads the sync engine leans on, neither of which had ever run against
+    // a server. `update_label` sent `PUT` for months precisely because nothing called it,
+    // and a client method with no live caller is exactly where that class of bug lives.
+    //
+    // `GET /labels/{id}` is the read half of read-merge-write: a queued rename is replayed
+    // onto whatever this returns, so a wrong body here silently reverts another box's
+    // colour rather than failing.
+    let read_back = client
+        .label(label.id)
+        .await
+        .expect("GET /labels/{id} should read a label back");
+    assert_eq!(read_back.id, label.id);
+    assert_eq!(read_back.title, "tui-do-live-test");
+    assert_eq!(
+        read_back.hex_color, "4287f5",
+        "a label read back does not carry the colour it was created with"
+    );
+
+    // `GET /labels?s=` plus an exact filter, which is how a retried `CreateLabel` finds
+    // the label its own lost response created. Vikunja's `s` matches substrings; the
+    // exactness is `labels_named`'s doing, and adopting "next week" when the user asked
+    // for "next" would be worse than the duplicate it exists to avoid.
+    let exact = client
+        .labels_named("tui-do-live-test")
+        .await
+        .expect("GET /labels?s= should search");
+    assert_eq!(
+        exact.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![label.id],
+        "the exact search found something other than the label just created"
+    );
+
+    // Case-insensitively, because Vikunja will hold `Next` and `next` and a user typing a
+    // familiar name means one thing by it.
+    let shouted = client
+        .labels_named("TUI-DO-LIVE-TEST")
+        .await
+        .expect("GET /labels?s= should search");
+    assert_eq!(
+        shouted.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![label.id],
+        "the search is case-sensitive, so a retried create will duplicate rather than adopt"
+    );
+
+    // The assertion that matters, and the one that proves the filter rather than the
+    // server: a label whose title *contains* the search term is not an exact match. It is
+    // created and deleted here rather than assumed, so this cannot pass by the search
+    // simply having returned nothing -- the exact search above proves `s=tui-do-live-test`
+    // reaches the fixture, and a substring search for that same term reaches this sibling
+    // too. Only the filter can tell them apart.
+    let sibling = client
+        .create_label(&tui_do_api::models::Label {
+            title: "tui-do-live-test sibling".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /labels should create the sibling");
+    let still_exact = client
+        .labels_named("tui-do-live-test")
+        .await
+        .expect("GET /labels?s= should search");
+    assert_eq!(
+        still_exact.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![label.id],
+        "a longer title containing the search term was returned as an exact match"
+    );
+    // And the other direction: a prefix of the fixture's title matches it as a substring
+    // and must still not come back as an exact match.
+    let by_prefix = client
+        .labels_named("tui-do-live")
+        .await
+        .expect("GET /labels?s= should search");
+    assert!(
+        by_prefix.is_empty(),
+        "a prefix of the title was returned as an exact match: {by_prefix:?}"
+    );
+    client
+        .delete_label(sibling.id)
+        .await
+        .expect("delete the sibling label");
+
     // Three things the sync engine currently assumes, none of them checkable against a
     // mock, all of them reported rather than asserted -- the point is to learn what the
     // server does, and a failing test here would only say "it did something else".
