@@ -1390,6 +1390,9 @@ async fn a_refused_label_create_takes_the_attaches_that_named_it() {
     store.upsert_tasks(vec![task(7, "errand")]).await.unwrap();
     store
         .queue(Mutation::CreateLabel {
+            // A fresh store hands out `LabelId(-1)` for its first provisional label --
+            // see `next_local_label_id` -- which is what lets the attach below name it
+            // before the create has answered.
             label: Box::new(label(0, "next")),
         })
         .await
@@ -1408,6 +1411,16 @@ async fn a_refused_label_create_takes_the_attaches_that_named_it() {
     assert!(
         store.pending(None).await.unwrap().is_empty(),
         "an attach naming a label the server refused to create is still queued"
+    );
+    assert!(
+        store
+            .task(TaskId(7))
+            .await
+            .unwrap()
+            .unwrap()
+            .labels
+            .is_empty(),
+        "the discarded attach's local half -- the task_labels row -- was left behind"
     );
 }
 
@@ -1464,6 +1477,82 @@ async fn a_rejected_task_does_not_widen_into_entries_that_merely_mention_it() {
     assert_eq!(
         report.sent, 1,
         "the attach on a different task names the same label but must still go out"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_task_edit_survives_the_rejected_create_of_a_label_it_still_names() {
+    // The reachable case `references` must answer `false` for: `Mutation::decompose`
+    // guarantees `before.labels == after.labels` for any queued `UpdateTask`, so a rename
+    // queued after attaching a not-yet-created label carries that label's provisional id
+    // in `after.labels` too -- not hypothetically, every such rename does. Discarding it
+    // because it "mentions" the rejected label would destroy a title the user actually
+    // typed, for a field the server never reads off a task write to begin with.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 7, "errand").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/7")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_json(7, "renamed")))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"code": 4001, "message": "invalid"})),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(7, "errand")]).await.unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")), // LabelId(-1); see the sibling test above.
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(7),
+            label: Box::new(label(-1, "next")),
+        })
+        .await
+        .unwrap();
+    let mut before = task(7, "errand");
+    before.labels = vec![label(-1, "next")];
+    let mut after = task(7, "renamed");
+    after.labels = vec![label(-1, "next")];
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(before),
+            after: Box::new(after),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(
+        report.rejected, 2,
+        "the create, and the attach it made possible"
+    );
+    assert_eq!(report.sent, 1, "the rename must still reach the server");
+    assert_eq!(
+        store.task(TaskId(7)).await.unwrap().unwrap().title,
+        "renamed",
+        "an edit that merely named the rejected label in its own labels list was discarded"
+    );
+    assert!(
+        store
+            .task(TaskId(7))
+            .await
+            .unwrap()
+            .unwrap()
+            .labels
+            .is_empty(),
+        "a provisional label id the create never got to define was written back locally"
     );
     assert_eq!(store.pending_count().await.unwrap(), 0);
 }
