@@ -822,15 +822,24 @@ mod tests {
             .unwrap();
         assert_eq!(entry.mutation.subject().kind(), "task");
 
-        let kinds: Vec<String> = store
+        // Both halves: the kind, and that `subject_id` is the same id `subject()`
+        // reports -- the placeholder that would drift if the five-argument `INSERT` in
+        // `Store::queue` ever had `subject_id` and `subject_kind` swapped or misordered.
+        let stored: Vec<(i64, String)> = store
             .read(|connection| {
-                let mut statement = connection.prepare("SELECT subject_kind FROM outbox")?;
-                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                let mut statement =
+                    connection.prepare("SELECT subject_id, subject_kind FROM outbox")?;
+                let rows = statement.query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
                 Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
             })
             .await
             .unwrap();
-        assert_eq!(kinds, vec!["task".to_string()]);
+        assert_eq!(
+            stored,
+            vec![(entry.mutation.subject().id(), "task".to_string())]
+        );
     }
 
     #[tokio::test]

@@ -347,6 +347,35 @@ mod tests {
     }
 
     #[test]
+    fn the_v5_backfill_makes_every_existing_row_a_task() {
+        // v5's migration comment claims every row predating it is a task, because there
+        // was nothing else to queue -- asserted here rather than left as reasoning about
+        // SQL nobody ran.
+        let mut connection = Connection::open_in_memory().unwrap();
+        for (index, sql) in MIGRATIONS[..4].iter().enumerate() {
+            let transaction = connection.transaction().unwrap();
+            apply(&transaction, sql, i64::try_from(index + 1).unwrap()).unwrap();
+            transaction.commit().unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO outbox (created, kind, payload, subject_id)
+                 VALUES ('2026-08-29T00:00:00Z', 'create_task', '{}', 1)",
+                [],
+            )
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        let kind: String = connection
+            .query_row("SELECT subject_kind FROM outbox WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kind, "task");
+    }
+
+    #[test]
     fn a_database_from_a_newer_tui_do_is_refused_rather_than_used() {
         // Silently continuing would let this build write rows a later schema expects to
         // look different. Refusing is the only safe answer, and it says what to do.
