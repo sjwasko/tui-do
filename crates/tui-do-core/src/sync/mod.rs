@@ -511,21 +511,34 @@ impl Sync {
                 // different ids, and `0` and `-7` in the body both came back
                 // server-assigned.
                 //
-                // Gated on `attempts > 0` rather than done always: a *first* attempt that
-                // read first would adopt a label another box legitimately created and
-                // silently merge two users' intentions.
+                // Gated on the entry having already failed rather than done always,
+                // because a *first* attempt has no earlier attempt of its own to find:
+                // everything it could adopt belongs to somebody else.
                 //
-                // So this protects against *our own* retry, not against two boxes
-                // creating the same label at the same moment. Nothing can protect against
-                // that without a unique constraint the server does not have.
-                if entry.attempts > 0 {
-                    if let Some(existing) = self
-                        .client
-                        .labels_named(&label.title)
-                        .await?
-                        .into_iter()
-                        .next()
-                    {
+                // The gate narrows that, it does not close it. A retry whose first
+                // attempt never reached the server -- a connect timeout, a DNS failure --
+                // is indistinguishable here from one whose response was lost, and it will
+                // adopt another box's same-titled label and quietly discard the
+                // `hex_color` the user queued with theirs. The trade is deliberate: a
+                // duplicate the user can see is worse than a colour they can re-pick, and
+                // nothing can tell the two retries apart without a unique constraint the
+                // server does not have. So this protects against *our own* replay, and
+                // only mostly.
+                if entry.is_failing() {
+                    let existing = self.client.labels_named(&label.title).await?;
+                    if existing.len() > 1 {
+                        // Titles are not unique, so the server may hold several exact
+                        // matches -- one per lost response, plus anything another box
+                        // made. Its listing order is undefined, so which one is adopted
+                        // is not deterministic and the rest are orphaned where nobody is
+                        // looking. Say so somewhere a log can find it.
+                        tracing::warn!(
+                            title = %label.title,
+                            found = existing.len(),
+                            "several labels share this title; adopting the first listed and leaving the rest"
+                        );
+                    }
+                    if let Some(existing) = existing.into_iter().next() {
                         return Ok(Sent::LabelCreated(Box::new(existing)));
                     }
                 }
