@@ -5,7 +5,7 @@
 //! cannot touch a store — every one of those arrives as a [`Msg`] and leaves as an
 //! [`Effect`]. That is what keeps the render loop from ever blocking.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use tui_do_core::config::{QuickAction, QuickActionKind};
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
@@ -374,7 +374,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 // advances its due date instead of marking it done, so the reload after
                 // the push is what makes that case true rather than this line.
                 after.done_at = if after.done {
-                    Some(model.now).into()
+                    Some(model.now.with_timezone(&Utc)).into()
                 } else {
                     None.into()
                 };
@@ -1358,7 +1358,7 @@ fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
 /// Here rather than at each call site because there are three ways to set a due date —
 /// `D`, the edit form and quick-add — and only `D` said it. The other two answered
 /// "Saved" and "Added", which is the quiet confirmation this rule exists to prevent.
-pub fn past_due_note(due: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<String> {
+pub fn past_due_note(due: Option<DateTime<Utc>>, now: DateTime<FixedOffset>) -> Option<String> {
     let due = due.filter(|due| *due < now)?;
     // The date in parentheses rather than leading, because this is appended to a message
     // that already has a subject: "Saved — that date has passed (due Aug 27, 24)". `D`
