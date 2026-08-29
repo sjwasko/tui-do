@@ -170,9 +170,39 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             //
             // The counts go too: a rejected done-toggle changes how many tasks a project
             // is showing as open.
+            //
+            // The labels go too, and that became reachable when the `l` form learned to
+            // create one. The store rolls a rejected `CreateLabel` back, but
+            // `model.data.labels` and any open label form still hold the provisional --
+            // ticked, because creating is what ticked it -- so the user's next Enter
+            // queues an `AttachLabel` for an id the server has never had, which fails in
+            // turn. A rejected `UpdateLabel` is the same story with a rename: the store
+            // has the old title and both snapshots show the new one.
             let mut effects = reload_tasks(model);
             effects.push(Effect::LoadCounts);
+            effects.push(Effect::LoadLabels);
             effects.push(Effect::LoadPending);
+            // And the form's *wait* has to end, or the key dies. `awaiting` is what stops
+            // a second `C-n` queueing a duplicate while the first create is in flight; a
+            // rejection means that create is never coming back, so a title left in there
+            // makes `creatable` answer `None` for the rest of the form's life and `C-n`
+            // silently does nothing. A user whose account cannot create labels would see
+            // the key work once and then die with no explanation.
+            //
+            // All of it, not the one that was rejected: the event names
+            // `Subject::Label(id)`, and the form never learned any id -- that is the whole
+            // reason `awaiting` holds titles. With two creates in flight and one rejected,
+            // the survivor loses its automatic tick, which is the cost of a bounded
+            // answer. It is the smaller failure: the reload above still brings it into
+            // `model.data.labels`, so it is on screen and `creatable` is right about it,
+            // where a dead key is neither visible nor recoverable.
+            if matches!(subject, Subject::Label(_)) {
+                for modal in &mut model.modals {
+                    if let Modal::Labels(state) = modal {
+                        state.awaiting.clear();
+                    }
+                }
+            }
             effects
         }
         SyncEvent::Adopted {

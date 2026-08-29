@@ -13,7 +13,7 @@ use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, Subject, TaskCoun
 use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use tui_do_core::{Config, SyncEvent};
 use tui_do_ui::keymap::Key;
-use tui_do_ui::modal::{Candidate, Modal, ModalView, Pick, PickerKind, PickerState};
+use tui_do_ui::modal::{Candidate, LabelsState, Modal, ModalView, Pick, PickerKind, PickerState};
 use tui_do_ui::model::{Focus, PaneState, SyncStatus};
 use tui_do_ui::query::Scope;
 use tui_do_ui::update::{reload_everything, update};
@@ -1390,9 +1390,15 @@ fn an_adoption_leaves_a_label_it_does_not_name_alone() {
     // whole-stack swap most easily overreaches into.
     let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
     model.query.scope = Scope::Label(LabelId(-1));
-    // The form opens with the task's own label already ticked, which is the `chosen`
-    // entry this test is here to leave alone.
-    press(&mut model, 'l');
+    // The edit form first, because `e` only reaches `act` with nothing on the stack. Its
+    // `before` is what `apply_edit` computes attach and detach sets against.
+    press(&mut model, 'e');
+    // Then the form the label was made in, opened with the task's own label already
+    // ticked -- which is the `chosen` entry this test is here to leave alone.
+    model.modals.push(Modal::Labels(LabelsState::new(
+        model.data.labels.clone(),
+        vec![LabelId(-1)],
+    )));
     model.modals.insert(
         0,
         Modal::Picker(PickerState::new(
@@ -1420,6 +1426,10 @@ fn an_adoption_leaves_a_label_it_does_not_name_alone() {
         panic!("the picker went missing: {:?}", model.modals);
     };
     assert_eq!(picker.candidates[0].pick, Pick::Label(LabelId(-1)));
+    let Some(Modal::Edit(edit)) = model.modals.get(1) else {
+        panic!("the edit form went missing: {:?}", model.modals);
+    };
+    assert_eq!(edit.before.labels[0].id, LabelId(-1));
     let form = label_form(&model);
     assert_eq!(form.labels[0].id, LabelId(-1));
     assert_eq!(form.chosen, vec![LabelId(-1)]);
@@ -1532,6 +1542,95 @@ fn a_rejected_change_is_the_one_sync_event_the_user_is_shown() {
         "the rolled-back row is still on screen"
     );
     assert!(effects.contains(&Effect::LoadCounts));
+}
+
+#[test]
+fn a_rejected_label_create_is_taken_off_the_screen_it_is_still_ticked_on() {
+    // Reachable only since the `l` form learned to create. The store rolled the
+    // provisional label back, but both label snapshots still hold it -- ticked, because
+    // creating is what ticked it -- so the user's next Enter queues an `AttachLabel` for
+    // an id the server never had, and it fails in turn.
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'l');
+    for c in "next".chars() {
+        press(&mut model, c);
+    }
+    press_ctrl(&mut model, 'n');
+    update(&mut model, Msg::LabelsLoaded(vec![label(-1, "next")]));
+    assert_eq!(label_form(&model).chosen, vec![LabelId(-1)]);
+
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(-1)),
+            kind: "create_label".to_string(),
+            message: "You do not have the right to do this.".to_string(),
+        }),
+    );
+
+    assert!(
+        effects.contains(&Effect::LoadLabels),
+        "the label the store rolled back is still in both snapshots: {effects:?}"
+    );
+}
+
+#[test]
+fn a_rejected_label_create_does_not_leave_the_create_key_dead() {
+    // `awaiting` is what stops a second C-n queueing a duplicate while the first create
+    // is in flight. A rejection means that create is never coming back, so a title left
+    // in there makes `creatable` answer `None` for the rest of the form's life -- and a
+    // user whose account cannot create labels sees the key work once and then die
+    // silently. This is the rejection that lands before any reload named it.
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'l');
+    for c in "next".chars() {
+        press(&mut model, c);
+    }
+    press_ctrl(&mut model, 'n');
+    assert_eq!(label_form(&model).creatable(), None, "one is in flight");
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(-1)),
+            kind: "create_label".to_string(),
+            message: "You do not have the right to do this.".to_string(),
+        }),
+    );
+
+    assert_eq!(
+        label_form(&model).creatable(),
+        Some("next"),
+        "the key is dead for the rest of the form's life"
+    );
+    assert!(
+        applied(&press_ctrl(&mut model, 'n')).is_some(),
+        "and pressing it does nothing at all"
+    );
+}
+
+#[test]
+fn a_rejected_task_leaves_a_label_form_waiting() {
+    // The clear is keyed on the subject's *kind*. A task rejection has nothing to say
+    // about a label create still in flight, and dropping the wait would reopen the
+    // duplicate window `awaiting` exists to close.
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'l');
+    for c in "next".chars() {
+        press(&mut model, c);
+    }
+    press_ctrl(&mut model, 'n');
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Task(TaskId(1)),
+            kind: "update_task".to_string(),
+            message: "This project does not exist.".to_string(),
+        }),
+    );
+
+    assert_eq!(label_form(&model).creatable(), None);
 }
 
 #[test]

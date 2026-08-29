@@ -838,6 +838,12 @@ impl LabelsState {
     /// The offer does *not* depend on the filter matching nothing. The filter is fuzzy,
     /// so `next` matches an existing `next steps` — a user who wants a plain `next` is
     /// looking at a non-empty list and still wants the key to work.
+    ///
+    /// Both comparisons fold **ASCII only**, matching `resolve_labels` and
+    /// `Client::labels_named`, so `Über` and `über` read as different titles and each can
+    /// be created beside the other. Deliberately in step with the rest of the codebase
+    /// rather than right in isolation: an interface that disagreed with the retry path
+    /// about what a duplicate is would be worse than one that folds narrowly everywhere.
     #[must_use]
     pub fn creatable(&self) -> Option<&str> {
         let typed = self.input.value().trim();
@@ -875,9 +881,19 @@ impl LabelsState {
     ///
     /// Matched by title rather than by id because the id is precisely what the interface
     /// does not know — `Store::queue` allocates the provisional one inside its own
-    /// transaction. A title is not unique on the server, but [`Self::creatable`] refuses
-    /// to offer one this form can already see, so the title it waits for names at most
-    /// one label the form has not got.
+    /// transaction. Titles are not unique on the server, so what actually holds is
+    /// weaker than "one label": this takes the *first* label carrying the title whose id
+    /// the form has not got. If a pull lands a same-title label from another box between
+    /// the keystroke and the naming reload, that box's id can win and the local
+    /// provisional is then never shown here. Same accepted class as two boxes creating
+    /// one name at once, which nothing without a server-side unique constraint can fix —
+    /// and the wrong id is still a real label with the right title, which the next pull
+    /// shows in the list either way.
+    ///
+    /// Case-insensitive, and **ASCII-only** folding, matching `resolve_labels` and
+    /// `Client::labels_named`: `Über` does not match `über`. The whole codebase folds
+    /// this way, and moving one site would make the interface disagree with itself about
+    /// what counts as a duplicate. All three would have to move together.
     pub fn absorb_created(&mut self, known: &[Label]) {
         if self.awaiting.is_empty() {
             return;
