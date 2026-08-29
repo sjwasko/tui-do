@@ -831,6 +831,14 @@ fn is_permanent(error: &ApiError) -> bool {
 /// here for the `DeleteLabel` that does not exist yet; there is deliberately no arm for a
 /// mutation that cannot be queued.
 ///
+/// **Why that swallow is safe where the one below is not.** Two properties, neither of
+/// which the detach's `403` has. It keys on Vikunja's code rather than a bare status, so a
+/// permission failure and an unrelated `404` both still reject
+/// (`a_different_404_on_a_label_rename_is_still_a_rejection` pins that). And the local row
+/// it leaves behind is corrected by **any** pull, not only a full one: `retain_labels` runs
+/// inside [`Sync::pull_lists`], which `pull_inner` calls unconditionally for both reaches,
+/// so labels are outside the [`Reach`] delete-safety restriction entirely.
+///
 /// The detach's `403` is the surprise, and it is why this function exists in this shape:
 /// the obvious reading of "already detached" is `404`, and a client that assumes it undoes
 /// a detach the user asked for every time a retry replays.
@@ -844,6 +852,15 @@ fn is_permanent(error: &ApiError) -> bool {
 /// Deliberately narrow otherwise. A `404` creating a task means the *project* is gone,
 /// which is a real rejection, and a `404` updating one means the task is gone, which the
 /// user should hear about.
+///
+/// That last case looks like it contradicts the rename arm — both are "the thing I was
+/// editing is gone", answered opposite ways — and it does not, because what is lost
+/// differs. A swallowed task update discards the user's *work*: a description they typed,
+/// a due date they set, gone with nothing on screen to say so. A swallowed rename discards
+/// a *name*, on a label that no longer exists to wear it; the label is what the user would
+/// have to be told about, and the next pull tells them by removing it. Silence costs a
+/// sentence in one case and a paragraph of writing in the other. Do not "fix" either of
+/// these to match the other without deciding that question again.
 ///
 /// `CreateLabel` has no arm here and will never get one. Measured on dev 2026-08-29:
 /// creating the same title twice answers `201` twice with two different ids, so a replayed

@@ -532,13 +532,26 @@ async fn labels_can_be_looked_up_by_title() {
                     json!({"id": 42, "title": "next week"}),
                 ]),
         )
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
 
-    let found = client(&server).labels_named("next").await.expect("search");
+    let client = client(&server);
+    let found = client.labels_named("next").await.expect("search");
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id, tui_do_api::models::LabelId(41));
+
+    // And the listing it narrowed, so the exactness is observable rather than assumed --
+    // an assertion that a search "did not return the longer title" means nothing unless
+    // the server put the longer title in front of the filter in the first place. This is
+    // the pairing `tests/live.rs` makes against dev.
+    let raw = client.labels_matching("next").await.expect("search");
+    assert_eq!(
+        raw.iter().map(|l| l.id.get()).collect::<Vec<_>>(),
+        vec![41, 42],
+        "`labels_matching` is the unfiltered listing; the filtering belongs to \
+         `labels_named`"
+    );
 }
 
 #[tokio::test]

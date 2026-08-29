@@ -550,16 +550,35 @@ impl Client {
     /// [`ApiError::NotAuthenticated`] if no credential is configured, or any failure from
     /// any page.
     pub async fn labels_named(&self, title: &str) -> Result<Vec<Label>> {
-        self.require_auth("searching labels")?;
-        let call =
-            Call::new(Method::GET, self.resolve(endpoints::LABELS, &[])?).with_query("s", title);
-        let found = Pager::<Label>::new(self.clone(), call, self.page_size())
-            .collect_all()
-            .await?;
-        Ok(found
+        Ok(self
+            .labels_matching(title)
+            .await?
             .into_iter()
             .filter(|label| label.title.eq_ignore_ascii_case(title))
             .collect())
+    }
+
+    /// `GET /labels?s=` — Vikunja's search, unfiltered.
+    ///
+    /// The listing [`Client::labels_named`] narrows. `s` matches *substrings*, so this
+    /// answers "next week" to a search for "next" and is almost never what a caller wants
+    /// directly.
+    ///
+    /// It is public so the exactness of `labels_named` can be *observed* rather than
+    /// assumed: an assertion that a prefix search returns no exact match passes vacuously
+    /// on a server whose `s` matched exactly, and only comparing the two listings tells
+    /// the filter's work from the server's. `tests/live.rs` does exactly that.
+    ///
+    /// # Errors
+    /// [`ApiError::NotAuthenticated`] if no credential is configured, or any failure from
+    /// any page.
+    pub async fn labels_matching(&self, term: &str) -> Result<Vec<Label>> {
+        self.require_auth("searching labels")?;
+        let call =
+            Call::new(Method::GET, self.resolve(endpoints::LABELS, &[])?).with_query("s", term);
+        Pager::<Label>::new(self.clone(), call, self.page_size())
+            .collect_all()
+            .await
     }
 
     // ---- writes ----------------------------------------------------------------

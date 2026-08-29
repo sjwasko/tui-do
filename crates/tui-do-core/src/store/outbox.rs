@@ -1649,8 +1649,8 @@ mod tests {
         assert_eq!(store.pending_count().await.unwrap(), 0);
     }
 
-    #[tokio::test]
-    async fn a_label_rename_inverts_to_the_rename_that_undoes_it() {
+    #[test]
+    fn a_label_rename_inverts_to_the_rename_that_undoes_it() {
         let rename = Mutation::UpdateLabel {
             before: Box::new(label(41, "next")),
             after: Box::new(label(41, "next up")),
