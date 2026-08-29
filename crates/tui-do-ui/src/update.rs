@@ -121,6 +121,17 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             };
             Vec::new()
         }
+        SyncEvent::Overwrote { fields, .. } => {
+            // The write went through -- the user's value is what the server holds now --
+            // so there is nothing to roll back and nothing to reload. What is owed is the
+            // news, because on a fleet the person who loses the edit is on another box
+            // and will never otherwise know why their change evaporated.
+            let what = fields.join(", ");
+            model.toast(Toast::warning(format!(
+                "saved over a change made elsewhere ({what})"
+            )));
+            Vec::new()
+        }
         SyncEvent::Rejected {
             subject,
             kind,

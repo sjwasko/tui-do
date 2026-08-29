@@ -508,6 +508,92 @@ async fn a_task_update_replaces_reminders_from_the_body() {
     );
 }
 
+/// A partial task body clears every field it omits, and a three-way merge survives it.
+///
+/// Two facts in one test because the second only matters given the first. Vikunja's
+/// update replaces the task from the request body -- `POST /tasks/{id}` carrying only an
+/// id and a title cleared the description, the priority and the due date -- and it offers
+/// no conditional write: no version, no ETag, and `updated` is server-set and unwritable.
+///
+/// So a client cannot protect a concurrent edit by sending fewer fields, and cannot ask
+/// the server to refuse a stale write. What it can do is read the current copy and replay
+/// the user's change onto it, which is what `Task::merge_onto` does. This exercises that
+/// against the real server with a real concurrent change in between -- the shape a fleet
+/// of boxes against one Vikunja produces all day.
+#[tokio::test]
+async fn a_partial_write_clears_what_it_omits_and_a_merge_does_not() {
+    let Some(client) = connect("a_partial_write_clears_what_it_omits_and_a_merge_does_not").await
+    else {
+        return;
+    };
+
+    let project = client
+        .create_project(&tui_do_api::models::Project {
+            title: FIXTURE_PROJECT_TITLE.into(),
+            description: "created by cargo test -p tui-do-api --test live".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /projects should create a project");
+
+    let created = client
+        .create_task(
+            project.id,
+            &tui_do_api::models::Task {
+                title: "original title".into(),
+                description: "keep me".into(),
+                priority: 4,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("PUT /projects/{id}/tasks should create a task");
+
+    // What "box A" read, and what it wants to change: the priority, nothing else.
+    let before = client.task(created.id).await.expect("GET /tasks/{id}");
+    let mut after = before.clone();
+    after.priority = 1;
+
+    // "Box B" renames it in the meantime, through a full-body write of its own.
+    let mut elsewhere = before.clone();
+    elsewhere.title = "renamed by another box".into();
+    client
+        .update_task(&elsewhere)
+        .await
+        .expect("the concurrent rename should land");
+
+    // Box A now writes. Sending its own stale copy would put "original title" back.
+    let current = client.task(created.id).await.expect("GET /tasks/{id}");
+    let merged = after.merge_onto(&before, current);
+    assert!(
+        merged.collisions.is_empty(),
+        "the two boxes changed different fields, so this is not a collision: {:?}",
+        merged.collisions
+    );
+    client
+        .update_task(&merged.task)
+        .await
+        .expect("POST /tasks/{id} should update");
+
+    let settled = client.task(created.id).await.expect("GET /tasks/{id}");
+    println!(
+        "after a merged write: title {:?}, priority {}, description {:?}",
+        settled.title, settled.priority, settled.description
+    );
+
+    client.delete_project(project.id).await.ok();
+
+    assert_eq!(
+        settled.title, "renamed by another box",
+        "the merged write reverted the other box's rename"
+    );
+    assert_eq!(settled.priority, 1, "the user's own change did not survive");
+    assert_eq!(
+        settled.description, "keep me",
+        "a field neither box touched was cleared"
+    );
+}
+
 #[tokio::test]
 async fn a_task_round_trips_through_create_read_update_delete() {
     let Some(client) = connect("a_task_round_trips_through_create_read_update_delete").await else {

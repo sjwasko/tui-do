@@ -27,5 +27,7 @@ pub use ids::{AttachmentId, CommentId, LabelId, ProjectId, TaskId, UserId, ViewI
 pub use info::{ServerInfo, DEFAULT_MAX_ITEMS_PER_PAGE};
 pub use label::{Label, LabelTask};
 pub use project::{Project, ProjectView, ViewKind};
-pub use task::{Bucket, RelationKind, RepeatMode, Task, TaskAttachment, TaskComment, TaskReminder};
+pub use task::{
+    Bucket, Merged, RelationKind, RepeatMode, Task, TaskAttachment, TaskComment, TaskReminder,
+};
 pub use user::{TaskAssignee, User};
