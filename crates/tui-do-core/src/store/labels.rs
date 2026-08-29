@@ -183,6 +183,12 @@ impl Store {
     /// skips: nothing would put its labels back. The link disappearing is the task
     /// pull's job to notice, not this one's.
     ///
+    /// A label queued to be created is kept regardless too, mirroring `retain_tasks`'s
+    /// outbox exemption. `pull_lists` runs on every pull, including startup, before a
+    /// `CreateLabel` queued moments earlier has ever been sent -- so without this, the
+    /// listing (which by definition does not name a label the server has not seen) erased
+    /// the local row while the outbox entry survived to create a duplicate on the server.
+    ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn retain_labels(&self, keep: Vec<LabelId>) -> Result<usize> {
@@ -191,7 +197,9 @@ impl Store {
             Ok(tx.execute(
                 "DELETE FROM labels
                   WHERE id NOT IN (SELECT id FROM keep_ids)
-                    AND id NOT IN (SELECT label_id FROM task_labels)",
+                    AND id NOT IN (SELECT label_id FROM task_labels)
+                    AND id NOT IN (SELECT subject_id FROM outbox
+                                    WHERE subject_id IS NOT NULL AND subject_kind = 'label')",
                 [],
             )?)
         })
@@ -268,6 +276,7 @@ fn row_to_label(row: &Row<'_>) -> rusqlite::Result<Label> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::store::Mutation;
     use tui_do_api::models::{ProjectId, Task, TaskId, User, UserId};
 
     fn label(id: i64, title: &str) -> Label {
@@ -494,5 +503,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(links, 1, "the cascade left a dangling link");
+    }
+
+    #[tokio::test]
+    async fn a_provisional_label_survives_a_pull_that_did_not_mention_it() {
+        // `retain_tasks` protects a locally created row with an outbox exemption;
+        // `retain_labels` had none. A label created offline and not yet attached to any
+        // task was erased by the very next `pull_lists` -- which runs on every pull,
+        // including startup, before the create had ever been sent -- while the outbox
+        // entry survived and went on to create a duplicate on the server.
+        let store = Store::in_memory().unwrap();
+        store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: "not yet on the server".into(),
+                    ..Label::default()
+                }),
+            })
+            .await
+            .unwrap();
+
+        // A pull whose listing does not name the provisional label at all.
+        let removed = store.retain_labels(vec![LabelId(1)]).await.unwrap();
+
+        assert_eq!(removed, 0, "the provisional label should have been spared");
+        assert!(
+            store.label(LabelId(-1)).await.unwrap().is_some(),
+            "a label queued to be created was deleted before it could be sent"
+        );
     }
 }
