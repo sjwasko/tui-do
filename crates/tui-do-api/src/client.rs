@@ -433,11 +433,20 @@ impl Client {
 
     /// `GET /projects` — a paginator over the user's projects.
     ///
+    /// `is_archived=true` is not a filter but an *inclusion*: the spec words it "if true,
+    /// also returns all archived projects", so the default listing silently omits them.
+    /// The sync engine feeds this listing to `retain_projects`, which deletes every
+    /// project the listing did not name *and cascades to their tasks* — so a listing that
+    /// omitted archived projects would delete the user's archived work on every pull,
+    /// incremental ones included. The store carries `is_archived` and offers a filter on
+    /// it; without this parameter that column could only ever be false.
+    ///
     /// # Errors
     /// [`ApiError::NotAuthenticated`] if no credential is configured.
     pub fn projects(&self) -> Result<Pager<Project>> {
         self.require_auth("listing projects")?;
-        let call = Call::new(Method::GET, self.resolve(endpoints::PROJECTS, &[])?);
+        let call = Call::new(Method::GET, self.resolve(endpoints::PROJECTS, &[])?)
+            .with_query("is_archived", "true");
         Ok(Pager::new(self.clone(), call, self.page_size()))
     }
 

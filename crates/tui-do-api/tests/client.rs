@@ -516,6 +516,38 @@ async fn projects_and_labels_paginate_too() {
 }
 
 #[tokio::test]
+async fn the_projects_listing_asks_for_archived_ones_too() {
+    // `is_archived=true` reads like a filter and is the opposite: the spec words it "if
+    // true, *also* returns all archived projects". The sync engine hands this listing to
+    // `retain_projects`, which deletes every project it does not name and cascades to
+    // their tasks -- so without this parameter, every pull deletes the user's archived
+    // projects and everything in them. The mock answers only when the parameter is
+    // present, so dropping it fails this test rather than quietly losing data.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/projects"))
+        .and(query_param("is_archived", "true"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![
+                    json!({"id": 1, "title": "live"}),
+                    json!({"id": 2, "title": "archived", "is_archived": true}),
+                ]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let projects = client(&server)
+        .all_projects()
+        .await
+        .expect("the archived project is in the listing");
+    assert_eq!(projects.len(), 2);
+    assert!(projects.iter().any(|project| project.is_archived));
+}
+
+#[tokio::test]
 async fn writes_use_the_verbs_the_spec_declares() {
     // Vikunja creates with PUT, updates with POST -- except a label, which updates with
     // PUT. Each mock matches one exact method and path and expects exactly one hit, so
