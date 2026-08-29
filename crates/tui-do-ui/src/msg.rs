@@ -7,7 +7,7 @@
 use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
 use tui_do_core::models::{Label, Project, Task};
-use tui_do_core::store::ProjectCounts;
+use tui_do_core::store::{ProjectCounts, QueueHealth};
 use tui_do_core::SyncEvent;
 
 use crate::query::QueryId;
@@ -46,7 +46,7 @@ pub enum Msg {
     CountsLoaded(ProjectCounts),
 
     /// How many changes the outbox is still holding.
-    PendingLoaded(usize),
+    PendingLoaded(QueueHealth),
 
     /// Something changed underneath the model; read it all again.
     ///

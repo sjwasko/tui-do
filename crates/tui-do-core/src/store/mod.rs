@@ -35,7 +35,7 @@ use rusqlite::Connection;
 use crate::error::{CoreError, Result};
 
 pub use labels::{LabelFilter, LabelOrder, LabelSort};
-pub use outbox::{is_provisional, Mutation, OutboxEntry};
+pub use outbox::{is_provisional, Mutation, OutboxEntry, QueueHealth};
 pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
 pub use state::{CURRENT_USER, LAST_PROJECT, LAST_PULL, LAST_RECONCILE, PAGE_CAP};
 pub use tasks::{ProjectCounts, ServerApply, TaskCount, TaskFilter, TaskOrder, TaskSort};

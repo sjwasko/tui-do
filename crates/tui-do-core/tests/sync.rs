@@ -759,11 +759,88 @@ async fn a_server_failure_keeps_the_queue_and_the_local_change() {
 }
 
 #[tokio::test]
-async fn a_failure_stops_the_queue_rather_than_sending_what_came_after() {
-    // Order is the contract. Sending the second change while the first is unsent would
-    // leave the server in a state the queue never described.
+async fn a_failure_stops_that_tasks_own_queue() {
+    // Order is the contract *within* a task. Sending the second change while the first is
+    // unsent would leave the server in a state the queue never described.
     let server = MockServer::start().await;
     mount_task_read(&server, 1, "original").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "restarting"})))
+        // Once, not twice: the second edit to this task must not be tried after the first
+        // failed.
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(1, "first")]).await.unwrap();
+    for (before, after) in [("first", "first edited"), ("first edited", "twice edited")] {
+        store
+            .queue(Mutation::UpdateTask {
+                before: Box::new(task(1, before)),
+                after: Box::new(task(1, after)),
+            })
+            .await
+            .unwrap();
+    }
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 0);
+    assert_eq!(report.deferred, 2, "both are still waiting");
+    assert_eq!(store.pending_count().await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_entry_waits_before_it_is_tried_again() {
+    // `attempts` was counted from the first commit and never read, so a failing entry was
+    // retried at full speed on every pass. The only thing keeping that from being a hot
+    // loop against a struggling server was the thirty-second floor on the sync timer.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "restarting"})))
+        // Once across two passes: the second pass must find it still inside its backoff.
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(1, "first")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(1, "first")),
+            after: Box::new(task(1, "edited")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().deferred, 1);
+
+    let health = store.queue_health().await.unwrap();
+    assert_eq!(health.queued, 1);
+    assert_eq!(health.failing, 1, "the user is owed more than a count");
+    assert!(health.last_error.is_some());
+
+    // A second pass right away must not touch the server again.
+    assert_eq!(sync.push().await.unwrap().deferred, 1);
+    assert_eq!(store.pending_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_failure_does_not_hold_back_another_tasks_changes() {
+    // Ordering across *different* tasks is not a contract -- two edits to two tasks have
+    // no causal relationship -- and treating it as one meant a single unreachable task
+    // held back every other change the user had made. On a fleet, where a box can carry a
+    // long backlog, that is the difference between one stuck task and a box that has
+    // quietly stopped syncing.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
+    mount_task_read(&server, 2, "original").await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/1")))
         .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "restarting"})))
@@ -771,8 +848,8 @@ async fn a_failure_stops_the_queue_rather_than_sending_what_came_after() {
         .await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/2")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(task_json(2, "second")))
-        .expect(0)
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_json(2, "second edited")))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -799,9 +876,9 @@ async fn a_failure_stops_the_queue_rather_than_sending_what_came_after() {
     let (sync, _rx) = engine(&server, &store);
     let report = sync.push().await.unwrap();
 
-    assert_eq!(report.sent, 0);
-    assert_eq!(report.deferred, 2, "both are still waiting");
-    assert_eq!(store.pending_count().await.unwrap(), 2);
+    assert_eq!(report.sent, 1, "the reachable task's edit should have gone");
+    assert_eq!(report.deferred, 1, "only the failing one is still queued");
+    assert_eq!(store.pending_count().await.unwrap(), 1);
 }
 
 #[tokio::test]

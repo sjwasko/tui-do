@@ -409,7 +409,7 @@ async fn the_current_user_is_who_we_authenticated_as() {
 /// the store carried an empty `Vec<TaskReminder>`, and `Task` serialises every field —
 /// meaning every optimistic edit sent `"reminders": []` and silently deleted whatever the
 /// user had set. Renaming a task destroyed its reminders. The store now keeps them
-/// (`task_reminders`, schema v2) so the body carries them back.
+/// (`task_reminders`, schema v3) so the body carries them back.
 ///
 /// Both halves are asserted: the destructive shape, so a change in Vikunja's behaviour is
 /// noticed rather than assumed, and the safe one, which is what tui-do now does.
@@ -503,7 +503,7 @@ async fn a_task_update_replaces_reminders_from_the_body() {
     assert!(
         cleared,
         "sending an empty reminders list no longer clears them. That is the behaviour \
-         `task_reminders` (schema v2) exists to survive -- re-check whether the store \
+         `task_reminders` (schema v3) exists to survive -- re-check whether the store \
          still needs to carry reminders through a read-mutate-write cycle."
     );
 }

@@ -80,8 +80,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.data.counts = counts;
             Vec::new()
         }
-        Msg::PendingLoaded(queued) => {
-            model.status.queued = queued;
+        Msg::PendingLoaded(health) => {
+            model.status.queued = health.queued;
+            model.status.failing = health.failing;
+            model.status.queue_error = health.last_error;
             Vec::new()
         }
         Msg::Reload => reload_everything(model),
