@@ -9,7 +9,7 @@ use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_do_core::config::columns::ColumnLayout;
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
-use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, TaskCount, TaskOrder};
+use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, Subject, TaskCount, TaskOrder};
 use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use tui_do_core::{Config, SyncEvent};
 use tui_do_ui::keymap::Key;
@@ -1180,7 +1180,7 @@ fn a_rejected_change_is_the_one_sync_event_the_user_is_shown() {
     let effects = update(
         &mut model,
         Msg::Sync(SyncEvent::Rejected {
-            subject: TaskId(1),
+            subject: Subject::Task(TaskId(1)),
             kind: "update_task".to_string(),
             message: "This project does not exist.".to_string(),
         }),
