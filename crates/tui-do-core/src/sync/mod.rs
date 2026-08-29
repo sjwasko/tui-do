@@ -125,6 +125,11 @@ pub struct PullReport {
     pub tasks: usize,
     /// Tasks left alone because they have unsent local changes.
     pub skipped: usize,
+    /// The oldest `updated` among the tasks this pull skipped, if any.
+    ///
+    /// The watermark is held back to this, so the next incremental pull asks for them
+    /// again once the queued change has settled.
+    pub oldest_skipped: Option<chrono::DateTime<chrono::Utc>>,
     /// Rows removed because the server no longer has them.
     pub removed: usize,
     /// Which kind of pull this was, so the interface can say so.
@@ -445,9 +450,24 @@ impl Sync {
 
         match self.pull_inner(reach, &mut report).await {
             Ok(()) => {
+                // A task the pull *saw* but did not store -- because a local change was
+                // still queued for it -- has to stay inside the next pull's window, or
+                // the server's version of it is lost until someone edits it again. Its
+                // `updated` is already behind `started`, so advancing to `started` would
+                // put it in the past of a pull that deliberately ignored it.
+                //
+                // Clamped rather than simply not advanced: an outbox entry that never
+                // settles would otherwise freeze the watermark for good, and there is no
+                // dead-letter to rescue it.
+                let watermark = report
+                    .oldest_skipped
+                    .map_or(started, |oldest| oldest.min(started));
                 self.store
-                    .set_state(LAST_PULL, started.to_rfc3339())
+                    .set_state(LAST_PULL, watermark.to_rfc3339())
                     .await?;
+                // `LAST_RECONCILE` is not clamped: a skipped task was still *named* by
+                // the listing, so the retain step saw it and the claim "nothing else is
+                // gone" holds as of `started`.
                 if report.reach == Reach::Full {
                     self.store
                         .set_state(LAST_RECONCILE, started.to_rfc3339())
@@ -557,6 +577,13 @@ impl Sync {
             let applied = self.store.upsert_tasks_from_server(page.items).await?;
             report.tasks += applied.stored;
             report.skipped += applied.skipped;
+            if let Some(oldest) = applied.oldest_skipped {
+                report.oldest_skipped = Some(
+                    report
+                        .oldest_skipped
+                        .map_or(oldest, |seen| seen.min(oldest)),
+                );
+            }
             self.emit(SyncEvent::Progress {
                 stage: Stage::Tasks,
                 stored: report.tasks,
