@@ -89,12 +89,15 @@ a new task with `project_id: 0` to `PUT /projects/31/tasks` makes the server loo
 project 0 and answer `404 / 3001 "This project does not exist."` — about the project you
 just created. Write the path value into the body.
 
-**The spec is authoritative for paths, not for methods or bodies.** Three counts so far,
+**The spec is authoritative for paths, not for methods or bodies.** Four counts so far,
 all decided in the server's favour: `PUT /migration/vikunja-file/migrate` is documented
 `post` (server: `405 Allow: OPTIONS, PUT`); `POST /tasks/{taskID}/comments/{commentID}`
 documents no request body but requires one; `repeat_mode`'s prose says the third variant is
-`3` while the enum in the same document says `2`. Only live integration tests catch this
-class of error.
+`3` while the enum in the same document says `2`; and a label update is documented
+`put /labels/{id}`, which the server answers `405` — `OPTIONS` replies
+`Allow: OPTIONS, DELETE, GET, POST`. Only live integration tests catch this class of
+error, and the fourth sat in `Client::update_label` from the first commit because nothing
+called it.
 
 **`/projects` returns pseudo-projects.** Observed on dev: `-1` Favorites, `-2` My Open
 Tasks, `-3` Inbox — saved filters and built-ins presented as projects. They reject writes,
@@ -155,6 +158,36 @@ contained by `Reach`, either: both reaches call `pull_lists` unconditionally, wh
 why the delete-safety reasoning about `Full` versus `Incremental` did not cover it.
 `an_archived_project_and_its_tasks_survive_a_pull` mocks the two shapes the way the
 server answers them.
+
+**Writing a label: three findings, measured on dev 2026-08-29.** The label lifecycle is
+not the task lifecycle with a different noun.
+
+- **The update verb is `POST /labels/{id}`**, not the `put` the spec documents. See above.
+- **A partial body clears what it omits**, exactly as a task body does: `POST /labels/12`
+  carrying only `title` cleared `hex_color` to `""`. A rename sends the whole label.
+- **The body's `id` beats the path, and silently writes to a different label.**
+  `POST /labels/12` carrying `"id": 13` updated label **13**, left 12 untouched, and
+  answered with 13. This is the same path-versus-body binding order as
+  `PUT /projects/31/tasks`, but the failure is worse: the task case 404s about a project
+  that does not exist, and this one succeeds against the wrong row. `update_label` takes
+  the whole label and derives the path from it so the two cannot disagree; anything that
+  ever splits them must write the path id into the body.
+
+**A label title is not unique, so a replayed create is undetectable.** Creating
+`tui-do probe alpha` twice answered `201` twice with two different ids. There is nothing
+in the response to tell a duplicate from a first creation, so `is_already_done` cannot
+grow an arm for it — a `CreateLabel` whose response was lost must reconcile against
+`GET /labels?s=<title>` before it retries, or the user gets two labels. Creation ignores
+the body's `id` entirely: `0` and `-7` both came back with a server-assigned id, so
+carrying a provisional id on the wire is harmless.
+
+The rest of the replay table, same measurement session:
+
+| asked | answered |
+|---|---|
+| delete a label that is already gone | `404`, code `8002`, "This label does not exist." |
+| rename a label that is already gone | `404`, code `8002`, the same |
+| create a label whose title already exists | `201`, a second label |
 
 **Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
 from the body, and an empty `assignees` clears them. Labels are the opposite: they are
