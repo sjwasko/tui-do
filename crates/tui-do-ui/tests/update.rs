@@ -2447,16 +2447,19 @@ fn marking_done_leaves_the_row_in_place_when_done_tasks_are_shown() {
 }
 
 #[test]
-fn undoing_a_label_rename_renames_the_chips_on_screen() {
-    // `apply_locally` is what makes an edit visible before the store answers, and a label
-    // lives on screen in two places: the picker, which reads the store, and the chips on
-    // the rows in the list, which do not. A rename that only reached the store would
-    // leave the old title on every task carrying the label until the next reload.
+fn undoing_a_label_rename_renames_both_copies_of_the_label() {
+    // `apply_locally` is what makes an edit visible before the store answers, and the
+    // model keeps *two* snapshots of every label, neither a view of the other: the copy
+    // carried on each task in the list, which the row chips are drawn from, and
+    // `model.data.labels`, which the picker lists and `resolve_labels` matches a quick-add
+    // `*name` against. Both are written only by `Msg::LabelsLoaded`, and an edit returns
+    // no labels reload -- so rewriting one and not the other leaves the picker offering a
+    // name the user has just renamed away from.
     //
     // Driven through `u` because that is the only path the interface has to an
     // `UpdateLabel` today -- the label editor lands later in the phase -- and it exercises
     // `undo_text` at the same time.
-    let mut model = loaded();
+    let mut model = with_labels(vec![label(7, "next up"), label(9, "unrelated")], vec![]);
     model.data.tasks[0].labels = vec![label(7, "next up")];
     model.data.tasks[2].labels = vec![label(9, "unrelated")];
     model.undo.push(Mutation::UpdateLabel {
@@ -2474,6 +2477,18 @@ fn undoing_a_label_rename_renames_the_chips_on_screen() {
         model.data.tasks[2].labels[0].title, "unrelated",
         "a label the rename did not name was rewritten"
     );
+    // The picker's copy, which nothing else reloads.
+    let known: Vec<&str> = model
+        .data
+        .labels
+        .iter()
+        .map(|label| label.title.as_str())
+        .collect();
+    assert_eq!(
+        known,
+        vec!["next", "unrelated"],
+        "the label list the picker and quick-add read still holds the old title"
+    );
     // And it is queued like any other change, rather than being a screen-only edit.
     match applied(&effects).expect("the undo queues the inverse rename") {
         Mutation::UpdateLabel { before, after } => {
@@ -2482,6 +2497,8 @@ fn undoing_a_label_rename_renames_the_chips_on_screen() {
         }
         other => panic!("wrong mutation: {other:?}"),
     }
+    // Exact, not `contains`: the plausible mistake in `undo_text` is reading `before`
+    // instead of `after`, which yields "Undone — next up" -- and that contains "next".
     let toast = model.status.toast.as_ref().expect("the user is told");
-    assert!(toast.text.contains("next"), "{}", toast.text);
+    assert_eq!(toast.text, "Undone — next");
 }

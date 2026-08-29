@@ -1747,6 +1747,18 @@ async fn a_label_rename_does_not_store_the_answer_while_another_edit_is_queued()
     // The same guard `Sent::Updated` has. Two renames queued back to back: the first
     // one's answer describes a label the second has already moved past, so storing it
     // would briefly undo an edit the user can see on screen.
+    //
+    // The first write has to *succeed* for the guard to be reached at all, which is the
+    // whole shape of this test. An unconditional 500 would look like it exercised this and
+    // would not: a 500 is not permanent, so the first entry defers, its subject goes into
+    // `blocked`, the second entry is skipped by the drain's filter, and
+    // `Sent::LabelUpdated` is never constructed. The closing assertion would then be
+    // reading the value applied optimistically at queue time and would hold with the guard
+    // deleted.
+    //
+    // So: 200 once with a *stale* body -- "once", which is exactly what the first entry
+    // asked for and what the second has already moved past -- then 500 for the second
+    // entry, which leaves it queued and keeps the guard's condition true.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("{API}/labels/41")))
@@ -1755,7 +1767,16 @@ async fn a_label_rename_does_not_store_the_answer_while_another_edit_is_queued()
         .await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/labels/41")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 41, "title": "once"})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/labels/41")))
         .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .with_priority(5)
         .mount(&server)
         .await;
 
@@ -1785,7 +1806,15 @@ async fn a_label_rename_does_not_store_the_answer_while_another_edit_is_queued()
     assert!(!store.is_pending_label(LabelId(9)).await.unwrap());
 
     let (sync, _rx) = engine(&server, &store);
-    sync.push().await.unwrap();
+    let report = sync.push().await.unwrap();
+
+    // The first write landed, so `deliver` reached the arm that stores the answer -- which
+    // is the precondition for this test meaning anything.
+    assert_eq!(report.sent, 1, "the first rename never reached the server");
+    assert_eq!(
+        report.deferred, 1,
+        "the second rename has to still be queued, or the guard's condition is false"
+    );
     assert_eq!(
         store
             .label(LabelId(41))
@@ -1794,6 +1823,6 @@ async fn a_label_rename_does_not_store_the_answer_while_another_edit_is_queued()
             .expect("the local row")
             .title,
         "twice",
-        "the second edit was undone by the first's bookkeeping"
+        "the first rename's answer was stored over the second edit"
     );
 }

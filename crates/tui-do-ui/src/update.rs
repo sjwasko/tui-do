@@ -1569,9 +1569,21 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                 existing.labels.retain(|held| held.id != label.id);
             }
         }
-        // A rename or a recolour has to reach the copies of the label carried *on* the
-        // tasks in the list, which is where the list draws its chips from -- the store
-        // row is already right, and a reload is not guaranteed to follow a label edit.
+        // A rename or a recolour has to reach *two* snapshots, because the model keeps
+        // two copies of every label and neither is a view of the other:
+        //
+        // - the copy carried on each task in the list, which is what the row chips are
+        //   drawn from, and
+        // - `model.data.labels`, which is what the label picker lists, what
+        //   `resolve_labels` matches a quick-add `*name` against, and where a colour is
+        //   looked up.
+        //
+        // Both are written only by a store reload, and `apply` returns `Effect::Apply` and
+        // `Effect::LoadPending` -- no labels reload. So an edit that touched only one of
+        // them leaves the other showing the old title until something else happens to
+        // reload, which for the picker means quick-add still resolving the name the user
+        // just renamed away from.
+        //
         // Matched on the id, not the title: the title is the thing that just changed.
         Mutation::UpdateLabel { after, .. } => {
             for task in tasks.iter_mut() {
@@ -1581,10 +1593,17 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                     }
                 }
             }
+            for known in &mut model.data.labels {
+                if known.id == after.id {
+                    *known = (**after).clone();
+                }
+            }
         }
-        // Nothing here holds a label that does not exist yet -- `model.data.tasks` only,
-        // and no task can be carrying one. A label picker reads the store directly once
-        // the reload runs.
+        // The one mutation with nothing to rewrite. A label the server has never seen
+        // cannot be on a task in the list, and it is not in `model.data.labels` either --
+        // but that is because the create is queued from a screen that reloads, not because
+        // anything here reads the store directly. Nothing in this model does; both label
+        // snapshots above are written by `Msg::LabelsLoaded` and nowhere else.
         Mutation::CreateLabel { .. } => {}
     }
     keep_selection_visible(model);

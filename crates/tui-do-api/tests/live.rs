@@ -794,12 +794,14 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         "the search is case-sensitive, so a retried create will duplicate rather than adopt"
     );
 
-    // The assertion that matters, and the one that proves the filter rather than the
-    // server: a label whose title *contains* the search term is not an exact match. It is
-    // created and deleted here rather than assumed, so this cannot pass by the search
-    // simply having returned nothing -- the exact search above proves `s=tui-do-live-test`
-    // reaches the fixture, and a substring search for that same term reaches this sibling
-    // too. Only the filter can tell them apart.
+    // The assertions that matter, and the ones that prove the *filter* rather than the
+    // server. Each is paired with the raw `s=` listing it narrows, because on its own
+    // "the exact search did not return this" passes vacuously against a server whose `s`
+    // matched exactly -- and then it would be testing nothing at all. Comparing the two
+    // listings is the only thing that tells `labels_named`'s work from Vikunja's.
+    //
+    // Direction one: a title that *contains* the search term. Created here rather than
+    // assumed, so the raw listing has something to hold that the filtered one must not.
     let sibling = client
         .create_label(&tui_do_api::models::Label {
             title: "tui-do-live-test sibling".into(),
@@ -807,6 +809,15 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         })
         .await
         .expect("PUT /labels should create the sibling");
+    let raw = client
+        .labels_matching("tui-do-live-test")
+        .await
+        .expect("GET /labels?s= should search");
+    assert!(
+        raw.iter().any(|l| l.id == sibling.id),
+        "`s=` did not return the longer title, so it is not the substring search \
+         `labels_named` is written against and the filter below proves nothing: {raw:?}"
+    );
     let still_exact = client
         .labels_named("tui-do-live-test")
         .await
@@ -816,8 +827,18 @@ async fn a_task_round_trips_through_create_read_update_delete() {
         vec![label.id],
         "a longer title containing the search term was returned as an exact match"
     );
-    // And the other direction: a prefix of the fixture's title matches it as a substring
-    // and must still not come back as an exact match.
+
+    // Direction two: a prefix of the fixture's title. Same pairing -- the raw listing has
+    // to reach the fixture before "the filtered one does not" says anything.
+    let raw_prefix = client
+        .labels_matching("tui-do-live")
+        .await
+        .expect("GET /labels?s= should search");
+    assert!(
+        raw_prefix.iter().any(|l| l.id == label.id),
+        "`s=tui-do-live` did not reach the fixture, so the prefix assertion below would \
+         pass without the filter doing anything: {raw_prefix:?}"
+    );
     let by_prefix = client
         .labels_named("tui-do-live")
         .await
