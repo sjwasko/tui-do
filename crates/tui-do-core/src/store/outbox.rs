@@ -152,6 +152,22 @@ pub enum Mutation {
         /// The label as typed.
         label: Box<Label>,
     },
+
+    /// A change to an existing label -- its title, its colour or its description.
+    ///
+    /// One variant for all three rather than a `RenameLabel` and a `RecolourLabel`,
+    /// because they are one request and one undo step: `POST /labels/{id}` replaces the
+    /// label from the body, so changing the title and the colour separately would be two
+    /// writes where the second reverts nothing and the first is pointless work.
+    ///
+    /// `before` is what a rejection restores and what an undo re-applies, so it is stored
+    /// rather than re-read -- by the time either happens the row has moved on.
+    UpdateLabel {
+        /// The label as it was.
+        before: Box<Label>,
+        /// The label as it should be.
+        after: Box<Label>,
+    },
 }
 
 impl Mutation {
@@ -169,6 +185,7 @@ impl Mutation {
             Self::AttachLabel { .. } => "attach_label",
             Self::DetachLabel { .. } => "detach_label",
             Self::CreateLabel { .. } => "create_label",
+            Self::UpdateLabel { .. } => "update_label",
         }
     }
 
@@ -181,6 +198,7 @@ impl Mutation {
             Self::DeleteTask { before } => Subject::Task(before.id),
             Self::AttachLabel { task, .. } | Self::DetachLabel { task, .. } => Subject::Task(*task),
             Self::CreateLabel { label } => Subject::Label(label.id),
+            Self::UpdateLabel { after, .. } => Subject::Label(after.id),
         }
     }
 
@@ -202,9 +220,10 @@ impl Mutation {
             }
             Self::DeleteTask { before } => swap(&mut before.id),
             Self::AttachLabel { task, .. } | Self::DetachLabel { task, .. } => swap(task),
-            // Retargets tasks; a label create has none to swap. The label equivalent is
-            // `retarget_label`, added separately so the two id spaces cannot be confused.
-            Self::CreateLabel { .. } => {}
+            // Retargets tasks; a label create or edit has none to swap. The label
+            // equivalent is `retarget_label`, added separately so the two id spaces cannot
+            // be confused.
+            Self::CreateLabel { .. } | Self::UpdateLabel { .. } => {}
         }
     }
 
@@ -238,6 +257,13 @@ impl Mutation {
                 for label in &mut before.labels {
                     swap(&mut label.id);
                 }
+            }
+            // Both halves. `before` is what a rejection restores and what an undo
+            // re-applies, so one left on the provisional id would resurrect a row the
+            // store has already deleted.
+            Self::UpdateLabel { before, after } => {
+                swap(&mut before.id);
+                swap(&mut after.id);
             }
         }
     }
@@ -273,6 +299,10 @@ impl Mutation {
             Self::DetachLabel { task, label } => Self::AttachLabel {
                 task: *task,
                 label: label.clone(),
+            },
+            Self::UpdateLabel { before, after } => Self::UpdateLabel {
+                before: after.clone(),
+                after: before.clone(),
             },
             Self::CreateLabel { .. } => return None,
         })
@@ -357,6 +387,7 @@ impl Mutation {
                 )?;
             }
             Self::CreateLabel { label } => upsert_label(tx, label, now)?,
+            Self::UpdateLabel { after, .. } => upsert_label(tx, after, now)?,
         }
         Ok(())
     }
@@ -385,6 +416,7 @@ impl Mutation {
             Self::CreateLabel { label } => {
                 tx.execute("DELETE FROM labels WHERE id = ?1", params![label.id.get()])?;
             }
+            Self::UpdateLabel { before, .. } => upsert_label(tx, before, now)?,
         }
         Ok(())
     }
@@ -639,6 +671,27 @@ impl Store {
                 "SELECT exists(SELECT 1 FROM outbox
                                 WHERE subject_id = ?1 AND subject_kind = 'task')",
                 params![task.get()],
+                |row| row.get::<_, i64>(0),
+            )? == 1)
+        })
+        .await
+    }
+
+    /// Whether this label has unsent local changes.
+    ///
+    /// The label half of [`Self::is_pending`], and a separate method rather than an
+    /// argument to it because `outbox.subject_id` is an untyped column: provisional ids
+    /// count down from `-1` per kind, so task `-1` and label `-1` are the same value in
+    /// the same column and only `subject_kind` tells them apart.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn is_pending_label(&self, label: LabelId) -> Result<bool> {
+        self.read(move |connection| {
+            Ok(connection.query_row(
+                "SELECT exists(SELECT 1 FROM outbox
+                                WHERE subject_id = ?1 AND subject_kind = 'label')",
+                params![label.get()],
                 |row| row.get::<_, i64>(0),
             )? == 1)
         })
@@ -1553,6 +1606,132 @@ mod tests {
         assert!(store.label(LabelId(-1)).await.unwrap().is_none());
         assert_eq!(store.label_count().await.unwrap(), 0);
         assert_eq!(store.pending_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_label_changes_the_store_at_once_and_rolls_back_cleanly() {
+        // Rule 5 for the label half: the row the picker reads changes at the keystroke,
+        // and a rejection puts back exactly what was there -- colour included, because
+        // one variant covers rename and recolour and a rollback that only restored the
+        // title would leave the user's old colour lost.
+        let store = Store::in_memory().unwrap();
+        let was = Label {
+            id: LabelId(41),
+            title: "next".into(),
+            hex_color: "aaaaaa".into(),
+            ..Default::default()
+        };
+        store.upsert_labels(vec![was.clone()]).await.unwrap();
+
+        let entry = store
+            .queue(Mutation::UpdateLabel {
+                before: Box::new(was.clone()),
+                after: Box::new(Label {
+                    title: "next up".into(),
+                    hex_color: "4287f5".into(),
+                    ..was.clone()
+                }),
+            })
+            .await
+            .unwrap();
+
+        let edited = store.label(LabelId(41)).await.unwrap().expect("the label");
+        assert_eq!(edited.title, "next up");
+        assert_eq!(edited.hex_color, "4287f5");
+        assert_eq!(entry.mutation.subject(), Subject::Label(LabelId(41)));
+        assert_eq!(entry.mutation.kind(), "update_label");
+
+        store.discard(&entry).await.unwrap();
+
+        let restored = store.label(LabelId(41)).await.unwrap().expect("the label");
+        assert_eq!(restored.title, "next");
+        assert_eq!(restored.hex_color, "aaaaaa");
+        assert_eq!(store.pending_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_label_rename_inverts_to_the_rename_that_undoes_it() {
+        let rename = Mutation::UpdateLabel {
+            before: Box::new(label(41, "next")),
+            after: Box::new(label(41, "next up")),
+        };
+        match rename.inverse() {
+            Some(Mutation::UpdateLabel { before, after }) => {
+                assert_eq!(before.title, "next up");
+                assert_eq!(after.title, "next");
+            }
+            other => panic!("an inverted rename should still be a rename: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rename_queued_behind_a_create_follows_the_label_to_its_real_id() {
+        // The case `retarget_label` exists for, and the one a rename can produce on its
+        // own: create a label, rename it before the server has answered. Both halves of
+        // the rename carry the provisional id, and an entry left naming it would be sent
+        // as `POST /labels/-1` -- a 404 about an id no server has ever seen, which is a
+        // 4xx, which rolls the user's rename back.
+        let store = Store::in_memory().unwrap();
+        let created = store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: "next".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let provisional = LabelId(-1);
+        store
+            .queue(Mutation::UpdateLabel {
+                before: Box::new(Label {
+                    id: provisional,
+                    title: "next".into(),
+                    ..Default::default()
+                }),
+                after: Box::new(Label {
+                    id: provisional,
+                    title: "next up".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+
+        store
+            .settle_create_label(
+                created.id,
+                provisional,
+                Label {
+                    id: LabelId(41),
+                    title: "next".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(queued.len(), 1, "the create should have been dropped");
+        let Mutation::UpdateLabel { before, after } = &queued[0].mutation else {
+            panic!("the rename is gone");
+        };
+        // Both halves: `before` is what a rejection restores and what an undo re-applies,
+        // so a `before` left on the provisional id would resurrect a row the store has
+        // deleted.
+        assert_eq!(
+            before.id,
+            LabelId(41),
+            "`before` still names the provisional"
+        );
+        assert_eq!(after.id, LabelId(41), "`after` still names the provisional");
+        // And the row the queue is indexed by has to move with the payload, or the drain
+        // blocks the wrong subject and `retain_labels` exempts the wrong label.
+        assert_eq!(
+            queued[0].mutation.subject(),
+            Subject::Label(LabelId(41)),
+            "the outbox subject still names the provisional"
+        );
     }
 
     #[tokio::test]
