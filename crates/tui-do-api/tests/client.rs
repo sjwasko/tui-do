@@ -549,11 +549,17 @@ async fn the_projects_listing_asks_for_archived_ones_too() {
 
 #[tokio::test]
 async fn writes_use_the_verbs_the_spec_declares() {
-    // Vikunja creates with PUT, updates with POST -- except a label, which updates with
-    // PUT. Each mock matches one exact method and path and expects exactly one hit, so
-    // sending the conventional-but-wrong verb fails the test rather than surfacing as a
-    // 405 at runtime, which is how the same mistake reached production in
-    // `deploy/seed-from-prod.sh`.
+    // Vikunja creates with PUT and updates with POST. Each mock matches one exact method
+    // and path and expects exactly one hit, so sending the conventional-but-wrong verb
+    // fails the test rather than surfacing as a 405 at runtime, which is how the same
+    // mistake reached production in `deploy/seed-from-prod.sh`.
+    //
+    // These verbs are what the *server* accepts, which is not always what the spec
+    // documents: `spec/vikunja.json` says `put /labels/{id}` and the server answers 405
+    // to it. This table said `PUT` here until 2026-08-29 and agreed with the client, so
+    // both were wrong together -- a mock will happily confirm whatever the client
+    // believes. Only `tests/live.rs` can tell them apart, which is where the rename is
+    // now asserted.
     let server = MockServer::start().await;
 
     let task = json!({"id": 7, "title": "written", "project_id": 3});
@@ -565,7 +571,7 @@ async fn writes_use_the_verbs_the_spec_declares() {
         ("POST", "/api/v1/projects/3", json!({"id": 3, "title": "p"})),
         ("DELETE", "/api/v1/projects/3", json!({"message": "ok"})),
         ("PUT", "/api/v1/labels", json!({"id": 5, "title": "l"})),
-        ("PUT", "/api/v1/labels/5", json!({"id": 5, "title": "l"})),
+        ("POST", "/api/v1/labels/5", json!({"id": 5, "title": "l"})),
         ("DELETE", "/api/v1/labels/5", json!({"id": 5, "title": "l"})),
         ("PUT", "/api/v1/tasks/7/labels", json!({"label_id": 5})),
         (

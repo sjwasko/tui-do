@@ -107,7 +107,13 @@ async fn sweep_fixtures(client: &Client) {
     let Ok(labels) = client.all_labels().await else {
         return;
     };
-    for label in labels.iter().filter(|l| l.title == "tui-do-live-test") {
+    // Prefix, not equality: the round-trip renames the fixture label to prove the rename
+    // works, and a run that dies between the rename and the delete leaves it behind under
+    // the new title.
+    for label in labels
+        .iter()
+        .filter(|l| l.title.starts_with("tui-do-live-test"))
+    {
         match client.delete_label(label.id).await {
             Ok(()) => println!("swept leftover fixture label {}", label.id),
             Err(err) => println!("could not sweep label {}: {err}", label.id),
@@ -784,7 +790,58 @@ async fn a_task_round_trips_through_create_read_update_delete() {
     let redetached = client.remove_label_from_task(created.id, label.id).await;
     println!("detaching an already-detached label answers: {redetached:?}");
 
+    // The rest of the label lifecycle, which is what closes Phase 4's "tui-do cannot
+    // create labels yet" gap. Asserted rather than reported: a failure here is a bug in
+    // tui-do, not a fact about the server.
+    //
+    // `update_label` sent `PUT` until 2026-08-29, because that is the verb
+    // `spec/vikunja.json` documents. The server answers `405 Method Not Allowed`, and
+    // `OPTIONS /labels/{id}` replies `Allow: OPTIONS, DELETE, GET, POST`. Nothing called
+    // the method, so nothing ever saw the 405 -- the conformance test compares paths, not
+    // verbs, and cannot.
+    let mut edited = label.clone();
+    edited.title = "tui-do-live-test renamed".into();
+    let edited = client
+        .update_label(&edited)
+        .await
+        .expect("POST /labels/{id} should rename a label");
+    assert_eq!(edited.id, label.id);
+    assert_eq!(edited.title, "tui-do-live-test renamed");
+    // The whole label goes in the body because a partial one clears what it omits: a body
+    // carrying only `title` cleared `hex_color` to "" on dev, the same way a partial task
+    // body clears description, priority and due date.
+    assert_eq!(
+        edited.hex_color, "4287f5",
+        "the rename cleared the colour, so the body no longer carries the whole label"
+    );
+
     client.delete_label(label.id).await.expect("delete label");
+
+    // What a replayed create answers, and it is the awkward one: labels have no unique
+    // title, so this is a second label rather than an error, and nothing in the response
+    // distinguishes it from the first. Reported, because there is no arm for
+    // `is_already_done` to grow -- the queue has to avoid the retry instead.
+    let first = client
+        .create_label(&tui_do_api::models::Label {
+            title: "tui-do-live-test duplicate".into(),
+            ..Default::default()
+        })
+        .await;
+    let second = client
+        .create_label(&tui_do_api::models::Label {
+            title: "tui-do-live-test duplicate".into(),
+            ..Default::default()
+        })
+        .await;
+    println!("creating the same label title twice answers: {first:?} then {second:?}");
+    for made in [first, second].into_iter().flatten() {
+        let _ = client.delete_label(made.id).await;
+    }
+
+    // And what a rename of a label that is already gone answers, which is the arm a
+    // replayed rename lands on after another box deleted the label.
+    let renamed_ghost = client.update_label(&edited).await;
+    println!("renaming a deleted label answers: {renamed_ghost:?}");
 
     // The comment endpoints, including the update the spec declares with no request body.
     let comment = client
