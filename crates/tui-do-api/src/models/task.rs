@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::datetime::Timestamp;
-use super::ids::{AttachmentId, CommentId, ProjectId, TaskId, UserId};
+use super::ids::{AttachmentId, CommentId, ProjectId, TaskId};
 use super::label::Label;
 use super::user::User;
 
@@ -331,8 +331,14 @@ pub struct Bucket {
     pub count: i64,
 
     /// Who created it.
+    ///
+    /// The whole user, not an id: the spec gives `models.Bucket.created_by` as
+    /// `allOf: [user.User]`, so the server sends an object here and an `i64` would fail
+    /// to deserialize -- taking the entire buckets response down with it. Latent until
+    /// Phase 6 wires `VIEW_BUCKETS`, and invisible to the conformance test, which
+    /// compares field *names* against the spec and never their types.
     #[serde(default)]
-    pub created_by: Option<UserId>,
+    pub created_by: Option<User>,
 }
 
 #[cfg(test)]
