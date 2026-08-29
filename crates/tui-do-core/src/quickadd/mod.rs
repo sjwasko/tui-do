@@ -468,6 +468,45 @@ mod tests {
     }
 
     #[test]
+    fn an_ordinary_word_that_starts_like_a_month_is_not_a_date() {
+        // A three-letter prefix match read `Dec`ide as December, so "Decide 3 things to
+        // do" became a task called "things to do" due on 3 December -- a date the user
+        // never typed, and two words gone from the title. The month reading is whole-word
+        // now, so each of these is a title and nothing else.
+        for input in [
+            "Decide 3 things to do",
+            "Run marathon 26",
+            "Augment 4 diagrams",
+            "Januar 5 revisions",
+        ] {
+            let parsed = p(input);
+            assert_eq!(
+                parsed.title, input,
+                "{input:?} lost words to a date that is not there"
+            );
+            assert_eq!(local(parsed.due_date), "none", "{input:?}");
+        }
+    }
+
+    #[test]
+    fn a_month_and_a_day_still_read_as_a_date() {
+        // The whole-word rule must not cost the spellings people actually use. `sept` is
+        // the one four-letter form, and it is why `month_name` is a table rather than a
+        // truncation.
+        for (input, title, due) in [
+            ("Taxes due apr 15", "Taxes", "2027-04-15 23:59"),
+            ("Taxes due april 15", "Taxes", "2027-04-15 23:59"),
+            ("Taxes due 15 apr", "Taxes", "2027-04-15 23:59"),
+            ("Party due sept 9", "Party", "2026-09-09 23:59"),
+            ("Party due september 9", "Party", "2026-09-09 23:59"),
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, title, "{input:?}");
+            assert_eq!(local(parsed.due_date), due, "{input:?}");
+        }
+    }
+
+    #[test]
     fn unicode_survives_intact() {
         let parsed = p("Réserver le café *déjeuner +Vacances");
         assert_eq!(parsed.title, "Réserver le café");
