@@ -748,6 +748,11 @@ impl Store {
         let now = Utc::now();
         self.write(move |tx| {
             upsert_label(tx, &assigned, now)?;
+            // `OR IGNORE` because the label may already be attached under its real id --
+            // an entry ahead of this one on the wire, or the server's own answer for the
+            // create carrying the same link back. The provisional's `(task, -1)` row is
+            // then left behind and the cascade below removes it; the real link survives
+            // either way.
             tx.execute(
                 "UPDATE OR IGNORE task_labels SET label_id = ?1 WHERE label_id = ?2",
                 params![assigned.id.get(), provisional.get()],
@@ -1082,10 +1087,16 @@ mod tests {
             .await
             .unwrap();
         let provisional = created.mutation.subject().task().unwrap();
+        let mut after = task(provisional.get(), "buy oat milk");
+        after.assignees = vec![User {
+            id: UserId(3),
+            username: "alice".into(),
+            ..User::default()
+        }];
         store
             .queue(Mutation::UpdateTask {
                 before: Box::new(task(provisional.get(), "buy milk")),
-                after: Box::new(task(provisional.get(), "buy oat milk")),
+                after: Box::new(after),
             })
             .await
             .unwrap();
@@ -1103,7 +1114,26 @@ mod tests {
             .unwrap();
 
         assert!(store.task(provisional).await.unwrap().is_none());
-        assert!(store.task(TaskId(4242)).await.unwrap().is_some());
+        let settled = store
+            .task(TaskId(4242))
+            .await
+            .unwrap()
+            .expect("the settled task");
+        // `task_labels` and `task_assignees` are re-pointed, not cascaded away, before the
+        // provisional row is deleted -- without that, a label attached or a user assigned
+        // by an entry still queued behind the create is lost the moment it settles.
+        assert_eq!(
+            settled.assignees.len(),
+            1,
+            "the assignee was cascaded away rather than re-pointed"
+        );
+        assert_eq!(settled.assignees[0].id, UserId(3));
+        assert_eq!(
+            settled.labels.len(),
+            1,
+            "the label link was cascaded away rather than re-pointed"
+        );
+        assert_eq!(settled.labels[0].id, LabelId(7));
 
         let pending = store.pending(None).await.unwrap();
         assert_eq!(pending.len(), 2, "the create should be gone, the rest kept");
@@ -1587,5 +1617,13 @@ mod tests {
             .unwrap();
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].id, LabelId(41));
+
+        // The re-point, not just the eventual state: without the `UPDATE OR IGNORE
+        // task_labels` statement, `DELETE FROM labels WHERE id = -1` two lines below it
+        // cascades the (7, -1) link away, and the assertions above would not have caught
+        // it -- they only look at the outbox payload and the `labels` table, not the task.
+        let read = store.task(TaskId(7)).await.unwrap().unwrap();
+        assert_eq!(read.labels.len(), 1, "the attachment was cascaded away");
+        assert_eq!(read.labels[0].id, LabelId(41));
     }
 }

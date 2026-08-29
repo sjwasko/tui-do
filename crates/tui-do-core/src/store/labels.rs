@@ -187,7 +187,9 @@ impl Store {
     /// outbox exemption. `pull_lists` runs on every pull, including startup, before a
     /// `CreateLabel` queued moments earlier has ever been sent -- so without this, the
     /// listing (which by definition does not name a label the server has not seen) erased
-    /// the local row while the outbox entry survived to create a duplicate on the server.
+    /// the local row while the outbox entry survived. That leaves the server holding a
+    /// label the local store has no row for, not yet a duplicate -- a duplicate only
+    /// follows if the user, seeing it vanish, retypes it.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
@@ -511,7 +513,8 @@ mod tests {
         // `retain_labels` had none. A label created offline and not yet attached to any
         // task was erased by the very next `pull_lists` -- which runs on every pull,
         // including startup, before the create had ever been sent -- while the outbox
-        // entry survived and went on to create a duplicate on the server.
+        // entry survived. The server ends up with a label the local store has no row for;
+        // a duplicate only follows if the user, seeing it vanish, retypes it.
         let store = Store::in_memory().unwrap();
         store
             .queue(Mutation::CreateLabel {
