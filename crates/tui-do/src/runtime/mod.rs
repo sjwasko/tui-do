@@ -38,6 +38,23 @@ const TICK: Duration = Duration::from_secs(1);
 /// How long the input reader waits before checking whether it should stop.
 const INPUT_POLL: Duration = Duration::from_millis(100);
 
+/// The current time, carrying this machine's UTC offset.
+///
+/// The only clock in the program that the interface sees, and the offset is the point of
+/// it. `due today` is resolved against this, and so is the decision to call a date
+/// "Today" — both are claims about the calendar the user is living in, and both answer
+/// wrongly if the instant arrives labelled UTC. Stamped as `Utc::now()`, `due today`
+/// lands at 23:59 UTC, which west of Greenwich is that same evening: the task turns
+/// overdue hours early, every day. That is the bug in the project tui-do replaces.
+///
+/// `fixed_offset` rather than `DateTime<Local>` so the value carries its offset with it
+/// rather than depending on the reader's zone, which is what lets `tui-do-ui` stay pure
+/// and its tests stay deterministic. Re-read on every tick, so a DST change is picked up
+/// within a second without restarting.
+fn now() -> chrono::DateTime<chrono::FixedOffset> {
+    chrono::Local::now().fixed_offset()
+}
+
 /// How long the flush on exit waits between dots.
 const FLUSH_TICK: Duration = Duration::from_secs(1);
 
@@ -89,7 +106,7 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         .size()
         .map_or((120, 40), |s| (s.width, s.height));
 
-    let mut model = Model::new(&config, scope, chrono::Utc::now(), size);
+    let mut model = Model::new(&config, scope, now(), size);
     model.theme = Theme::new(color_depth());
     if let Some(problem) = credential_problem {
         model.status.sync = tui_do_ui::model::SyncStatus::Failed {
@@ -515,7 +532,7 @@ fn spawn_ticks(tx: UnboundedSender<Msg>, stop: Arc<AtomicBool>) {
         let mut interval = tokio::time::interval(TICK);
         loop {
             interval.tick().await;
-            if stop.load(Ordering::SeqCst) || tx.send(Msg::Tick(chrono::Utc::now())).is_err() {
+            if stop.load(Ordering::SeqCst) || tx.send(Msg::Tick(now())).is_err() {
                 return;
             }
         }
@@ -600,7 +617,7 @@ pub async fn add(
         .await
         .with_context(|| format!("could not open the store at {}", store_path.display()))?;
 
-    let parsed = tui_do_core::quickadd::parse(text, &chrono::Utc::now());
+    let parsed = tui_do_core::quickadd::parse(text, &now());
     if parsed.title.trim().is_empty() {
         anyhow::bail!("nothing to add");
     }
@@ -676,7 +693,7 @@ pub async fn add(
     let project_id = built.task.project_id;
     // Read before the task is moved into the mutation. Same rule as the interface: a date
     // already gone by is allowed, never confirmed quietly.
-    let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), chrono::Utc::now());
+    let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), now());
     let project = projects
         .iter()
         .find(|project| project.id == project_id)
@@ -830,7 +847,23 @@ mod tests {
     #[test]
     fn a_full_pass_asked_for_mid_pass_outranks_a_push() {
         // Both are remembered, but a full pass does a push anyway, so it wins.
-        assert!(again_code(Pass::Full) > again_code(Pass::Push));
+        assert!(again_code(Pass::Full) > again_code(Pass::Delta));
+        assert!(again_code(Pass::Delta) > again_code(Pass::Push));
         assert!(again_code(Pass::Push) > NOTHING_AGAIN);
+    }
+
+    #[test]
+    fn every_pass_asked_for_mid_pass_is_one_the_re_dispatch_knows() {
+        // `Pass::Delta` -- what `r` sends -- had a code and no arm, so pressing `r`
+        // during the startup pull set the status line to "Syncing", toasted, and then
+        // ran nothing. Comparing the codes' *order* did not catch it, because the order
+        // was right; what was missing was a branch. Assert against the arms instead.
+        for pass in [Pass::Push, Pass::Delta, Pass::Full] {
+            let code = again_code(pass);
+            assert!(
+                matches!(code, PUSH_AGAIN | DELTA_AGAIN | FULL_AGAIN),
+                "{pass:?} encodes to {code}, which the re-dispatch drops on the floor"
+            );
+        }
     }
 }

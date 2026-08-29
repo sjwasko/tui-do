@@ -5,7 +5,7 @@
 //! state carried around a hundred fields including twenty-two `show_*_modal` booleans,
 //! which is why every modal needed a branch in a 790-line function.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset};
 use tui_do_core::config::columns::ColumnLayout;
 use tui_do_core::config::{Config, QuickAction, ViewConfig};
 use tui_do_core::models::{Label, Project, ProjectId, Task, TaskId};
@@ -190,7 +190,7 @@ pub struct Status {
     /// What sync is doing.
     pub sync: SyncStatus,
     /// When the last pass finished.
-    pub last_sync: Option<DateTime<Utc>>,
+    pub last_sync: Option<DateTime<FixedOffset>>,
     /// Local changes not yet accepted by the server.
     pub queued: usize,
     /// The current transient message, if any.
@@ -276,7 +276,15 @@ pub struct Model {
     /// Terminal size, as columns by rows.
     pub size: (u16, u16),
     /// The last time the runtime told us about. `update` never reads a clock.
-    pub now: DateTime<Utc>,
+    ///
+    /// Carries the user's UTC offset, and must: it is what `quickadd::parse` resolves
+    /// `due today` against and what [`crate::rows::relative_date`] calls a date "Today".
+    /// Stamped as UTC, both answer in UTC — `due today` lands at 23:59 UTC, which for a
+    /// UTC-5 user is 18:59 the same evening, so the task turns overdue five hours early
+    /// every day. That is the bug in the project tui-do replaces. `FixedOffset` rather
+    /// than `Local` so a test can pin an offset without depending on the machine's zone;
+    /// the runtime restamps it on every tick, so a DST change is picked up within a tick.
+    pub now: DateTime<FixedOffset>,
     /// Inverses of what has been done, newest last. Session-scoped: an inverse built
     /// against yesterday's state would meet a task the server has changed since, and
     /// lose in a way that is hard to explain.
@@ -305,7 +313,12 @@ impl Model {
     /// — configured project, then last session's, then everything — needs the project
     /// list, and `update` cannot go and read one. See [`landing_scope`].
     #[must_use]
-    pub fn new(config: &Config, scope: Scope, now: DateTime<Utc>, size: (u16, u16)) -> Self {
+    pub fn new(
+        config: &Config,
+        scope: Scope,
+        now: DateTime<FixedOffset>,
+        size: (u16, u16),
+    ) -> Self {
         let layouts = config.view.effective_layouts();
         let layout_ix = config
             .view
@@ -552,7 +565,12 @@ mod tests {
     fn the_active_layout_comes_from_the_config_by_name() {
         let mut config = Config::example();
         config.view.active_layout = Some("compact".to_string());
-        let model = Model::new(&config, Scope::All, Utc::now(), (120, 40));
+        let model = Model::new(
+            &config,
+            Scope::All,
+            chrono::Utc::now().fixed_offset(),
+            (120, 40),
+        );
         assert_eq!(model.layout().name, "compact");
     }
 }

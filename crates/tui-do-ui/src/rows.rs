@@ -8,7 +8,7 @@
 //! Only the visible window is laid out. A 1,900-row query must not re-wrap 1,900 titles
 //! to draw thirty of them.
 
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, Utc};
 use ratatui::text::{Line, Span};
 use tui_do_core::config::columns::{Column, ColumnLayout, ColumnSpec};
 use tui_do_core::models::{Project, Task, TaskId};
@@ -174,7 +174,7 @@ pub struct RowContext<'a> {
     /// The colours.
     pub theme: Theme,
     /// The time the runtime last reported.
-    pub now: DateTime<Utc>,
+    pub now: DateTime<FixedOffset>,
 }
 
 /// Lay out `tasks` into rows.
@@ -854,10 +854,15 @@ pub const fn priority_name(priority: i64) -> &'static str {
 
 /// A due date as a person would say it.
 #[must_use]
-pub fn relative_date(date: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+pub fn relative_date(date: Option<DateTime<Utc>>, now: DateTime<FixedOffset>) -> String {
     let Some(date) = date else {
         return "—".to_string();
     };
+    // Into the user's zone before asking what day it is. "Today" is a claim about the
+    // calendar the user is living in, and a due date stored as 2026-08-27T04:59Z is the
+    // evening of the 26th for a UTC-5 reader -- comparing UTC days calls that "Tomorrow"
+    // and then, at midnight UTC, "Today" while the evening it names has already gone.
+    let date = date.with_timezone(&now.timezone());
     let days = (date.date_naive() - now.date_naive()).num_days();
     match days {
         0 => "Today".to_string(),
@@ -879,6 +884,13 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
+    }
+
+    /// The same instant as the reader's clock shows it. Zero offset, so the existing
+    /// expectations below are unchanged; `a_date_is_read_in_the_users_own_zone` is the
+    /// one that puts a real offset on it.
+    fn here() -> DateTime<FixedOffset> {
+        now().fixed_offset()
     }
 
     fn layout(columns: Vec<ColumnSpec>) -> ColumnLayout {
@@ -996,27 +1008,47 @@ mod tests {
     }
 
     #[test]
+    fn a_date_is_read_in_the_users_own_zone() {
+        // 2026-08-27T02:00Z is still the evening of the 26th in New York. A reader there,
+        // at 21:00 on the 26th, is looking at something due in five hours -- "Today". Ask
+        // the question in UTC and the two instants land on different calendar days, so
+        // the row says "Tomorrow" about this evening. The same mislabelling is what makes
+        // a task due tonight read as overdue at midnight UTC rather than at midnight.
+        let eastern = FixedOffset::west_opt(5 * 3600).unwrap();
+        // 21:00 on the 26th where the reader is; 02:00 on the 27th in UTC.
+        let evening = Utc.with_ymd_and_hms(2026, 8, 27, 2, 0, 0).unwrap();
+
+        let before = eastern.with_ymd_and_hms(2026, 8, 26, 16, 0, 0).unwrap();
+        assert_eq!(relative_date(Some(evening), before), "Today");
+
+        // And the day turns over at the reader's midnight, not at UTC's: an hour past it,
+        // that same evening is behind them.
+        let after = eastern.with_ymd_and_hms(2026, 8, 27, 1, 0, 0).unwrap();
+        assert_eq!(relative_date(Some(evening), after), "Yesterday");
+    }
+
+    #[test]
     fn a_date_reads_the_way_a_person_would_say_it() {
-        assert_eq!(relative_date(None, now()), "—");
-        assert_eq!(relative_date(Some(now()), now()), "Today");
+        assert_eq!(relative_date(None, here()), "—");
+        assert_eq!(relative_date(Some(now()), here()), "Today");
         assert_eq!(
-            relative_date(Some(now() + chrono::Duration::days(1)), now()),
+            relative_date(Some(now() + chrono::Duration::days(1)), here()),
             "Tomorrow"
         );
         assert_eq!(
-            relative_date(Some(now() + chrono::Duration::days(3)), now()),
+            relative_date(Some(now() + chrono::Duration::days(3)), here()),
             "in 3 days"
         );
         assert_eq!(
-            relative_date(Some(now() - chrono::Duration::days(3)), now()),
+            relative_date(Some(now() - chrono::Duration::days(3)), here()),
             "3 days ago"
         );
         assert_eq!(
-            relative_date(Some(now() + chrono::Duration::days(30)), now()),
+            relative_date(Some(now() + chrono::Duration::days(30)), here()),
             "Sep 23"
         );
         assert_eq!(
-            relative_date(Some(now() + chrono::Duration::days(400)), now()),
+            relative_date(Some(now() + chrono::Duration::days(400)), here()),
             "Sep 28, 27"
         );
     }
@@ -1126,7 +1158,7 @@ mod tests {
             RowContext {
                 projects: &[],
                 theme,
-                now: now(),
+                now: here(),
             },
         );
         assert_eq!(rows[0].height, MAX_ROW_LINES);
@@ -1160,7 +1192,7 @@ mod tests {
         RowContext {
             projects: &[],
             theme: Theme::new(crate::theme::ColorDepth::TrueColor),
-            now: now(),
+            now: here(),
         }
     }
 

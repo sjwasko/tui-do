@@ -27,6 +27,11 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
 }
 
+/// The same instant, carrying an offset, which is what the model holds.
+fn here() -> chrono::DateTime<chrono::FixedOffset> {
+    now().fixed_offset()
+}
+
 fn at(days: i64) -> Timestamp {
     Timestamp::from(Some(now() + chrono::Duration::days(days)))
 }
@@ -35,7 +40,7 @@ fn fixture(size: (u16, u16)) -> Model {
     let mut model = Model::new(
         &Config::example(),
         Scope::Project(ProjectId(1)),
-        now(),
+        here(),
         size,
     );
     let _ = reload_everything(&mut model);
@@ -128,7 +133,7 @@ fn fixture(size: (u16, u16)) -> Model {
             favorites: TaskCount { open: 2, done: 0 },
         }),
     );
-    model.status.last_sync = Some(now() - chrono::Duration::minutes(2));
+    model.status.last_sync = Some(here() - chrono::Duration::minutes(2));
     model
 }
 

@@ -23,6 +23,11 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
 }
 
+/// The same instant, carrying an offset, which is what the model holds.
+fn here() -> chrono::DateTime<chrono::FixedOffset> {
+    now().fixed_offset()
+}
+
 fn task(id: i64, title: &str) -> Task {
     Task {
         id: TaskId(id),
@@ -43,7 +48,7 @@ fn project(id: i64, title: &str, parent: i64) -> Project {
 
 /// A model that has already been answered: three tasks, two projects, counts.
 fn loaded() -> Model {
-    let mut model = Model::new(&Config::example(), Scope::All, now(), (160, 40));
+    let mut model = Model::new(&Config::example(), Scope::All, here(), (160, 40));
     let _ = reload_everything(&mut model);
     answer(
         &mut model,
@@ -101,7 +106,7 @@ fn loaded_query(effects: &[Effect]) -> Option<tui_do_ui::QueryId> {
 
 #[test]
 fn a_first_paint_asks_for_everything_it_shows() {
-    let mut model = Model::new(&Config::example(), Scope::All, now(), (160, 40));
+    let mut model = Model::new(&Config::example(), Scope::All, here(), (160, 40));
     let effects = reload_everything(&mut model);
     assert!(effects.contains(&Effect::LoadProjects));
     assert!(effects.contains(&Effect::LoadLabels));
@@ -194,7 +199,7 @@ fn gg_and_shift_g_reach_the_ends_and_a_dead_chord_does_nothing() {
 
 #[test]
 fn a_page_moves_by_the_height_of_the_list() {
-    let mut model = Model::new(&Config::example(), Scope::All, now(), (100, 10));
+    let mut model = Model::new(&Config::example(), Scope::All, here(), (100, 10));
     let _ = reload_everything(&mut model);
     let tasks: Vec<Task> = (1..=50).map(|n| task(n, &format!("task {n}"))).collect();
     answer(&mut model, tasks);
@@ -1163,7 +1168,7 @@ fn a_finished_sync_reloads_what_the_screen_is_showing() {
         })),
     );
     assert_eq!(model.status.sync, SyncStatus::Idle);
-    assert_eq!(model.status.last_sync, Some(now()));
+    assert_eq!(model.status.last_sync, Some(here()));
     assert_eq!(model.status.queued, 2);
     assert!(effects.contains(&Effect::LoadCounts));
     assert!(loaded_query(&effects).is_some());
@@ -1221,7 +1226,7 @@ fn a_toast_expires_on_ticks_because_update_has_no_clock() {
     assert!(model.status.toast.is_some());
 
     for _ in 0..tui_do_ui::model::Toast::LIFETIME {
-        update(&mut model, Msg::Tick(now()));
+        update(&mut model, Msg::Tick(here()));
     }
     assert!(model.status.toast.is_none());
 }
@@ -2152,7 +2157,7 @@ fn quick_add_leaves_a_key_name_in_the_title_rather_than_acting_on_it() {
 
 /// A model with a deep enough tree that the sidebar cannot show all of it.
 fn tall_tree(height: u16) -> Model {
-    let mut model = Model::new(&Config::example(), Scope::All, now(), (160, height));
+    let mut model = Model::new(&Config::example(), Scope::All, here(), (160, height));
     let _ = reload_everything(&mut model);
     answer(&mut model, vec![task(1, "first")]);
     let projects = (1..=20)

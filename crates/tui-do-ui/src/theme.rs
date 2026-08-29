@@ -8,7 +8,7 @@
 //! knows whether it is talking to a truecolor terminal, and `tui-do-ui` stays a pure
 //! function of what it is told.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use ratatui::style::{Color, Modifier, Style};
 
 /// How much colour the terminal can show.
@@ -206,13 +206,17 @@ impl Theme {
 
     /// How a due date reads, relative to `now`.
     #[must_use]
-    pub fn due(self, due: Option<DateTime<Utc>>, done: bool, now: DateTime<Utc>) -> Style {
+    pub fn due(self, due: Option<DateTime<Utc>>, done: bool, now: DateTime<FixedOffset>) -> Style {
         let Some(due) = due else {
             return self.muted();
         };
         if done {
             return self.muted();
         }
+        // Every question here is about the instant, not the calendar -- "is it past" and
+        // "is it within 48 hours" mean the same thing in any zone -- so the offset is
+        // dropped rather than honoured, unlike in `relative_date`.
+        let now = now.with_timezone(&Utc);
         if due < now {
             return self.error();
         }
@@ -272,6 +276,11 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
     }
 
+    /// The same instant as the reader's clock shows it.
+    fn here() -> DateTime<FixedOffset> {
+        now().fixed_offset()
+    }
+
     #[test]
     fn no_colour_means_no_colour() {
         let theme = Theme::new(ColorDepth::None);
@@ -324,13 +333,13 @@ mod tests {
         let tomorrow = now() + chrono::Duration::days(1);
         let next_month = now() + chrono::Duration::days(30);
 
-        assert_eq!(theme.due(Some(yesterday), false, now()), theme.error());
-        assert_eq!(theme.due(Some(tomorrow), false, now()), theme.warning());
-        assert_eq!(theme.due(Some(next_month), false, now()), theme.text());
-        assert_eq!(theme.due(None, false, now()), theme.muted());
+        assert_eq!(theme.due(Some(yesterday), false, here()), theme.error());
+        assert_eq!(theme.due(Some(tomorrow), false, here()), theme.warning());
+        assert_eq!(theme.due(Some(next_month), false, here()), theme.text());
+        assert_eq!(theme.due(None, false, here()), theme.muted());
 
         // An overdue task that is finished is not overdue.
-        assert_eq!(theme.due(Some(yesterday), true, now()), theme.muted());
+        assert_eq!(theme.due(Some(yesterday), true, here()), theme.muted());
     }
 
     #[test]
