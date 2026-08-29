@@ -824,16 +824,34 @@ fn is_permanent(error: &ApiError) -> bool {
 /// asking the server to attach a label id it has never issued. Exhaustive over
 /// [`Mutation`] rather than a wildcard arm, so a new variant fails to compile here rather
 /// than silently answering "does not reference this label".
+///
+/// Answers `false` for `CreateTask` and `UpdateTask` even though both carry a `labels`
+/// field that can genuinely hold the rejected id -- `UpdateTask.after.labels` reliably
+/// does, whenever the edit queued behind the attach touches a task that already carries
+/// the provisional label, because `Mutation::decompose` copies `before.labels` onto
+/// `after.labels` for exactly that case. It is reachable, not academic. What makes it
+/// safe to ignore is the wire, not the shape: `CLAUDE.md` records, measured, that a task
+/// body's `labels` field is ignored by the server, so an `UpdateTask` naming a phantom id
+/// there asks the server for nothing invalid. Discarding it anyway would destroy a title,
+/// a due date, whatever the user actually edited -- for a field that was never going to
+/// be sent. `CreateTask` is `false` for the same wire reason, and in addition never
+/// carries a live label by the time it reaches the queue: `decompose` splits any labels
+/// off into their own `AttachLabel` entries before a `CreateTask` is ever stored.
 fn references(mutation: &Mutation, label: LabelId) -> bool {
     match mutation {
         Mutation::AttachLabel { label: carried, .. }
         | Mutation::DetachLabel { label: carried, .. } => carried.id == label,
         Mutation::UpdateLabel { after, .. } => after.id == label,
-        Mutation::CreateTask { task } => task.labels.iter().any(|l| l.id == label),
-        Mutation::UpdateTask { after, .. } => after.labels.iter().any(|l| l.id == label),
-        // `CreateLabel` is the rejected entry itself, already caught by the subject
-        // match; a delete has no label to carry.
-        Mutation::CreateLabel { .. } | Mutation::DeleteTask { .. } => false,
+        // A queued `DeleteTask.before` can also carry the rejected label -- and
+        // `retarget_label` swaps it there too, for the same reason. `false` here is
+        // still right for what this function actually guards (the wire): a delete sends
+        // no body. Rolling one back does re-run `upsert_task(before)` locally, which can
+        // resurrect a label row the `CreateLabel` rollback just deleted; considered and
+        // left as a separate, narrower problem from the one this function solves.
+        Mutation::CreateTask { .. }
+        | Mutation::UpdateTask { .. }
+        | Mutation::CreateLabel { .. }
+        | Mutation::DeleteTask { .. } => false,
     }
 }
 
