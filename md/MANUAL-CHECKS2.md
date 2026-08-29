@@ -19,15 +19,25 @@ of them.
 
 | section | | last driven |
 |---|---|---|
-| **A1–A8** | the quick keys | never |
-| **B1–B9** | dates | never |
-| **C1** | `tui-do add` syntax | never |
-| **D1** | a task shown twice | seen once 2026-08-27, never reproduced |
-| **E1–E5** | short windows | **2026-08-28 — all pass** |
+| **A1–A8** | the quick keys | **2026-08-28 — all pass** |
+| **B1–B9** | dates | **2026-08-28 — all pass**, B8 and B9 on a re-run after fixes |
+| **C1** | `tui-do add` syntax | **2026-08-28 — pass** |
+| **D1** | a task shown twice | still unreproduced; see the section itself |
+| **E1–E6** | short windows | **2026-08-28 — all pass** |
 
-E was driven first because it needed nothing but a tiled terminal, and because three of
-the four defects found on 2026-08-27 lived there. E5 was added the same day and passed on
-its first drive.
+Part two was driven end to end for the first time on 2026-08-28, on the release binary.
+Two entries failed on the first pass and were fixed the same day — B9, which was
+implemented on one of its four surfaces, and E6, which was found by hand rather than by
+this file and added to it afterwards.
+
+**One anomaly is recorded and not explained.** During B8, task `#2100` (id 3951, titled
+"Freelance packet due") came back carrying a due date of 2027-08-26 that its title does
+not account for. `created` and `updated` are the same instant, so the date was set at
+creation rather than by a later `D`. Every B8 token was put through the parser afterwards
+— `p3`, `v1.2.3`, `covid-19`, `3rd`, `separate`, `13/13/26`, alone and appended to that
+exact title — and every one survives whole with no date invented. The input that produced
+it was not recorded and B8 passed on the re-run. If a title ever loses a word to a date
+again, **write down what was typed**: that is the one fact the stored row does not keep.
 
 ---
 
