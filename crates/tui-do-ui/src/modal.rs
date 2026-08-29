@@ -389,6 +389,10 @@ pub enum Submission {
     Due(String),
     /// Make these, exactly these, the selected task's labels.
     Labels(Vec<LabelId>),
+    /// Create a label with this title. Always an [`Outcome::Update`]: the form that
+    /// asked stays open, because the user is part-way through deciding one task's
+    /// labels and closing it would throw away every tick they had already made.
+    CreateLabel(String),
     /// Run the configured quick action at this index.
     QuickAction(usize),
 }
@@ -798,6 +802,14 @@ pub struct LabelsState {
     pub matches: Vec<usize>,
     /// Which match is highlighted, as a position in `matches`.
     pub selected: usize,
+    /// Titles this form has asked to create and has not yet seen come back.
+    ///
+    /// The interface never learns the provisional id a create was given —
+    /// `Store::queue` allocates it inside its own transaction — so between the
+    /// keystroke and the reload the form has no way to recognise its own label. This
+    /// is that gap, written down: it is what [`Self::absorb_created`] matches against,
+    /// and what stops [`Self::creatable`] offering the same title twice.
+    pub awaiting: Vec<String>,
 }
 
 impl LabelsState {
@@ -811,7 +823,83 @@ impl LabelsState {
             chosen: held,
             matches,
             selected: 0,
+            awaiting: Vec::new(),
         }
+    }
+
+    /// The title this form would create, if the user asked.
+    ///
+    /// `None` when the box is empty, when a label of that name already exists, or when
+    /// this form has already asked for it and is waiting for the reload. Offering a
+    /// duplicate is offering to make the pool worse: Vikunja will hold two labels with
+    /// one title without complaint, and the pool is global to every project, so the
+    /// mistake is everyone's and nobody's to clean up.
+    ///
+    /// The offer does *not* depend on the filter matching nothing. The filter is fuzzy,
+    /// so `next` matches an existing `next steps` — a user who wants a plain `next` is
+    /// looking at a non-empty list and still wants the key to work.
+    #[must_use]
+    pub fn creatable(&self) -> Option<&str> {
+        let typed = self.input.value().trim();
+        if typed.is_empty() {
+            return None;
+        }
+        if self
+            .labels
+            .iter()
+            .any(|label| label.title.eq_ignore_ascii_case(typed))
+        {
+            return None;
+        }
+        if self
+            .awaiting
+            .iter()
+            .any(|title| title.eq_ignore_ascii_case(typed))
+        {
+            return None;
+        }
+        Some(typed)
+    }
+
+    /// Take a fresh label snapshot, adopting and ticking what this form asked to create.
+    ///
+    /// The form holds its own clone of the label list, and has to: it also shows labels
+    /// the task carries that `model.data.labels` has not caught up with. So a reload
+    /// does not reach it, and this is how it hears about the label it asked for.
+    ///
+    /// Deliberately narrow on both counts. Only a title in `awaiting` is taken, because
+    /// a background sync reloads labels too and a form that absorbed everything would
+    /// reshuffle itself under a user mid-keystroke. And only those are *ticked*, because
+    /// ticking is an edit to this task: a label somebody created on another box has no
+    /// business landing on it.
+    ///
+    /// Matched by title rather than by id because the id is precisely what the interface
+    /// does not know — `Store::queue` allocates the provisional one inside its own
+    /// transaction. A title is not unique on the server, but [`Self::creatable`] refuses
+    /// to offer one this form can already see, so the title it waits for names at most
+    /// one label the form has not got.
+    pub fn absorb_created(&mut self, known: &[Label]) {
+        if self.awaiting.is_empty() {
+            return;
+        }
+        for label in known {
+            if self.labels.iter().any(|held| held.id == label.id) {
+                continue;
+            }
+            let Some(at) = self
+                .awaiting
+                .iter()
+                .position(|title| title.eq_ignore_ascii_case(&label.title))
+            else {
+                continue;
+            };
+            self.awaiting.remove(at);
+            self.labels.push(label.clone());
+            if !self.chosen.contains(&label.id) {
+                self.chosen.push(label.id);
+            }
+        }
+        self.refilter();
     }
 
     /// The label under the cursor.
@@ -860,6 +948,26 @@ impl ModalView for LabelsState {
             KeyCode::Char(' ') => {
                 self.toggle();
                 Outcome::Consumed
+            }
+            // Ctrl-N creates, and Enter above still means "apply the ticks I made". A
+            // fast typist filtering to a name that does not exist must not be able to
+            // add to a global label pool by reflex, so the two never share a key.
+            //
+            // Handled here rather than in `KEYMAP`, like Space and Enter above: the
+            // modal stack takes every key before the table is consulted, so a row there
+            // would be a row the user could not reach. What advertises it is the offer
+            // the form draws when — and only when — `creatable` is `Some`.
+            KeyCode::Char('n') if key.mods.contains(KeyModifiers::CONTROL) => {
+                match self.creatable() {
+                    Some(title) => {
+                        let title = title.to_string();
+                        self.awaiting.push(title.clone());
+                        Outcome::Update(Submission::CreateLabel(title))
+                    }
+                    // Nothing typed, or a label of that name already exists. Consumed
+                    // rather than passed to the field, which would ignore it anyway.
+                    None => Outcome::Consumed,
+                }
             }
             KeyCode::Down | KeyCode::Tab => {
                 if !self.matches.is_empty() {
@@ -1245,6 +1353,81 @@ mod tests {
         assert!(form.current().is_none());
         form.handle(key(' '));
         assert!(form.chosen.is_empty());
+    }
+
+    #[test]
+    fn a_label_form_with_no_match_offers_to_create_what_was_typed() {
+        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        for c in "next".chars() {
+            form.handle(key(c));
+        }
+        assert!(form.matches.is_empty());
+        assert_eq!(form.creatable(), Some("next"));
+
+        // Ctrl-N creates; Enter still ticks, so a fast typist cannot create by reflex.
+        assert_eq!(
+            form.handle(Key::ctrl('n')),
+            Outcome::Update(Submission::CreateLabel("next".to_string())),
+            "the form stays open: the user is still deciding this task's labels"
+        );
+        assert_eq!(
+            form.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::Labels(Vec::new())),
+            "and Enter still means 'apply the ticks I made'"
+        );
+    }
+
+    #[test]
+    fn a_form_does_not_offer_to_create_a_label_that_exists() {
+        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        for c in "urgent".chars() {
+            form.handle(key(c));
+        }
+        assert_eq!(form.creatable(), None);
+        assert_eq!(
+            form.handle(Key::ctrl('n')),
+            Outcome::Consumed,
+            "the key does nothing rather than making the global pool worse"
+        );
+    }
+
+    #[test]
+    fn a_form_does_not_offer_twice_while_the_first_create_is_still_in_flight() {
+        // The provisional id is allocated by the store, so the form cannot see the label
+        // it just asked for until the reload comes back. Without `awaiting`, a second
+        // Ctrl-N in that window queues a second `CreateLabel` for the same title -- two
+        // labels called `next` in a pool that is global to every project.
+        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        for c in "next".chars() {
+            form.handle(key(c));
+        }
+        assert!(matches!(form.handle(Key::ctrl('n')), Outcome::Update(_)));
+        assert_eq!(form.creatable(), None);
+        assert_eq!(form.handle(Key::ctrl('n')), Outcome::Consumed);
+    }
+
+    #[test]
+    fn an_empty_box_offers_nothing_and_a_created_label_comes_back_ticked() {
+        let mut form = LabelsState::new(Vec::new(), Vec::new());
+        assert_eq!(form.creatable(), None, "there is nothing to create yet");
+        assert_eq!(form.handle(Key::ctrl('n')), Outcome::Consumed);
+
+        for c in "next".chars() {
+            form.handle(key(c));
+        }
+        assert!(matches!(form.handle(Key::ctrl('n')), Outcome::Update(_)));
+
+        // The reload names it. Only what this form asked for is taken, and only that is
+        // ticked -- `other` was created on another box and is nobody's business here.
+        form.absorb_created(&[a_label(-1, "next"), a_label(7, "other")]);
+        assert_eq!(form.labels, vec![a_label(-1, "next")]);
+        assert_eq!(form.chosen, vec![LabelId(-1)]);
+        assert_eq!(form.current().map(|l| l.title.as_str()), Some("next"));
+
+        // And it is not offered a second time, nor taken a second time.
+        assert_eq!(form.creatable(), None);
+        form.absorb_created(&[a_label(-1, "next")]);
+        assert_eq!(form.labels.len(), 1);
     }
 
     #[test]

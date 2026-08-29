@@ -257,6 +257,81 @@ fn the_project_picker() {
 }
 
 #[test]
+fn the_label_form_and_its_offer_to_create() {
+    // `120x40-labels.txt` was blessed by a test that no longer calls `golden`, so the
+    // form's only screen-level coverage was a file nothing read. It is read again here,
+    // because this is the modal that grew a footer.
+    let mut model = fixture((120, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(
+        !drawn.contains("C-n"),
+        "an empty box has nothing to offer:\n{drawn}"
+    );
+    golden("120x40-labels.txt", &drawn);
+
+    // A name that no label has. `C-n` is advertised nowhere else -- the help modal is
+    // rendered from `KEYMAP`, and this is a key the modal handles itself -- so the offer
+    // is the whole of its discoverability.
+    for c in "next".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    let drawn = draw(&model);
+    assert!(drawn.contains("nothing matches"), "{drawn}");
+    assert!(drawn.contains("C-n creates \"next\""), "{drawn}");
+
+    // And a name one already has: the pool is global, so a duplicate is never offered.
+    for _ in 0.."next".len() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        );
+    }
+    for c in "urgent".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    let drawn = draw(&model);
+    assert!(!drawn.contains("C-n"), "urgent already exists:\n{drawn}");
+}
+
+#[test]
+fn a_label_form_over_an_empty_pool_invites_a_name_rather_than_blaming_the_filter() {
+    // What the deleted "No labels exist yet" toast used to say, now said inside the form
+    // that can actually do something about it.
+    let mut model = fixture((120, 40));
+    update(&mut model, Msg::LabelsLoaded(Vec::new()));
+    let id = model.query_id;
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id,
+            tasks: vec![Task {
+                id: TaskId(12),
+                project_id: ProjectId(1),
+                title: "Ship the release".to_string(),
+                ..Task::default()
+            }],
+        },
+    );
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(drawn.contains("no labels yet — type a name"), "{drawn}");
+    assert!(!drawn.contains("nothing matches"), "{drawn}");
+}
+
+#[test]
 fn the_command_palette() {
     let mut model = fixture((120, 40));
     update(

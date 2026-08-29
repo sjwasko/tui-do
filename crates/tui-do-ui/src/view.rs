@@ -929,8 +929,26 @@ fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
 
 /// The label form: every label, with the ones on the task ticked.
 fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme) {
+    // The only place `C-n` is ever advertised: it is a modal-local key, so the help
+    // modal — which is rendered from `KEYMAP` — cannot know about it. Shown exactly when
+    // it would do something, which is also when the user is looking for it.
+    let offer = state.creatable().map(|title| {
+        Line::from(vec![
+            Span::styled(" C-n ", theme.accent()),
+            Span::styled(
+                format!(
+                    "creates \"{}\"",
+                    rows::truncate(title, area.width.saturating_sub(15))
+                ),
+                theme.muted(),
+            ),
+        ])
+    });
+    // A row of its own, taken off the list rather than added to the box: `lines` is
+    // truncated to the height at the end, and a full list would otherwise push the offer
+    // off the bottom -- hiding the key precisely when it is being offered.
     let mut lines = vec![input_line(&state.input, theme)];
-    let rows = usize::from(area.height).saturating_sub(1);
+    let rows = usize::from(area.height).saturating_sub(1 + usize::from(offer.is_some()));
     let first = scrolled_to(state.selected, state.matches.len(), rows);
     for (position, index) in state.matches.iter().enumerate().skip(first) {
         let Some(label) = state.labels.get(*index) else {
@@ -957,11 +975,25 @@ fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme)
     }
     if state.matches.is_empty() {
         lines.push(Line::from(Span::styled(
-            " nothing matches".to_string(),
+            if state.labels.is_empty() {
+                // The case the deleted "No labels exist yet" toast used to cover. The
+                // form opens on an empty pool now, and "nothing matches" over an empty
+                // box reads as a broken filter rather than as an invitation.
+                " no labels yet — type a name".to_string()
+            } else {
+                " nothing matches".to_string()
+            },
             theme.muted(),
         )));
     }
-    lines.truncate(usize::from(area.height));
+    // Never below one: on a box clipped to a single row by a short terminal, what the
+    // user is typing outranks the offer to create it.
+    lines.truncate(
+        usize::from(area.height)
+            .saturating_sub(usize::from(offer.is_some()))
+            .max(1),
+    );
+    lines.extend(offer);
     frame.render_widget(Paragraph::new(lines), area);
     place_cursor(frame, area, &state.input, 2);
 }
