@@ -57,6 +57,12 @@ pub struct ServerApply {
     pub stored: usize,
     /// Tasks left alone because they have unsent local changes.
     pub skipped: usize,
+    /// The oldest `updated` among the tasks that were skipped.
+    ///
+    /// The pull saw these and chose not to store them, so the watermark must not move
+    /// past them or no incremental pull will ever ask for them again. See
+    /// [`crate::sync::Sync::pull_with`].
+    pub oldest_skipped: Option<DateTime<Utc>>,
 }
 
 /// How many tasks sit in one place, split by whether they are finished.
@@ -357,6 +363,17 @@ impl Store {
                     is_pending.query_row(params![task.id.get()], |row| row.get(0))?;
                 if pending == 1 {
                     applied.skipped += 1;
+                    // Remember how far back the watermark has to stay. Without this the
+                    // server's copy of a task with a queued change is dropped on the
+                    // floor and never asked for again: the pull advances past it, and
+                    // `updated` only moves when someone edits it *again*.
+                    if let Some(updated) = task.updated.get() {
+                        applied.oldest_skipped = Some(
+                            applied
+                                .oldest_skipped
+                                .map_or(updated, |oldest| oldest.min(updated)),
+                        );
+                    }
                     continue;
                 }
                 upsert_task(tx, task, now)?;

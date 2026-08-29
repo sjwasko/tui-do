@@ -248,6 +248,46 @@ async fn an_archived_project_and_its_tasks_survive_a_pull() {
 }
 
 #[tokio::test]
+async fn a_task_a_pull_skipped_stays_inside_the_next_pulls_window() {
+    // A pull leaves a task alone when a local change for it is still queued. It had been
+    // advancing the watermark past it anyway, so the server's version of that task was
+    // dropped and never asked for again -- `updated` only moves when someone edits it
+    // *again*, and by then the watermark was long past.
+    //
+    // On one machine that is a stale row. Across a fleet sharing one server it is worse:
+    // the stale row is what the next full-body write sends back, so it silently reverts
+    // whatever another box changed on that task.
+    let server = MockServer::start().await;
+    mount_pull(&server, vec![task_json(1, "the server's newer title")]).await;
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(1, "local")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(1, "local")),
+            after: Box::new(task(1, "what the user typed")),
+        })
+        .await
+        .unwrap();
+    let (sync, _rx) = engine(&server, &store);
+
+    let report = sync.pull().await.unwrap();
+    assert_eq!(
+        report.skipped, 1,
+        "the queued edit should have been protected"
+    );
+
+    // The task's own `updated` is 2026-08-01T10:00:00Z. The watermark must not have moved
+    // past it, or the next incremental pull asks a window this task is not in.
+    let watermark = store.last_pull().await.unwrap().expect("a watermark");
+    let task_updated = chrono::Utc.with_ymd_and_hms(2026, 8, 1, 10, 0, 0).unwrap();
+    assert!(
+        watermark <= task_updated,
+        "the watermark moved to {watermark}, past the {task_updated} of a task the pull \
+         skipped -- no incremental pull will ever ask for it again"
+    );
+}
+
+#[tokio::test]
 async fn a_pull_does_not_overwrite_an_edit_that_has_not_been_sent() {
     // The window this closes: the user edits, a scheduled pull fires before the push,
     // and the server's older copy lands on top of what they are looking at.
