@@ -21,7 +21,7 @@ use tui_do_api::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_api::{Client, Credentials};
 use tui_do_core::store::{Mutation, Store, LAST_PULL};
 use tui_do_core::sync::{Reach, Sync, SyncEvent};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const API: &str = "/api/v1";
@@ -155,6 +155,96 @@ async fn a_pull_fills_the_store_and_records_what_it_learned() {
     let seen = events(&mut rx);
     assert!(matches!(seen.first(), Some(SyncEvent::Started(_))));
     assert!(seen.iter().any(|e| matches!(e, SyncEvent::Progress { .. })));
+}
+
+#[tokio::test]
+async fn an_archived_project_and_its_tasks_survive_a_pull() {
+    // `GET /projects` omits archived projects unless asked for them, and `retain_projects`
+    // deletes every project the listing did not name *and cascades to its tasks*. So the
+    // one missing query parameter is a data-loss bug, and it runs on every pull -- both
+    // reaches call `pull_lists` unconditionally, so `Reach` does not contain it.
+    //
+    // The mock answers the two shapes differently, exactly as the server does: ask
+    // without the parameter and the archived project is simply not there. That is what
+    // makes this a regression test rather than a restatement of the client's behaviour.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/projects")))
+        .and(query_param("is_archived", "true"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([
+                    {"id": 1, "title": "Work", "views": null},
+                    {"id": 2, "title": "Last year", "is_archived": true, "views": null}
+                ]))
+                .append_header("x-pagination-total-pages", "1"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/projects")))
+        .and(query_param_is_missing("is_archived"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"id": 1, "title": "Work", "views": null}]))
+                .append_header("x-pagination-total-pages", "1"),
+        )
+        .mount(&server)
+        .await;
+    for (path_suffix, body) in [
+        (
+            "info",
+            json!({"version": "v2.5.0", "max_items_per_page": 50}),
+        ),
+        ("user", json!({"id": 1, "username": "swasko"})),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("{API}/{path_suffix}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    for (path_suffix, body) in [
+        ("labels", json!([])),
+        (
+            "tasks",
+            json!([{
+                "id": 9, "project_id": 2, "title": "filed away",
+                "done": false, "labels": null, "assignees": null,
+                "created": "2026-08-01T10:00:00Z", "updated": "2026-08-01T10:00:00Z"
+            }]),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("{API}/{path_suffix}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(body)
+                    .append_header("x-pagination-total-pages", "1"),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let store = Store::in_memory().unwrap();
+    let (sync, _rx) = engine(&server, &store);
+    sync.pull().await.unwrap();
+
+    let projects = store
+        .projects(Default::default(), Default::default())
+        .await
+        .unwrap();
+    assert!(
+        projects
+            .iter()
+            .any(|p| p.id == ProjectId(2) && p.is_archived),
+        "the archived project was deleted by the pull that was supposed to fetch it"
+    );
+    assert_eq!(
+        store.task_counts().await.unwrap().0,
+        1,
+        "the archived project's tasks were cascaded away with it"
+    );
 }
 
 #[tokio::test]
