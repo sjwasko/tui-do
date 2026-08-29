@@ -408,8 +408,18 @@ pub enum Submission {
     /// Both fields whether or not both were touched: a partial body clears what it omits,
     /// measured on dev 2026-08-29.
     EditedLabel {
-        /// Which label.
-        id: LabelId,
+        /// The label as the form opened over it, which becomes the mutation's `before`.
+        ///
+        /// Carried rather than looked up again, because `Label::merge_onto` decides "did
+        /// the user change this field" by comparing `before` with `after` -- so `before`
+        /// has to be *what the user started from*, not whatever the pool holds by the
+        /// time they press Enter. `Msg::LabelsLoaded` fires on every pull, rename and
+        /// rejection, and the open form is deliberately not refreshed from it, so the two
+        /// genuinely differ: with a re-read `before`, a colour another box changed while
+        /// this form was open reads as *this* user's edit and gets overwritten with a
+        /// value they never typed, and an Enter over a rename that landed underneath
+        /// queues a write that reverts it.
+        before: Box<Label>,
         /// Its new title.
         title: String,
         /// Its new colour: six hex digits, or empty for "the interface picks one".
@@ -1212,7 +1222,7 @@ impl ModalView for LabelEditState {
                     Outcome::Consumed
                 }
                 None => Outcome::Submit(Submission::EditedLabel {
-                    id: self.label.id,
+                    before: Box::new(self.label.clone()),
                     title: self.typed_title().to_string(),
                     hex_color: self.colour().to_string(),
                 }),
@@ -1222,10 +1232,16 @@ impl ModalView for LabelEditState {
                 Outcome::Consumed
             }
             _ => {
-                // A refusal that outlived the keystroke that fixed it would be a form
-                // shouting about a mistake the user has already corrected.
-                if self.current().press(key) {
-                    self.error = None;
+                let typed = self.current().press(key);
+                // Re-derived rather than cleared, because the two are not the same thing:
+                // the message is about a *field*, and typing in the other one does not
+                // fix it. Clearing on any keystroke made a bad colour's message vanish as
+                // soon as the user tabbed back to the title and typed, leaving the hint
+                // row saying only the generic rule until the next Enter reported the same
+                // refusal again. Asked only while one stands, so a half-typed colour is
+                // never nagged about before Enter.
+                if typed && self.error.is_some() {
+                    self.error = self.refusal();
                 }
                 Outcome::Consumed
             }
@@ -1717,7 +1733,7 @@ mod tests {
         assert_eq!(
             form.handle(code(KeyCode::Enter)),
             Outcome::Submit(Submission::EditedLabel {
-                id: LabelId(41),
+                before: Box::new(a_coloured_label(41, "next", "4287f5")),
                 title: "next up".to_string(),
                 hex_color: "4287f5".to_string(),
             })
@@ -1741,7 +1757,7 @@ mod tests {
         assert_eq!(
             form.handle(code(KeyCode::Enter)),
             Outcome::Submit(Submission::EditedLabel {
-                id: LabelId(41),
+                before: Box::new(a_coloured_label(41, "next", "4287f5")),
                 title: "next".to_string(),
                 hex_color: "e8384f".to_string(),
             })
@@ -1768,8 +1784,22 @@ mod tests {
             form.error
         );
 
-        // And the message does not outlive the mistake it is about.
-        form.handle(code(KeyCode::Backspace));
+        // Typing in the *other* field does not fix a bad colour, so the message stands.
+        form.handle(code(KeyCode::Tab));
+        for c in "!".chars() {
+            form.handle(key(c));
+        }
+        assert!(
+            form.error.is_some(),
+            "the title has nothing to do with the colour"
+        );
+
+        // And it does not outlive the mistake it is actually about.
+        form.handle(code(KeyCode::Tab));
+        form.handle(Key::ctrl('u'));
+        for c in "e8384f".chars() {
+            form.handle(key(c));
+        }
         assert!(form.error.is_none());
     }
 
@@ -1785,7 +1815,7 @@ mod tests {
         assert_eq!(
             cleared.handle(code(KeyCode::Enter)),
             Outcome::Submit(Submission::EditedLabel {
-                id: LabelId(41),
+                before: Box::new(a_coloured_label(41, "next", "4287f5")),
                 title: "next".to_string(),
                 hex_color: String::new(),
             })
@@ -1795,7 +1825,7 @@ mod tests {
         assert_eq!(
             hashed.handle(code(KeyCode::Enter)),
             Outcome::Submit(Submission::EditedLabel {
-                id: LabelId(41),
+                before: Box::new(a_coloured_label(41, "next", "#4287f5")),
                 title: "next".to_string(),
                 hex_color: "4287f5".to_string(),
             })
