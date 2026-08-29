@@ -9,7 +9,7 @@ use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_do_core::config::columns::ColumnLayout;
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
-use tui_do_core::store::{Mutation, ProjectCounts, TaskCount, TaskOrder};
+use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, TaskCount, TaskOrder};
 use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use tui_do_core::{Config, SyncEvent};
 use tui_do_ui::keymap::Key;
@@ -1608,8 +1608,21 @@ fn the_queued_count_is_read_from_the_store_not_carried_forward() {
         "queueing a change must re-read the queue"
     );
 
-    update(&mut model, Msg::PendingLoaded(4));
+    update(
+        &mut model,
+        Msg::PendingLoaded(QueueHealth {
+            queued: 4,
+            failing: 2,
+            last_error: Some("connection refused".to_string()),
+        }),
+    );
     assert_eq!(model.status.queued, 4);
+    // A count that will not go down reads as progress unless the trouble is named.
+    assert_eq!(model.status.failing, 2);
+    assert_eq!(
+        model.status.queue_error.as_deref(),
+        Some("connection refused")
+    );
 }
 
 #[test]

@@ -308,20 +308,35 @@ impl Sync {
     pub async fn push(&self) -> Result<PushReport> {
         self.emit(SyncEvent::Started(Phase::Push));
         let mut report = PushReport::default();
-        let mut previous: Option<i64> = None;
+        // Ordering is a contract *per task*: two edits to one task must arrive in the
+        // order they were made, or the server ends in a state the queue never described.
+        // Two edits to *different* tasks have no such relationship. Stopping the whole
+        // queue at the first failure honoured the contract by giving up far more than it
+        // required -- one unreachable task, or one entry the server keeps 500ing on,
+        // held back every other change the user had made. On a fleet, where a box may
+        // carry a long backlog, that is the difference between one stuck task and a box
+        // that has stopped syncing.
+        let mut blocked: std::collections::HashSet<tui_do_api::models::TaskId> =
+            std::collections::HashSet::new();
+        // Guards against an entry that survives its own successful send, which would
+        // otherwise spin this loop against the server forever.
+        let mut attempted: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let now = chrono::Utc::now();
 
         loop {
             let pending = self.store.pending(None).await?;
-            let Some(entry) = pending.first().cloned() else {
+            let Some(entry) = pending
+                .iter()
+                .find(|queued| {
+                    !attempted.contains(&queued.id)
+                        && !blocked.contains(&queued.mutation.subject())
+                        && queued.is_due(now)
+                })
+                .cloned()
+            else {
                 break;
             };
-            // An entry that survives a successful send would spin this loop against the
-            // server forever. It cannot happen, and if it ever does it stops here.
-            if previous == Some(entry.id) {
-                tracing::error!(entry = entry.id, "a sent entry stayed queued; stopping");
-                break;
-            }
-            previous = Some(entry.id);
+            attempted.insert(entry.id);
 
             match self.deliver(&entry).await? {
                 Ok(()) => report.sent += 1,
@@ -352,20 +367,27 @@ impl Sync {
                     });
                 }
                 Err(error) => {
-                    // An ordered queue: stop rather than send what comes after it.
+                    // Block this task and move on to the next one. Anything else queued
+                    // for the same task stays behind it, which is the part of the
+                    // ordering that actually matters.
+                    let subject = entry.mutation.subject();
                     let message = error.to_string();
-                    self.store.defer(entry.id, message.clone()).await?;
-                    report.deferred = pending.len();
-                    tracing::debug!(error = %message, "deferring the queue");
+                    self.store
+                        .defer(entry.id, message.clone(), error.retry_after())
+                        .await?;
+                    blocked.insert(subject);
+                    tracing::debug!(%subject, error = %message, "deferring this task's queue");
                     self.emit(SyncEvent::Failed {
                         phase: Phase::Push,
                         message,
                     });
-                    break;
                 }
             }
         }
 
+        // Whatever is still in the queue when the drain runs out of eligible entries:
+        // blocked tasks, entries still inside their backoff, and anything behind them.
+        report.deferred = usize::try_from(self.store.pending_count().await?).unwrap_or(0);
         self.emit(SyncEvent::Pushed(report));
         Ok(report)
     }

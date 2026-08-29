@@ -153,7 +153,7 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX project_views_by_project ON project_views (project_id);
     ",
-    // v2 -- reminders.
+    // v3 -- reminders.
     //
     // Not a display feature: `POST /tasks/{id}` replaces a task's reminders from the
     // request body, the way it replaces assignees, and `Task` serialises every field. So
@@ -171,6 +171,15 @@ const MIGRATIONS: &[&str] = &[
         relative_period INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (task_id, reminder, relative_period)
     );
+    ",
+    // v4 -- when a deferred outbox entry may be tried again.
+    //
+    // `attempts` was counted from the beginning and never read: a failing entry was
+    // retried at full speed on every pass, and the only thing keeping that from being a
+    // hot loop was the thirty-second floor on the sync timer. NULL means "as soon as
+    // possible", which is what every existing row means.
+    r"
+    ALTER TABLE outbox ADD COLUMN next_attempt_at TEXT;
     ",
 ];
 

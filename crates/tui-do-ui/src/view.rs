@@ -515,6 +515,14 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
                     format!(" · {} queued", model.status.queued),
                     theme.warning(),
                 ));
+                // "3 queued" while the server is refusing all three reads as progress. It
+                // is not, and the count alone never goes down to say so.
+                if model.status.failing > 0 {
+                    spans.push(Span::styled(
+                        format!(" ({} failing)", model.status.failing),
+                        theme.error(),
+                    ));
+                }
             }
             if model.query.search.is_some() {
                 spans.push(Span::styled(" · filtered", theme.accent()));

@@ -193,6 +193,14 @@ pub struct Status {
     pub last_sync: Option<DateTime<FixedOffset>>,
     /// Local changes not yet accepted by the server.
     pub queued: usize,
+    /// How many of those have already failed at least once.
+    ///
+    /// Shown separately because "3 queued" while the server is refusing them reads as
+    /// progress, and it is not. The outbox recorded `attempts` and `last_error` from the
+    /// first commit and nothing ever displayed them.
+    pub failing: usize,
+    /// What the most recent queue failure said.
+    pub queue_error: Option<String>,
     /// The current transient message, if any.
     pub toast: Option<Toast>,
 }

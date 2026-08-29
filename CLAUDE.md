@@ -51,6 +51,22 @@ A queued `UpdateTask` is *not* sent as it was queued. The push reads the server'
 copy and replays the user's field-level change onto it (`Task::merge_onto`), because
 tui-do is multi-instance — see below.
 
+**A failure blocks one task, not the queue.** Ordering is a contract *within* a task —
+two edits to one task must arrive in order — and not between tasks, which have no causal
+relationship. The drain used to stop dead at the first failure, so one unreachable task
+held back every other change the user had made. It now blocks that task's subject and
+carries on.
+
+**A failed entry waits before it is retried.** `attempts` was recorded from the first
+commit and never read by anything; `store::outbox::backoff` now schedules
+`next_attempt_at`, exponential from 5s to a 15-minute ceiling, and the server's
+`Retry-After` wins when it sent one. There is deliberately **no** attempt cap and no
+dead-letter: a permanent failure is a 4xx, which `is_permanent` already rolls back, so
+what is left retrying is a 5xx or a transport error — things that may genuinely recover,
+and discarding a user's edit because a server was down for a day is not tui-do's decision
+to make. `Store::queue_health` reports how many are failing and why, and the status line
+says `3 queued (1 failing)`.
+
 ## Wire-format facts the spec does not tell you
 
 The OpenAPI document describes what the server *means*, not what it *emits*. Each of these
@@ -121,7 +137,7 @@ the spec does not say so, and marks only `attachments` and `labels` read-only.
 reminders went to the server carrying `"reminders": []`, and the server deleted them:
 renaming a task destroyed its reminders, silently, every time. Measured on dev
 2026-08-29 (one reminder in, zero out). The store keeps them now — `task_reminders`,
-schema v2 — so the body carries them back, and
+schema v3 — so the body carries them back, and
 `a_task_update_replaces_reminders_from_the_body` asserts both halves: carrying them
 preserves them, and sending `[]` still clears them.
 

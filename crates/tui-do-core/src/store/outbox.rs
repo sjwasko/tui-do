@@ -33,8 +33,10 @@
 //! replays both, creating a duplicate task or re-deleting a label that is already gone.
 //! One entry, one request, so a retry means exactly what it says.
 
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use tui_do_api::models::{Label, Task, TaskId};
 
@@ -294,9 +296,101 @@ pub struct OutboxEntry {
     pub attempts: i64,
     /// What went wrong last time, for the UI to show.
     pub last_error: Option<String>,
+    /// The earliest this may be tried again, or `None` for "as soon as possible".
+    ///
+    /// Set by [`Store::defer`] from the backoff schedule, or from the server's
+    /// `Retry-After` when it sent one.
+    pub next_attempt_at: Option<DateTime<Utc>>,
+}
+
+impl OutboxEntry {
+    /// Whether the backoff has elapsed and this may be sent.
+    #[must_use]
+    pub fn is_due(&self, now: DateTime<Utc>) -> bool {
+        self.next_attempt_at.is_none_or(|at| at <= now)
+    }
+
+    /// Whether this entry has failed at least once and is waiting to be retried.
+    #[must_use]
+    pub const fn is_failing(&self) -> bool {
+        self.attempts > 0
+    }
+}
+
+/// The shortest wait before a failed entry is tried again.
+const BACKOFF_FLOOR: Duration = Duration::from_secs(5);
+
+/// The longest. A server that has been down for an hour is not helped by being asked
+/// every five seconds, and the user is not helped by waiting a day after it comes back.
+const BACKOFF_CEILING: Duration = Duration::from_secs(15 * 60);
+
+/// How long to wait before attempt number `attempts`.
+///
+/// Exponential from [`BACKOFF_FLOOR`], capped at [`BACKOFF_CEILING`]. `attempts` was
+/// recorded from the first commit and never read, so a failing entry was retried at
+/// full speed on every pass; the only thing keeping that from being a hot loop was the
+/// thirty-second floor on the sync timer.
+///
+/// No jitter, deliberately: every box in a fleet keeps its own queue and fails at its own
+/// time, so there is no thundering herd to spread out, and a predictable delay is easier
+/// to explain to someone watching a status line.
+fn backoff(attempts: i64) -> Duration {
+    let steps = u32::try_from(attempts.saturating_sub(1).clamp(0, 16)).unwrap_or(0);
+    BACKOFF_FLOOR
+        .saturating_mul(2_u32.saturating_pow(steps))
+        .min(BACKOFF_CEILING)
+}
+
+/// What the outbox looks like, for the status line.
+///
+/// `failing` and `last_error` exist because `attempts` and `last_error` were recorded
+/// from the first commit and never read by anything. A change that the server kept
+/// refusing sat in the queue with the user told nothing beyond a count that would not go
+/// down.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueueHealth {
+    /// Everything still waiting to be sent.
+    pub queued: usize,
+    /// How many of those have failed at least once.
+    pub failing: usize,
+    /// What the most recent failure said, if any.
+    pub last_error: Option<String>,
 }
 
 impl Store {
+    /// How many changes are queued, and how many of them are in trouble.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn queue_health(&self) -> Result<QueueHealth> {
+        self.read(|connection| {
+            let queued: i64 =
+                connection.query_row("SELECT count(*) FROM outbox", [], |row| row.get(0))?;
+            let failing: i64 = connection.query_row(
+                "SELECT count(*) FROM outbox WHERE attempts > 0",
+                [],
+                |row| row.get(0),
+            )?;
+            // The most recently recorded failure, which is the one worth showing: an
+            // older entry's error is usually the same outage seen earlier.
+            let last_error: Option<String> = connection
+                .query_row(
+                    "SELECT last_error FROM outbox
+                      WHERE last_error IS NOT NULL
+                      ORDER BY id DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(QueueHealth {
+                queued: usize::try_from(queued).unwrap_or(0),
+                failing: usize::try_from(failing).unwrap_or(0),
+                last_error,
+            })
+        })
+        .await
+    }
+
     /// Apply `mutation` locally and queue it for the server, in one transaction.
     ///
     /// Returns the entry for the change itself. It may not be the only row written: a
@@ -339,6 +433,7 @@ impl Store {
                     mutation: part,
                     attempts: 0,
                     last_error: None,
+                    next_attempt_at: None,
                 };
                 first.get_or_insert(entry);
             }
@@ -362,8 +457,12 @@ impl Store {
     /// [`crate::CoreError::Encoding`] if a stored payload cannot be parsed.
     pub async fn pending(&self, limit: Option<u32>) -> Result<Vec<OutboxEntry>> {
         self.read(move |connection| {
+            // `next_attempt_at` in the future means a previous attempt failed and the
+            // backoff has not elapsed. Filtered in SQL rather than in the caller so
+            // `pending_count` and the drain loop cannot disagree about what is ready.
             let mut sql = String::from(
-                "SELECT id, created, payload, attempts, last_error FROM outbox ORDER BY id ASC",
+                "SELECT id, created, payload, attempts, last_error, next_attempt_at
+                   FROM outbox ORDER BY id ASC",
             );
             if let Some(limit) = limit {
                 sql.push_str(&format!(" LIMIT {limit}"));
@@ -376,12 +475,13 @@ impl Store {
                     row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             })?;
 
             let mut entries = Vec::new();
             for row in rows {
-                let (id, created, payload, attempts, last_error) = row?;
+                let (id, created, payload, attempts, last_error, next_attempt_at) = row?;
                 entries.push(OutboxEntry {
                     id,
                     created: DateTime::parse_from_rfc3339(&created)
@@ -390,6 +490,11 @@ impl Store {
                     mutation: serde_json::from_str(&payload)?,
                     attempts,
                     last_error,
+                    next_attempt_at: next_attempt_at.as_deref().and_then(|text| {
+                        DateTime::parse_from_rfc3339(text)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
                 });
             }
             Ok(entries)
@@ -510,11 +615,29 @@ impl Store {
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
-    pub async fn defer(&self, entry: i64, error: String) -> Result<()> {
+    pub async fn defer(
+        &self,
+        entry: i64,
+        error: String,
+        retry_after: Option<Duration>,
+    ) -> Result<()> {
         self.write(move |tx| {
+            let attempts: i64 = tx
+                .query_row(
+                    "SELECT attempts FROM outbox WHERE id = ?1",
+                    params![entry],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let wait = retry_after.unwrap_or_else(|| backoff(attempts + 1));
+            let next =
+                Utc::now() + chrono::TimeDelta::from_std(wait).unwrap_or(chrono::TimeDelta::zero());
             tx.execute(
-                "UPDATE outbox SET attempts = attempts + 1, last_error = ?1 WHERE id = ?2",
-                params![error, entry],
+                "UPDATE outbox
+                    SET attempts = attempts + 1, last_error = ?1, next_attempt_at = ?2
+                  WHERE id = ?3",
+                params![error, next.to_rfc3339(), entry],
             )?;
             Ok(())
         })
@@ -596,6 +719,21 @@ mod tests {
             title: title.to_string(),
             ..Label::default()
         }
+    }
+
+    #[test]
+    fn the_backoff_grows_and_then_stops_growing() {
+        // Exponential from the floor so a blip costs seconds, capped so an outage that
+        // lasted an hour does not leave the user waiting a day after it clears.
+        assert_eq!(backoff(1), BACKOFF_FLOOR);
+        assert_eq!(backoff(2), BACKOFF_FLOOR * 2);
+        assert_eq!(backoff(3), BACKOFF_FLOOR * 4);
+        assert_eq!(backoff(100), BACKOFF_CEILING, "it has to stop somewhere");
+        // The shift is bounded before it is applied, so a large count cannot overflow it
+        // into a small wait.
+        assert_eq!(backoff(i64::MAX), BACKOFF_CEILING);
+        assert_eq!(backoff(0), BACKOFF_FLOOR);
+        assert_eq!(backoff(-1), BACKOFF_FLOOR);
     }
 
     #[tokio::test]
@@ -881,7 +1019,7 @@ mod tests {
             .unwrap();
 
         store
-            .defer(entry.id, "connection refused".into())
+            .defer(entry.id, "connection refused".into(), None)
             .await
             .unwrap();
 

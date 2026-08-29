@@ -233,8 +233,8 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         Effect::LoadPending => {
             let (store, tx) = (store.clone(), tx.clone());
             tokio::spawn(async move {
-                if let Ok(pending) = store.pending_count().await {
-                    let _ = tx.send(Msg::PendingLoaded(pending.try_into().unwrap_or(0)));
+                if let Ok(health) = store.queue_health().await {
+                    let _ = tx.send(Msg::PendingLoaded(health));
                 }
             });
         }
