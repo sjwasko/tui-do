@@ -174,9 +174,14 @@ pub enum SyncEvent {
     /// since this box last pulled. The user's value wins -- refusing it would lose what
     /// they just typed, and they are the one sitting there -- but overwriting someone
     /// silently is how a fleet loses work nobody can account for.
+    ///
+    /// A [`Subject`] rather than a `TaskId` because a label is overwritable on exactly
+    /// the same terms: `POST /labels/{id}` replaces the label from the body, there is no
+    /// conditional write to ask for, and two boxes renaming one label collide the way two
+    /// boxes renaming one task do.
     Overwrote {
-        /// The task that was written.
-        subject: TaskId,
+        /// What was written.
+        subject: Subject,
         /// The names of the fields whose concurrent change was overwritten.
         fields: Vec<String>,
     },
@@ -250,6 +255,8 @@ enum Sent {
     /// Which may be the copy an *earlier* attempt of the same entry created: a retry
     /// reads before it writes, and what it finds is settled exactly as a fresh create is.
     LabelCreated(Box<Label>),
+    /// A label was renamed or recoloured, and this is the server's copy of it.
+    LabelUpdated(Box<Label>),
     /// It landed and there is nothing to store.
     Done,
 }
@@ -453,6 +460,19 @@ impl Sync {
                     self.store.upsert_tasks(vec![*updated]).await?;
                 }
             }
+            (Sent::LabelUpdated(updated), Mutation::UpdateLabel { after, .. }) => {
+                self.store.complete(entry.id).await?;
+                // Worth keeping for the same reason the task answer is, and with the same
+                // guard. The answer carries the *merged* label -- including whatever
+                // fields another box changed that this edit did not touch -- so storing
+                // it is how the user's picker learns about the colour someone else set,
+                // instead of waiting for the next pull. And only once nothing else is
+                // queued for this label, or the first of two renames would put its title
+                // back over the second.
+                if !self.store.is_pending_label(after.id).await? {
+                    self.store.upsert_labels(vec![*updated]).await?;
+                }
+            }
             _ => self.store.complete(entry.id).await?,
         }
         Ok(Ok(()))
@@ -482,7 +502,7 @@ impl Sync {
                 let merged = after.merge_onto(before, current);
                 if !merged.collisions.is_empty() {
                     self.emit(SyncEvent::Overwrote {
-                        subject: after.id,
+                        subject: Subject::Task(after.id),
                         fields: merged.collisions.iter().map(|f| (*f).to_string()).collect(),
                     });
                 }
@@ -543,6 +563,28 @@ impl Sync {
                     }
                 }
                 Sent::LabelCreated(Box::new(self.client.create_label(label).await?))
+            }
+            Mutation::UpdateLabel { before, after } => {
+                // Read, merge, write -- the same as `UpdateTask` and for the same
+                // reasons. A partial body clears what it omits (measured on dev
+                // 2026-08-29: a `POST /labels/12` carrying only `title` cleared
+                // `hex_color` to ""), so a write must carry the whole label; and Vikunja
+                // offers no conditional write, so a whole label assembled from what this
+                // box last saw reverts whatever another box changed since. With a fleet
+                // against one server that is the ordinary case, not a race.
+                //
+                // A 404 here means the label was deleted elsewhere, and
+                // `is_already_done` treats that as the outcome the entry wanted rather
+                // than as a rejection to roll back.
+                let current = self.client.label(after.id).await?;
+                let merged = after.merge_onto(before, current);
+                if !merged.collisions.is_empty() {
+                    self.emit(SyncEvent::Overwrote {
+                        subject: Subject::Label(after.id),
+                        fields: merged.collisions.iter().map(|f| (*f).to_string()).collect(),
+                    });
+                }
+                Sent::LabelUpdated(Box::new(self.client.update_label(&merged.label).await?))
             }
         })
     }
@@ -771,18 +813,27 @@ fn is_permanent(error: &ApiError) -> bool {
 /// rejections would roll the change back — resurrecting a task the user deliberately
 /// deleted, or putting back a label they took off while telling them it failed.
 ///
-/// The three shapes are **measured against the dev instance, not inferred**, because the
-/// spec describes none of them:
+/// The shapes are **measured against the dev instance, not inferred**, because the spec
+/// describes none of them:
 ///
-/// | asked | answered |
-/// |---|---|
-/// | delete a task that is already gone | `404` |
-/// | attach a label that is already attached | `400`, Vikunja code `8001`, "This label already exists on the task." |
-/// | detach a label that is already detached | **`403 Forbidden`**, with no code and no message beyond "Forbidden" |
+/// | asked | answered | when |
+/// |---|---|---|
+/// | delete a task that is already gone | `404` | 2026-08-24 |
+/// | attach a label that is already attached | `400`, Vikunja code `8001`, "This label already exists on the task." | 2026-08-24 |
+/// | detach a label that is already detached | **`403 Forbidden`**, with no code and no message beyond "Forbidden" | 2026-08-24 |
+/// | rename a label that is already gone | `404`, Vikunja code `8002`, "This label does not exist." | 2026-08-29 |
+/// | delete a label that is already gone | `404`, code `8002`, the same | 2026-08-29 |
 ///
-/// That last one is the surprise, and it is why this function exists in this shape: the
-/// obvious reading of "already detached" is `404`, and a client that assumes it undoes a
-/// detach the user asked for every time a retry replays.
+/// The rename is the one a fleet actually produces: box A deletes a label, box B's queued
+/// rename replays against it. Without the arm the `404` is a 4xx like any other, so the
+/// rename rolls back — putting the old title on a local row for a label the server no
+/// longer has, and toasting an error about it. The delete row is measured and recorded
+/// here for the `DeleteLabel` that does not exist yet; there is deliberately no arm for a
+/// mutation that cannot be queued.
+///
+/// The detach's `403` is the surprise, and it is why this function exists in this shape:
+/// the obvious reading of "already detached" is `404`, and a client that assumes it undoes
+/// a detach the user asked for every time a retry replays.
 ///
 /// Treating *any* `403` on a detach as "already done" does swallow a genuine permission
 /// failure, and that is the deliberate trade: the label is then still on the server's
@@ -804,6 +855,9 @@ fn is_already_done(mutation: &Mutation, error: &ApiError) -> bool {
     /// Vikunja's code for "this label already exists on the task".
     const LABEL_ALREADY_ATTACHED: i64 = 8001;
 
+    /// Vikunja's code for "this label does not exist".
+    const LABEL_GONE: i64 = 8002;
+
     matches!(
         (mutation, error),
         (
@@ -815,6 +869,18 @@ fn is_already_done(mutation: &Mutation, error: &ApiError) -> bool {
                 ApiError::Rejected {
                     status: 400,
                     code: Some(LABEL_ALREADY_ATTACHED),
+                    ..
+                },
+            )
+            // Keyed on the code, not on the status alone -- unlike the task delete above,
+            // where a 404 can only mean the task. A rename reads before it writes, so a
+            // 404 here could come from either request, and a 404 that means something
+            // else is a real rejection the user should hear about.
+            | (
+                Mutation::UpdateLabel { .. },
+                ApiError::Rejected {
+                    status: 404,
+                    code: Some(LABEL_GONE),
                     ..
                 },
             )

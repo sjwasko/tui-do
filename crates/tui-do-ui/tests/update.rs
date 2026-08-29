@@ -2445,3 +2445,43 @@ fn marking_done_leaves_the_row_in_place_when_done_tasks_are_shown() {
         "nothing should have left the list"
     );
 }
+
+#[test]
+fn undoing_a_label_rename_renames_the_chips_on_screen() {
+    // `apply_locally` is what makes an edit visible before the store answers, and a label
+    // lives on screen in two places: the picker, which reads the store, and the chips on
+    // the rows in the list, which do not. A rename that only reached the store would
+    // leave the old title on every task carrying the label until the next reload.
+    //
+    // Driven through `u` because that is the only path the interface has to an
+    // `UpdateLabel` today -- the label editor lands later in the phase -- and it exercises
+    // `undo_text` at the same time.
+    let mut model = loaded();
+    model.data.tasks[0].labels = vec![label(7, "next up")];
+    model.data.tasks[2].labels = vec![label(9, "unrelated")];
+    model.undo.push(Mutation::UpdateLabel {
+        before: Box::new(label(7, "next up")),
+        after: Box::new(label(7, "next")),
+    });
+
+    let effects = press(&mut model, 'u');
+
+    assert_eq!(
+        model.data.tasks[0].labels[0].title, "next",
+        "the chip on the row still shows the old title"
+    );
+    assert_eq!(
+        model.data.tasks[2].labels[0].title, "unrelated",
+        "a label the rename did not name was rewritten"
+    );
+    // And it is queued like any other change, rather than being a screen-only edit.
+    match applied(&effects).expect("the undo queues the inverse rename") {
+        Mutation::UpdateLabel { before, after } => {
+            assert_eq!(before.title, "next up");
+            assert_eq!(after.title, "next");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("next"), "{}", toast.text);
+}

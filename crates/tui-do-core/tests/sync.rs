@@ -21,7 +21,7 @@ use tui_do_api::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_api::{Client, Credentials};
 use tui_do_core::store::{LabelFilter, LabelSort, Mutation, Store, Subject, LAST_PULL};
 use tui_do_core::sync::{Reach, Sync, SyncEvent};
-use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+use wiremock::matchers::{body_partial_json, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const API: &str = "/api/v1";
@@ -1536,4 +1536,264 @@ async fn the_watermark_is_stamped_from_before_the_requests_not_after() {
 
     let stamped = store.last_pull().await.unwrap().expect("a watermark");
     assert!(stamped >= before && stamped <= after);
+}
+
+#[tokio::test]
+async fn a_label_update_replays_the_edit_onto_the_servers_copy() {
+    // Read, merge, write -- the same as an `UpdateTask` and for the same reasons. A
+    // partial body clears what it omits (measured on dev 2026-08-29: a `POST /labels/12`
+    // carrying only `title` cleared `hex_color` to ""), and Vikunja has no conditional
+    // write, so a body assembled from what this box last saw reverts whatever another box
+    // changed since.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id": 41, "title": "next", "hex_color": "4287f5", "description": ""}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/labels/41")))
+        // The assertion that matters: the local `before` and `after` both say `aaaaaa`,
+        // and the request has to carry the server's `4287f5` -- the colour another box
+        // set, which a rename must not revert.
+        .and(body_partial_json(
+            json!({"id": 41, "title": "next up", "hex_color": "4287f5"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id": 41, "title": "next up", "hex_color": "4287f5", "description": ""}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let was = Label {
+        id: LabelId(41),
+        title: "next".into(),
+        hex_color: "aaaaaa".into(),
+        ..Label::default()
+    };
+    store.upsert_labels(vec![was.clone()]).await.unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(was.clone()),
+            after: Box::new(Label {
+                title: "next up".into(),
+                ..was
+            }),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+
+    // The server's answer is stored, so the colour the merge preserved is what the label
+    // picker shows -- without this the local row still reads `aaaaaa` until the next pull.
+    let stored = store.label(LabelId(41)).await.unwrap().expect("the label");
+    assert_eq!(stored.title, "next up");
+    assert_eq!(stored.hex_color, "4287f5");
+}
+
+#[tokio::test]
+async fn a_genuine_label_collision_is_written_and_the_user_is_told() {
+    // Both boxes renamed the same label. The user's value wins -- refusing would lose what
+    // they just typed -- but the field is named, because overwriting someone in silence is
+    // how a fleet loses work nobody can account for. The subject is a `Subject`, not a
+    // `TaskId`: a label is a thing that can be overwritten too.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"id": 41, "title": "renamed by another box"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": 41, "title": "renamed here"})),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_labels(vec![label(41, "next")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(41, "next")),
+            after: Box::new(label(41, "renamed here")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, mut rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+
+    let overwrote = events(&mut rx)
+        .into_iter()
+        .find_map(|event| match event {
+            SyncEvent::Overwrote { subject, fields } => Some((subject, fields)),
+            _ => None,
+        })
+        .expect("a collision on the title should have been reported");
+    assert_eq!(
+        overwrote,
+        (Subject::Label(LabelId(41)), vec!["title".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn renaming_a_label_that_is_already_gone_is_not_undone() {
+    // Measured on dev 2026-08-29: renaming a label another box deleted answers `404` with
+    // Vikunja code `8002`, "This label does not exist." A 4xx is otherwise final, so
+    // without the arm a replayed rename rolls the local row back to a title the user
+    // deliberately changed -- and toasts an error for a label that no longer exists to
+    // have a title at all.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "code": 8002, "message": "This label does not exist."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_labels(vec![label(41, "next")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(41, "next")),
+            after: Box::new(label(41, "next up")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, mut rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 0);
+    assert_eq!(report.sent, 1);
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    assert_eq!(
+        store
+            .label(LabelId(41))
+            .await
+            .unwrap()
+            .expect("the local row")
+            .title,
+        "next up",
+        "a rename the user asked for was rolled back"
+    );
+    assert!(
+        !events(&mut rx)
+            .iter()
+            .any(|event| matches!(event, SyncEvent::Rejected { .. })),
+        "nothing went wrong, so nothing should be reported as having gone wrong"
+    );
+}
+
+#[tokio::test]
+async fn a_different_404_on_a_label_rename_is_still_a_rejection() {
+    // The arm is keyed on Vikunja's code, not on the status alone: a 404 that means
+    // something else must still roll back and tell the user, exactly as the attach arm
+    // does.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "code": 4001, "message": "Something else is missing."
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_labels(vec![label(41, "next")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(41, "next")),
+            after: Box::new(label(41, "next up")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, mut rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 1);
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    assert_eq!(
+        store
+            .label(LabelId(41))
+            .await
+            .unwrap()
+            .expect("the local row")
+            .title,
+        "next",
+        "a rejected rename must put the old title back"
+    );
+    assert!(events(&mut rx)
+        .iter()
+        .any(|event| matches!(event, SyncEvent::Rejected { .. })));
+}
+
+#[tokio::test]
+async fn a_label_rename_does_not_store_the_answer_while_another_edit_is_queued() {
+    // The same guard `Sent::Updated` has. Two renames queued back to back: the first
+    // one's answer describes a label the second has already moved past, so storing it
+    // would briefly undo an edit the user can see on screen.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 41, "title": "next"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/labels/41")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_labels(vec![label(41, "next")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(41, "next")),
+            after: Box::new(label(41, "once")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(41, "once")),
+            after: Box::new(label(41, "twice")),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        store.is_pending_label(LabelId(41)).await.unwrap(),
+        "a queued rename has to be findable by its subject, or the guard cannot fire"
+    );
+    // And a label nothing is queued for is not pending, or the guard would never let an
+    // answer be stored at all.
+    assert!(!store.is_pending_label(LabelId(9)).await.unwrap());
+
+    let (sync, _rx) = engine(&server, &store);
+    sync.push().await.unwrap();
+    assert_eq!(
+        store
+            .label(LabelId(41))
+            .await
+            .unwrap()
+            .expect("the local row")
+            .title,
+        "twice",
+        "the second edit was undone by the first's bookkeeping"
+    );
 }

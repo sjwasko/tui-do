@@ -1569,8 +1569,22 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                 existing.labels.retain(|held| held.id != label.id);
             }
         }
-        // Nothing here holds labels themselves -- `model.data.tasks` only. A label
-        // picker reads the store directly once the reload runs.
+        // A rename or a recolour has to reach the copies of the label carried *on* the
+        // tasks in the list, which is where the list draws its chips from -- the store
+        // row is already right, and a reload is not guaranteed to follow a label edit.
+        // Matched on the id, not the title: the title is the thing that just changed.
+        Mutation::UpdateLabel { after, .. } => {
+            for task in tasks.iter_mut() {
+                for held in &mut task.labels {
+                    if held.id == after.id {
+                        *held = (**after).clone();
+                    }
+                }
+            }
+        }
+        // Nothing here holds a label that does not exist yet -- `model.data.tasks` only,
+        // and no task can be carrying one. A label picker reads the store directly once
+        // the reload runs.
         Mutation::CreateLabel { .. } => {}
     }
     keep_selection_visible(model);
@@ -1588,6 +1602,9 @@ fn undo_text(mutation: &Mutation) -> String {
         Mutation::UpdateTask { after, .. } => format!("Undone — \"{}\"", after.title),
         Mutation::AttachLabel { label, .. } => format!("Undone — added {}", label.title),
         Mutation::DetachLabel { label, .. } => format!("Undone — removed {}", label.title),
+        // `after` is where the undo left it, which is the label's title *before* the
+        // rename -- the same reading as the `UpdateTask` arm above.
+        Mutation::UpdateLabel { after, .. } => format!("Undone — {}", after.title),
         // Unreachable in practice: `inverse()` returns `None` for a create, so `edit`
         // never pushes one onto the undo stack for `Action::Undo` to pop back out here.
         // Still has to type-check against every `Mutation`, the same as every arm above.
