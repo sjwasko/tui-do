@@ -1177,7 +1177,7 @@ fn a_finished_sync_reloads_what_the_screen_is_showing() {
 #[test]
 fn a_rejected_change_is_the_one_sync_event_the_user_is_shown() {
     let mut model = loaded();
-    update(
+    let effects = update(
         &mut model,
         Msg::Sync(SyncEvent::Rejected {
             subject: TaskId(1),
@@ -1187,6 +1187,39 @@ fn a_rejected_change_is_the_one_sync_event_the_user_is_shown() {
     );
     let toast = model.status.toast.as_ref().expect("the user is told");
     assert!(toast.text.contains("This project does not exist."));
+    // The store rolled the row back before emitting this. Without a reload the toast
+    // says "rejected" over a row still showing the change, and nothing else reloads:
+    // an edit's push ends at `Pushed`, which returns only `LoadPending`.
+    assert!(
+        loaded_query(&effects).is_some(),
+        "the rolled-back row is still on screen"
+    );
+    assert!(effects.contains(&Effect::LoadCounts));
+}
+
+#[test]
+fn a_rejected_change_is_not_left_on_the_undo_stack() {
+    // The inverse was pushed when the edit was made. The server then refused the edit and
+    // the store rolled it back, so the inverse now describes undoing something that never
+    // happened -- and `u` would queue a write against a state the server never held.
+    let mut model = loaded();
+    let effects = press(&mut model, 'd');
+    assert!(!model.undo.is_empty(), "the edit left an inverse behind");
+    let subject = applied(&effects).expect("the toggle was applied").subject();
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject,
+            kind: "update_task".to_string(),
+            message: "This project does not exist.".to_string(),
+        }),
+    );
+
+    assert!(
+        model.undo.iter().all(|m| m.subject() != subject),
+        "undo still holds an inverse of a change the server refused"
+    );
 }
 
 #[test]

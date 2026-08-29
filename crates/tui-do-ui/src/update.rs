@@ -121,11 +121,35 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             };
             Vec::new()
         }
-        SyncEvent::Rejected { kind, message, .. } => {
+        SyncEvent::Rejected {
+            subject,
+            kind,
+            message,
+        } => {
             // The one event the user must see: their edit has just vanished from the
             // screen and they are owed an explanation.
             model.toast(Toast::error(format!("{kind} rejected: {message}")));
-            Vec::new()
+            // An inverse of a change that never happened is not an undo of anything. The
+            // store has rolled the row back, so replaying the inverse would queue a write
+            // derived from a state the server never held -- `u` after a rejected create
+            // asks it to delete an id it has never seen. Drop what named this task from
+            // both stacks and leave the rest of the session's history intact.
+            model.undo.retain(|mutation| mutation.subject() != subject);
+            model.redo.retain(|mutation| mutation.subject() != subject);
+            // And it has to actually vanish. The store rolled the row back before this
+            // event was emitted, but the screen is drawn from the last query's answer, so
+            // without a reload the toast says "rejected" over a row still showing the
+            // change. Nothing else reloads in time either: an edit reaches the server via
+            // a standalone push, which ends at `Pushed` -- and that returns only
+            // `LoadPending`. The next full pass is five minutes away by default, so the
+            // contradiction sits on screen until the user presses `r`.
+            //
+            // The counts go too: a rejected done-toggle changes how many tasks a project
+            // is showing as open.
+            let mut effects = reload_tasks(model);
+            effects.push(Effect::LoadCounts);
+            effects.push(Effect::LoadPending);
+            effects
         }
         SyncEvent::Adopted {
             provisional,
