@@ -142,7 +142,129 @@ pub struct Task {
     pub updated: Timestamp,
 }
 
+/// The result of merging a local edit onto the server's current copy of a task.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Merged {
+    /// The task to send.
+    pub task: Task,
+
+    /// Fields the user changed that someone else had also changed since. The user's
+    /// value wins — that is their intent, and refusing it loses what they just typed —
+    /// but they are owed the news that they wrote over somebody.
+    pub collisions: Vec<&'static str>,
+}
+
 impl Task {
+    /// Replay a local edit onto the server's current copy.
+    ///
+    /// Vikunja replaces a task from the request body and offers no concurrency control:
+    /// no version, no ETag, and `updated` is server-set and unwritable. Measured on dev,
+    /// a `POST /tasks/{id}` carrying only an id and a title cleared the description,
+    /// priority and due date. So a write must send every field, and sending a copy read
+    /// minutes ago reverts whatever anyone else changed in between — which for a fleet of
+    /// boxes against one server is not an edge case but the ordinary Tuesday.
+    ///
+    /// This is a three-way merge. `before` is what the task looked like when the user
+    /// started editing, `self` is what they want it to look like, and `server` is what is
+    /// there now. A field the user did not touch keeps the server's value; a field they
+    /// did keeps theirs. It does not make concurrent editing safe — nothing can, without
+    /// a conditional write — but it narrows the window from "since this box last pulled"
+    /// to the round trip of one request.
+    ///
+    /// `server` is destructured exhaustively on purpose: adding a field to [`Task`] then
+    /// fails to compile here rather than silently defaulting to the server's value, which
+    /// is how a field quietly becomes uneditable.
+    #[must_use]
+    pub fn merge_onto(&self, before: &Self, server: Self) -> Merged {
+        let after = self;
+        let mut collisions: Vec<&'static str> = Vec::new();
+
+        let Self {
+            id,
+            project_id,
+            title,
+            description,
+            done,
+            done_at,
+            priority,
+            index,
+            identifier,
+            is_favorite,
+            percent_done,
+            position,
+            due_date,
+            start_date,
+            end_date,
+            repeat_after,
+            repeat_mode,
+            hex_color,
+            labels,
+            assignees,
+            created_by,
+            reminders,
+            attachments,
+            comments,
+            comment_count,
+            related_tasks,
+            bucket_id,
+            created,
+            updated,
+        } = server;
+
+        // Each binding above holds the server's value. Take the user's only where they
+        // actually changed something; a field the interface never edits has
+        // `before == after` and so keeps the server's copy for free -- which is what
+        // makes `id`, `updated` and the read-only collections correct without a special
+        // case for each.
+        macro_rules! merge {
+            ($field:ident) => {{
+                if before.$field == after.$field {
+                    $field
+                } else {
+                    if $field != before.$field {
+                        collisions.push(stringify!($field));
+                    }
+                    after.$field.clone()
+                }
+            }};
+        }
+
+        Merged {
+            task: Self {
+                id: merge!(id),
+                project_id: merge!(project_id),
+                title: merge!(title),
+                description: merge!(description),
+                done: merge!(done),
+                done_at: merge!(done_at),
+                priority: merge!(priority),
+                index: merge!(index),
+                identifier: merge!(identifier),
+                is_favorite: merge!(is_favorite),
+                percent_done: merge!(percent_done),
+                position: merge!(position),
+                due_date: merge!(due_date),
+                start_date: merge!(start_date),
+                end_date: merge!(end_date),
+                repeat_after: merge!(repeat_after),
+                repeat_mode: merge!(repeat_mode),
+                hex_color: merge!(hex_color),
+                labels: merge!(labels),
+                assignees: merge!(assignees),
+                created_by: merge!(created_by),
+                reminders: merge!(reminders),
+                attachments: merge!(attachments),
+                comments: merge!(comments),
+                comment_count: merge!(comment_count),
+                related_tasks: merge!(related_tasks),
+                bucket_id: merge!(bucket_id),
+                created: merge!(created),
+                updated: merge!(updated),
+            },
+            collisions,
+        }
+    }
+
     /// The best available label for this task in a list.
     #[must_use]
     pub fn display_identifier(&self) -> String {

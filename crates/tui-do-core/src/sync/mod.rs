@@ -168,6 +168,19 @@ pub enum SyncEvent {
         pages: Option<u32>,
     },
 
+    /// A queued edit was written over a change someone else had already made.
+    ///
+    /// Only for a *true* collision: the user changed a field, and so had another client
+    /// since this box last pulled. The user's value wins -- refusing it would lose what
+    /// they just typed, and they are the one sitting there -- but overwriting someone
+    /// silently is how a fleet loses work nobody can account for.
+    Overwrote {
+        /// The task that was written.
+        subject: TaskId,
+        /// The names of the fields whose concurrent change was overwritten.
+        fields: Vec<String>,
+    },
+
     /// The server refused a queued change, which has been rolled back.
     ///
     /// The only event the user must be shown: their edit has just disappeared from the
@@ -402,9 +415,30 @@ impl Sync {
             Mutation::CreateTask { task } => Sent::Created(Box::new(
                 self.client.create_task(task.project_id, task).await?,
             )),
-            Mutation::UpdateTask { after, .. } => {
-                let updated = self.client.update_task(after).await?;
-                Sent::Updated(Box::new(with_labels(updated, after)))
+            Mutation::UpdateTask { before, after } => {
+                // Read the server's current copy and replay the user's edit onto it,
+                // rather than sending a task that may have been read minutes ago.
+                //
+                // Vikunja replaces the task from the body and has no conditional write --
+                // no version, no ETag -- so a stale body reverts whatever another box
+                // changed in the meantime. With a fleet of machines against one server
+                // that is the ordinary case, not a race. This does not make concurrent
+                // editing safe; it narrows the window from "since this box last pulled"
+                // to one request.
+                //
+                // A 404 here means the task was deleted elsewhere. That is a 4xx, so
+                // `is_permanent` treats it as final and the optimistic write rolls back
+                // with a toast -- which is the right answer: there is nothing to update.
+                let current = self.client.task(after.id).await?;
+                let merged = after.merge_onto(before, current);
+                if !merged.collisions.is_empty() {
+                    self.emit(SyncEvent::Overwrote {
+                        subject: after.id,
+                        fields: merged.collisions.iter().map(|f| (*f).to_string()).collect(),
+                    });
+                }
+                let updated = self.client.update_task(&merged.task).await?;
+                Sent::Updated(Box::new(with_labels(updated, &merged.task)))
             }
             Mutation::DeleteTask { before } => {
                 self.client.delete_task(before.id).await?;

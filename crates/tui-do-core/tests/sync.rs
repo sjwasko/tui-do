@@ -109,6 +109,20 @@ async fn mount_pull(server: &MockServer, tasks: Vec<serde_json::Value>) {
         .await;
 }
 
+/// Mount `GET /tasks/{id}` — the read a push now does before it writes.
+///
+/// A push replays the local edit onto the server's current copy rather than sending a
+/// task read minutes ago, so every test that pushes an `UpdateTask` needs the server to
+/// have one. `title` is what the server holds: pass what the edit was based on and the
+/// merge is a no-op, pass something else to make it a concurrent change.
+async fn mount_task_read(server: &MockServer, id: i64, title: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_json(id, title)))
+        .mount(server)
+        .await;
+}
+
 fn engine(server: &MockServer, store: &Store) -> (Sync, UnboundedReceiver<SyncEvent>) {
     let client = Client::builder(server.uri())
         .credentials(Credentials::api_token("tk_test"))
@@ -442,6 +456,9 @@ async fn an_edit_queued_behind_a_create_reaches_the_real_task() {
     // The user types a task and renames it before the connection comes back. The rename
     // has to arrive at the id the server assigned, not the provisional one.
     let server = MockServer::start().await;
+    // The rename is renumbered onto the id the server assigned, so that is the copy
+    // the push reads before writing.
+    mount_task_read(&server, 4242, "buy milk").await;
     Mock::given(method("PUT"))
         .and(path(format!("{API}/projects/1/tasks")))
         .respond_with(ResponseTemplate::new(201).set_body_json(task_json(4242, "buy milk")))
@@ -486,6 +503,7 @@ async fn an_edit_that_changes_labels_sends_them_through_their_own_endpoints() {
     // `POST /tasks/{id}` ignores the body's labels. Without this the change would show
     // locally, never reach the server, and vanish at the next pull.
     let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/1")))
         .respond_with(ResponseTemplate::new(200).set_body_json(task_json(1, "chores")))
@@ -530,6 +548,7 @@ async fn an_edit_that_changes_labels_sends_them_through_their_own_endpoints() {
 #[tokio::test]
 async fn a_rejected_change_is_rolled_back_and_the_user_is_told() {
     let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/1")))
         .respond_with(ResponseTemplate::new(400).set_body_json(json!({
@@ -616,8 +635,95 @@ async fn a_rejection_takes_the_edits_queued_behind_it_for_that_task() {
 }
 
 #[tokio::test]
+async fn a_push_does_not_revert_what_another_box_changed() {
+    // The fleet case. Box A pulled task 1 while it was called "original", the user set a
+    // priority on it, and in between box B renamed it on the server. Vikunja replaces the
+    // task from the request body and has no conditional write, so sending box A's stale
+    // copy would put the old title back and box B's rename would vanish with nothing to
+    // show it ever existed.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 1, "renamed by another box").await;
+    let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let recorder = std::sync::Arc::clone(&sent);
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(move |request: &wiremock::Request| {
+            recorder
+                .lock()
+                .expect("the recorder is not poisoned")
+                .push(request.body_json().expect("a JSON body"));
+            ResponseTemplate::new(200).set_body_json(task_json(1, "renamed by another box"))
+        })
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut before = task(1, "original");
+    let mut after = task(1, "original");
+    after.priority = 4;
+    store.upsert_tasks(vec![before.clone()]).await.unwrap();
+    before.updated = Some(chrono::Utc.with_ymd_and_hms(2026, 8, 1, 10, 0, 0).unwrap()).into();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(before),
+            after: Box::new(after),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+    assert_eq!(report.sent, 1);
+
+    let body = sent.lock().expect("the recorder is not poisoned").clone();
+    let body = body.first().expect("one write was sent").clone();
+    assert_eq!(
+        body["title"], "renamed by another box",
+        "the push sent a stale title and reverted another box's rename"
+    );
+    assert_eq!(body["priority"], 4, "the user's own change did not survive");
+}
+
+#[tokio::test]
+async fn a_genuine_collision_is_written_and_the_user_is_told() {
+    // Both boxes changed the *same* field. The user's value wins -- they are the one
+    // sitting there, and refusing it would lose what they just typed -- but overwriting
+    // someone in silence is how a fleet loses work nobody can account for.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 1, "renamed by another box").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_json(1, "renamed here")))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(1, "original")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(1, "original")),
+            after: Box::new(task(1, "renamed here")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, mut rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+
+    let overwrote = events(&mut rx)
+        .into_iter()
+        .find_map(|event| match event {
+            SyncEvent::Overwrote { fields, .. } => Some(fields),
+            _ => None,
+        })
+        .expect("a collision on the title should have been reported");
+    assert_eq!(overwrote, vec!["title".to_string()]);
+}
+
+#[tokio::test]
 async fn a_server_failure_keeps_the_queue_and_the_local_change() {
     let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/1")))
         .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
@@ -657,6 +763,7 @@ async fn a_failure_stops_the_queue_rather_than_sending_what_came_after() {
     // Order is the contract. Sending the second change while the first is unsent would
     // leave the server in a state the queue never described.
     let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/1")))
         .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "restarting"})))
@@ -702,6 +809,7 @@ async fn a_pass_pushes_before_it_pulls() {
     // Otherwise the pull returns the server's pre-edit copy, which then has to be
     // skipped -- and the store spends the gap showing something it has to undo.
     let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
     mount_pull(&server, vec![task_json(1, "edited")]).await;
     Mock::given(method("POST"))
         .and(path(format!("{API}/tasks/1")))
