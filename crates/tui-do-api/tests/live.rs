@@ -35,6 +35,7 @@
 
 use std::collections::BTreeSet;
 
+use chrono::Timelike;
 use tui_do_api::models::Login;
 use tui_do_api::{Client, Credentials, TaskQuery};
 
@@ -396,6 +397,115 @@ async fn the_current_user_is_who_we_authenticated_as() {
         .expect("GET /user should succeed");
     assert!(!user.username.is_empty());
     println!("authenticated as {}", user.display_name());
+}
+
+/// A task update replaces the task's reminders from the request body.
+///
+/// Measured here rather than read out of the spec, because the spec does not say: it
+/// marks `attachments` and `labels` read-only and says nothing of the sort about
+/// `reminders` — the same shape as `assignees`, which is known to be body-replaced.
+///
+/// This cost a real bug. Nothing in tui-do stored reminders, so a task read back out of
+/// the store carried an empty `Vec<TaskReminder>`, and `Task` serialises every field —
+/// meaning every optimistic edit sent `"reminders": []` and silently deleted whatever the
+/// user had set. Renaming a task destroyed its reminders. The store now keeps them
+/// (`task_reminders`, schema v2) so the body carries them back.
+///
+/// Both halves are asserted: the destructive shape, so a change in Vikunja's behaviour is
+/// noticed rather than assumed, and the safe one, which is what tui-do now does.
+#[tokio::test]
+async fn a_task_update_replaces_reminders_from_the_body() {
+    let Some(client) = connect("a_task_update_replaces_reminders_from_the_body").await else {
+        return;
+    };
+
+    let project = client
+        .create_project(&tui_do_api::models::Project {
+            title: FIXTURE_PROJECT_TITLE.into(),
+            description: "created by cargo test -p tui-do-api --test live".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /projects should create a project");
+
+    let due = chrono::Utc::now() + chrono::Duration::days(3);
+    let remind_at = (due - chrono::Duration::hours(2))
+        .with_nanosecond(0)
+        .expect("truncating to whole seconds is always valid");
+    let created = client
+        .create_task(
+            project.id,
+            &tui_do_api::models::Task {
+                title: "reminder probe".into(),
+                due_date: Some(due).into(),
+                reminders: vec![tui_do_api::models::TaskReminder {
+                    reminder: Some(remind_at).into(),
+                    relative_period: 0,
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("PUT /projects/{id}/tasks should create a task");
+
+    // If the server did not take the reminder on create, the experiment cannot run --
+    // say so rather than passing quietly, the same rule the done-task test uses.
+    let stored = client.task(created.id).await.expect("GET /tasks/{id}");
+    if stored.reminders.is_empty() {
+        println!(
+            "inconclusive: the server did not store a reminder sent on create, so this \
+             cannot measure what an update does to one"
+        );
+        client.delete_project(project.id).await.ok();
+        return;
+    }
+    println!("task created with {} reminder(s)", stored.reminders.len());
+
+    // Half one: carrying the reminders back preserves them. This is what tui-do does now
+    // that the store keeps them, and it is the assertion that matters for correctness.
+    let mut kept = stored.clone();
+    kept.title = "reminder probe, renamed".into();
+    let after_safe_edit = client
+        .update_task(&kept)
+        .await
+        .expect("POST /tasks/{id} should update");
+    println!(
+        "an update carrying {} reminder(s) answered with {}",
+        kept.reminders.len(),
+        after_safe_edit.reminders.len()
+    );
+    let reread = client.task(created.id).await.expect("GET /tasks/{id}");
+    let survived = !reread.reminders.is_empty();
+
+    // Half two: sending an empty list clears them. Documented so that the day Vikunja
+    // stops doing this, the reason `task_reminders` exists is re-examined rather than
+    // quietly kept.
+    let mut emptied = reread.clone();
+    emptied.reminders = Vec::new();
+    client
+        .update_task(&emptied)
+        .await
+        .expect("POST /tasks/{id} should update");
+    let after_empty = client.task(created.id).await.expect("GET /tasks/{id}");
+    let cleared = after_empty.reminders.is_empty();
+    println!(
+        "an update carrying \"reminders\": [] left {} behind",
+        after_empty.reminders.len()
+    );
+
+    client.delete_project(project.id).await.ok();
+
+    assert!(
+        survived,
+        "an update that carried the task's own reminders still lost them, so keeping \
+         them in the store is not enough and the field needs different handling"
+    );
+    assert!(
+        cleared,
+        "sending an empty reminders list no longer clears them. That is the behaviour \
+         `task_reminders` (schema v2) exists to survive -- re-check whether the store \
+         still needs to carry reminders through a read-mutate-write cycle."
+    );
 }
 
 #[tokio::test]
