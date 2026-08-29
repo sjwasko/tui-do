@@ -1,8 +1,8 @@
 tui-do  Project 15 › List  Table  Kanban                                                                ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Project 07           │ Title                   Project    Labels   Due        │ Fix the token refresh that drops the
-  Project 08           │ Fix the token refresh … Project 01  urgent  2 days ago │ cookie
-  Project 09           │ Ship the release        Project 01          Tomorrow   │ ──────────────────────────────────────
+  Project 08           │ !!!!! Fix the token re… Project 01  urgent  2 days ago │ cookie
+  Project 09           │ !!! Ship the release    Project 01          Tomorrow   │ ──────────────────────────────────────
   Project 10           │ Renew the passport      Project 02  backen… Sep 23     │ Project  Project 01
   Project 11           │ A task with no date at… Project 01          —          │ ID       WORK-42
   Project 12           │                                                        │ Due      2 days ago

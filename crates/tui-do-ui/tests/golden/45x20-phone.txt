@@ -1,8 +1,8 @@
 tui-do  Work                 ⟳ synced 2m ago
 ─────────────────────────────────────────────
  Title                  Project     Labels
- Fix the token refresh… Work         urgent …
- Ship the release       Work
+ !!!!! Fix the token r… Work         urgent …
+ !!! Ship the release   Work
  Renew the passport     Home         backend
  A task with no date a… Work
 

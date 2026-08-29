@@ -1,8 +1,8 @@
 tui-do  Work › List  Table  Kanban                              ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────
  Title                              Project          Labels         Due
- Fix the token refresh that drops … Work              urgent …      2 days ago
- Ship the release                   Work                            Tomorrow
+ !!!!! Fix the token refresh that … Work              urgent …      2 days ago
+ !!! Ship the release               Work                            Tomorrow
  Renew the passport                 Home              backend       Sep 23
  A task with no date at all         Work                            —
 

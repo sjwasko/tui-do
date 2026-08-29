@@ -1,8 +1,8 @@
 tui-do  Work › List  Table  Kanban                                                                      ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   All tasks          4 │ Title                   Project    Labels   Due        │ Fix the token refresh that drops the
-  Favorites          2 │ Fix the token refresh … Work        urgent  2 days ago │ cookie
-Projects               │ Ship the release        Work                Tomorrow   │ ──────────────────────────────────────
+  Favorites          2 │ !!!!! Fix the token re… Work        urgent  2 days ago │ cookie
+Projects               │ !!! Ship the release    Work                Tomorrow   │ ──────────────────────────────────────
 ▾ Home               1 │ Renew the passport      Home        backen… Sep 23     │ Project  Work
     E┌Keys───────────────────────────────────────────────────────────────────────────────────────────────────────┐
   Wor│Navigation                                             Tasks                                               │
