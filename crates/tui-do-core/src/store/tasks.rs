@@ -356,8 +356,10 @@ impl Store {
         let now = Utc::now();
         self.write(move |tx| {
             let mut applied = ServerApply::default();
-            let mut is_pending =
-                tx.prepare("SELECT exists(SELECT 1 FROM outbox WHERE subject_id = ?1)")?;
+            let mut is_pending = tx.prepare(
+                "SELECT exists(SELECT 1 FROM outbox
+                                WHERE subject_id = ?1 AND subject_kind = 'task')",
+            )?;
             for task in &tasks {
                 let pending: i64 =
                     is_pending.query_row(params![task.id.get()], |row| row.get(0))?;
@@ -652,6 +654,48 @@ mod tests {
         assert_eq!(read.due_date.get(), original.due_date.get());
         assert!((read.percent_done - 0.25).abs() < f64::EPSILON);
         assert_eq!(read.identifier, "CORE-1");
+    }
+
+    #[tokio::test]
+    async fn a_pull_does_not_skip_a_task_whose_id_collides_with_a_queued_labels_subject() {
+        // `subject_id` is untyped and provisional ids count down from -1 per kind, so a
+        // queued label can share an id with a real task -- here, both are 1. Without
+        // `subject_kind` in this guard, the label's queue entry reads as "task 1 has
+        // unsent changes", and the server's copy of task 1 is skipped forever: not just
+        // this pull, but every one after it, since the watermark clamp holds `LAST_PULL`
+        // back to a task that in fact has nothing queued against it.
+        let store = Store::in_memory().unwrap();
+        store.upsert_tasks(vec![task(1, "original")]).await.unwrap();
+
+        // No `Mutation` variant produces a label subject yet -- that arrives with the
+        // outbox's next task -- so the collision is built directly: an entry whose
+        // `subject_id` matches task 1 but whose `subject_kind` says `label`.
+        store
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO outbox (created, kind, payload, subject_id, subject_kind)
+                     VALUES ('2026-08-29T00:00:00Z', 'attach_label', '{}', ?1, 'label')",
+                    params![1_i64],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let applied = store
+            .upsert_tasks_from_server(vec![task(1, "the server's newer title")])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            applied.skipped, 0,
+            "a queued label sharing task 1's id made the pull think task 1 had unsent \
+             changes"
+        );
+        assert_eq!(
+            store.task(TaskId(1)).await.unwrap().unwrap().title,
+            "the server's newer title"
+        );
     }
 
     #[tokio::test]
