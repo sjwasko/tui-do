@@ -74,6 +74,17 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::LabelsLoaded(labels) => {
             model.data.labels = labels;
+            // The one place a label form ever learns the id of a label it asked for.
+            // `Store::queue` allocates the provisional id inside its own transaction,
+            // so the reload it triggers is the only route back — and the form is on
+            // screen at exactly this moment, because that is where the label was made.
+            // A form left without it shows no tick, so the user's next Enter queues
+            // nothing at all for the label they just created.
+            for modal in &mut model.modals {
+                if let Modal::Labels(state) = modal {
+                    state.absorb_created(&model.data.labels);
+                }
+            }
             Vec::new()
         }
         Msg::CountsLoaded(counts) => {
@@ -246,6 +257,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::Priority(value) => set_priority(model, value),
         Submission::Due(text) => set_due(model, &text),
         Submission::Labels(chosen) => set_labels(model, &chosen),
+        Submission::CreateLabel(title) => create_label(model, title),
         Submission::QuickAction(index) => run_quick_action(model, index),
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
@@ -485,12 +497,10 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                         labels.push(label.clone());
                     }
                 }
-                if labels.is_empty() {
-                    // tui-do cannot create labels yet, so an empty form would be a box
-                    // with nothing in it and no way to fill it.
-                    model.toast(Toast::info("No labels exist yet"));
-                    return Vec::new();
-                }
+                // Opened even with nothing in it. It used to refuse, and say "No labels
+                // exist yet" -- an apology for a form that could not be filled. It can
+                // be now: an empty box is where the user types a name and presses C-n,
+                // which is exactly the case that message was written for.
                 model
                     .modals
                     .push(Modal::Labels(LabelsState::new(labels, held)));
@@ -1056,6 +1066,42 @@ fn set_labels(model: &mut Model, chosen: &[LabelId]) -> Vec<Effect> {
             },
         ));
     }
+    effects
+}
+
+/// Queue the label the `l` form asked for.
+///
+/// No id: the store allocates the provisional one inside the same transaction that
+/// writes the outbox row, and guessing at it here would be guessing at a counter this
+/// crate cannot read. A reload is therefore how both `model.data.labels` and the
+/// still-open form find out which id the label was given, and `Msg::LabelsLoaded` is
+/// where the form ticks it.
+///
+/// `Effect::LoadLabels` here is the fast path, not the guarantee. The runtime spawns
+/// every effect on a task of its own, so this read races `Effect::Apply`'s write and may
+/// answer with a snapshot that does not name the label yet. That is harmless rather than
+/// lucky: `LabelsState::absorb_created` is keyed on what the form is still waiting for,
+/// so an early answer does nothing and the `Msg::Reload` that `Effect::Apply` sends once
+/// the write has landed brings a second, correct one. When the write is quick — it
+/// usually is — the tick simply appears a message sooner.
+///
+/// Not on the undo stack, and that is `Mutation::inverse` returning `None` rather than
+/// an omission here: undoing a create means deleting a label, and this feature ships no
+/// delete because `u` could not honestly reverse *that* — the label would come back with
+/// a new id, detached from everything it had been on.
+fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
+    let label = Label {
+        title: title.clone(),
+        ..Label::default()
+    };
+    let mut effects = edit(
+        model,
+        Mutation::CreateLabel {
+            label: Box::new(label),
+        },
+    );
+    model.toast(Toast::info(format!("Created label {}", truncated(&title))));
+    effects.push(Effect::LoadLabels);
     effects
 }
 

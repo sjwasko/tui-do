@@ -1222,6 +1222,133 @@ fn an_attach_from_the_form_that_created_a_label_names_the_id_the_server_gave_it(
     }
 }
 
+/// A Ctrl-chord, which is how the label form's create key arrives.
+fn press_ctrl(model: &mut Model, c: char) -> Vec<Effect> {
+    update(
+        model,
+        Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+    )
+}
+
+/// The open label form, or a panic naming what is on the stack instead.
+fn label_form(model: &Model) -> &tui_do_ui::modal::LabelsState {
+    match model.modals.last() {
+        Some(Modal::Labels(state)) => state,
+        other => panic!("the label form is not open: {other:?}"),
+    }
+}
+
+#[test]
+fn the_label_form_opens_with_nothing_in_it_rather_than_refusing() {
+    // It used to toast "No labels exist yet" and not open -- an apology for a form that
+    // could not be filled. An empty box is now where the first label gets typed.
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'l');
+    assert!(label_form(&model).labels.is_empty());
+    assert!(
+        model.status.toast.is_none(),
+        "nothing to apologise for: {:?}",
+        model.status.toast
+    );
+}
+
+#[test]
+fn creating_from_the_label_form_queues_it_and_leaves_the_form_open() {
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'l');
+    for c in "next".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_ctrl(&mut model, 'n');
+
+    match applied(&effects).expect("C-n queues a create") {
+        Mutation::CreateLabel { label } => {
+            assert_eq!(label.title, "next");
+            assert_eq!(
+                label.id,
+                LabelId(0),
+                "the store allocates the provisional id, not the interface"
+            );
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    assert!(
+        effects.contains(&Effect::LoadLabels),
+        "without the reload the form never learns the id: {effects:?}"
+    );
+    assert!(
+        matches!(model.modals.last(), Some(Modal::Labels(_))),
+        "the user is still deciding this task's labels"
+    );
+    assert!(
+        model.undo.is_empty(),
+        "a create has no inverse -- this feature ships no delete"
+    );
+}
+
+#[test]
+fn a_label_created_from_the_form_comes_back_ticked_and_attaches_under_the_server_s_id() {
+    // The whole path a human drives: `l` on a task with no labels anywhere, type a name,
+    // C-n, the store's reload names it, the server names it again, Enter. Every link in
+    // that chain has to carry the id forward or the tick the user is looking at queues
+    // nothing at all.
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'l');
+    for c in "next".chars() {
+        press(&mut model, c);
+    }
+    press_ctrl(&mut model, 'n');
+
+    // The runtime spawns every effect on its own task, so the reload this queued races
+    // the write and can answer from before it. The form waits rather than giving up:
+    // `Effect::Apply` sends `Msg::Reload` once the write has landed, and that reload is
+    // the one that names it.
+    update(&mut model, Msg::LabelsLoaded(Vec::new()));
+    assert!(
+        label_form(&model).chosen.is_empty(),
+        "nothing to tick yet, and nothing invented"
+    );
+
+    // The store applied the create as it queued it, so the reload names the provisional.
+    update(&mut model, Msg::LabelsLoaded(vec![label(-1, "next")]));
+    let form = label_form(&model);
+    assert_eq!(form.labels, vec![label(-1, "next")]);
+    assert_eq!(form.chosen, vec![LabelId(-1)], "created means ticked");
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+    // `set_labels` resolves the ticks against `model.data.labels`, which the adoption
+    // renumbered too.
+    update(&mut model, Msg::LabelsLoaded(vec![label(41, "next")]));
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    match applied(&effects).expect("the tick queues an attach") {
+        Mutation::AttachLabel { label, .. } => assert_eq!(label.id, LabelId(41)),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_reload_does_not_tick_a_label_the_form_did_not_ask_for() {
+    // A background sync reloads labels while the form is open. Absorbing everything
+    // would reshuffle the list under the user, and ticking it would put a label somebody
+    // created on another box onto this task.
+    let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
+    press(&mut model, 'l');
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(1, "urgent"), label(2, "elsewhere")]),
+    );
+    let form = label_form(&model);
+    assert_eq!(form.labels, vec![label(1, "urgent")]);
+    assert!(form.chosen.is_empty());
+}
+
 #[test]
 fn adopting_a_label_reaches_a_picker_and_an_open_edit_form() {
     // Two more holders on the modal stack. The picker's candidate becomes the list's
@@ -1257,8 +1384,22 @@ fn adopting_a_label_reaches_a_picker_and_an_open_edit_form() {
 
 #[test]
 fn an_adoption_leaves_a_label_it_does_not_name_alone() {
+    // Every holder `adopt_label` reaches, including the three on the modal stack: a
+    // renumbering that swept up an id it was not asked about would send the *next* write
+    // to a label the server never named, and the modal holders are the ones a
+    // whole-stack swap most easily overreaches into.
     let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
     model.query.scope = Scope::Label(LabelId(-1));
+    // The form opens with the task's own label already ticked, which is the `chosen`
+    // entry this test is here to leave alone.
+    press(&mut model, 'l');
+    model.modals.insert(
+        0,
+        Modal::Picker(PickerState::new(
+            PickerKind::Label,
+            vec![Candidate::new(Pick::Label(LabelId(-1)), "next")],
+        )),
+    );
 
     update(
         &mut model,
@@ -1275,6 +1416,13 @@ fn an_adoption_leaves_a_label_it_does_not_name_alone() {
     );
     assert_eq!(model.data.tasks[0].labels[0].id, LabelId(-1));
     assert_eq!(model.query.scope, Scope::Label(LabelId(-1)));
+    let Some(Modal::Picker(picker)) = model.modals.first() else {
+        panic!("the picker went missing: {:?}", model.modals);
+    };
+    assert_eq!(picker.candidates[0].pick, Pick::Label(LabelId(-1)));
+    let form = label_form(&model);
+    assert_eq!(form.labels[0].id, LabelId(-1));
+    assert_eq!(form.chosen, vec![LabelId(-1)]);
 }
 
 #[test]
