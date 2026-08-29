@@ -143,6 +143,15 @@ pub enum Mutation {
         /// The whole label, so an undo can put it back without a lookup.
         label: Box<Label>,
     },
+
+    /// A label the server has not seen. `label.id` is provisional until it answers.
+    ///
+    /// Only ever queued by the interface, which is the half that knows which labels
+    /// exist -- `decompose` splits a task write into requests and has no idea.
+    CreateLabel {
+        /// The label as typed.
+        label: Box<Label>,
+    },
 }
 
 impl Mutation {
@@ -159,6 +168,7 @@ impl Mutation {
             Self::DeleteTask { .. } => "delete_task",
             Self::AttachLabel { .. } => "attach_label",
             Self::DetachLabel { .. } => "detach_label",
+            Self::CreateLabel { .. } => "create_label",
         }
     }
 
@@ -170,6 +180,7 @@ impl Mutation {
             Self::UpdateTask { after, .. } => Subject::Task(after.id),
             Self::DeleteTask { before } => Subject::Task(before.id),
             Self::AttachLabel { task, .. } | Self::DetachLabel { task, .. } => Subject::Task(*task),
+            Self::CreateLabel { label } => Subject::Label(label.id),
         }
     }
 
@@ -191,18 +202,26 @@ impl Mutation {
             }
             Self::DeleteTask { before } => swap(&mut before.id),
             Self::AttachLabel { task, .. } | Self::DetachLabel { task, .. } => swap(task),
+            // Retargets tasks; a label create has none to swap. The label equivalent is
+            // `retarget_label`, added separately so the two id spaces cannot be confused.
+            Self::CreateLabel { .. } => {}
         }
     }
 
-    /// What undoing this would be.
+    /// What undoing this would be, when it can be undone.
     ///
     /// Undo queues the inverse as an ordinary mutation, so it is optimistic, rolls back
     /// on rejection and can itself be undone -- all for free. Note that undoing a delete
     /// *re-creates* the task: Vikunja has no undelete, so the restored task gets a new
     /// id, and its comments and attachments do not come back.
+    ///
+    /// `None` for [`Self::CreateLabel`]: undoing it means deleting a label, and a delete
+    /// is the one label operation `u` cannot honestly reverse -- the label would come
+    /// back with a new id, detached from everything it was on. So a create is not pushed
+    /// onto the undo stack at all and `u` reaches past it.
     #[must_use]
-    pub fn inverse(&self) -> Self {
-        match self {
+    pub fn inverse(&self) -> Option<Self> {
+        Some(match self {
             Self::CreateTask { task } => Self::DeleteTask {
                 before: task.clone(),
             },
@@ -221,7 +240,8 @@ impl Mutation {
                 task: *task,
                 label: label.clone(),
             },
-        }
+            Self::CreateLabel { .. } => return None,
+        })
     }
 
     /// Split this into mutations that each take exactly one request.
@@ -302,6 +322,7 @@ impl Mutation {
                     params![task.get(), label.id.get()],
                 )?;
             }
+            Self::CreateLabel { label } => upsert_label(tx, label, now)?,
         }
         Ok(())
     }
@@ -326,6 +347,9 @@ impl Mutation {
                     "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
                     params![task.get(), label.id.get()],
                 )?;
+            }
+            Self::CreateLabel { label } => {
+                tx.execute("DELETE FROM labels WHERE id = ?1", params![label.id.get()])?;
             }
         }
         Ok(())
@@ -460,6 +484,11 @@ impl Store {
             if let Mutation::CreateTask { task } = &mut mutation {
                 if task.id.get() == 0 {
                     task.id = next_local_id(tx)?;
+                }
+            }
+            if let Mutation::CreateLabel { label } = &mut mutation {
+                if label.id.get() == 0 {
+                    label.id = next_local_label_id(tx)?;
                 }
             }
 
@@ -751,10 +780,34 @@ pub fn is_provisional(task: TaskId) -> bool {
     task.get() < 0
 }
 
+/// The state key holding the next provisional label id.
+const NEXT_LOCAL_LABEL_ID: &str = "next_local_label_id";
+
+/// Allocate the next provisional label id: -1, then -2, and so on.
+///
+/// A counter of its own rather than a share of the task counter. `outbox.subject_kind`
+/// already tells the two apart, so there is nothing to gain by coupling them, and a
+/// shared counter would mean a label create consuming an id a task create then skips --
+/// harmless, and confusing to read in the queue.
+fn next_local_label_id(tx: &Transaction<'_>) -> Result<LabelId> {
+    let next: i64 = read_state(tx, NEXT_LOCAL_LABEL_ID)?
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(-1);
+    write_state(tx, NEXT_LOCAL_LABEL_ID, &(next - 1).to_string())?;
+    Ok(LabelId(next))
+}
+
+/// Whether a label id was assigned locally and the server has never seen it.
+#[must_use]
+pub fn is_provisional_label(label: LabelId) -> bool {
+    label.get() < 0
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::store::{LabelFilter, LabelSort};
     use tui_do_api::models::{LabelId, ProjectId, User, UserId};
 
     fn task(id: i64, title: &str) -> Task {
@@ -1168,10 +1221,13 @@ mod tests {
         let create = Mutation::CreateTask {
             task: Box::new(task(1, "t")),
         };
-        assert!(matches!(create.inverse(), Mutation::DeleteTask { .. }));
         assert!(matches!(
-            create.inverse().inverse(),
-            Mutation::CreateTask { .. }
+            create.inverse(),
+            Some(Mutation::DeleteTask { .. })
+        ));
+        assert!(matches!(
+            create.inverse().and_then(|back| back.inverse()),
+            Some(Mutation::CreateTask { .. })
         ));
 
         let update = Mutation::UpdateTask {
@@ -1179,7 +1235,7 @@ mod tests {
             after: Box::new(task(1, "after")),
         };
         match update.inverse() {
-            Mutation::UpdateTask { before, after } => {
+            Some(Mutation::UpdateTask { before, after }) => {
                 assert_eq!(before.title, "after");
                 assert_eq!(after.title, "before");
             }
@@ -1190,7 +1246,10 @@ mod tests {
             task: TaskId(1),
             label: Box::new(label(7, "errands")),
         };
-        assert!(matches!(attach.inverse(), Mutation::DetachLabel { .. }));
+        assert!(matches!(
+            attach.inverse(),
+            Some(Mutation::DetachLabel { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1204,7 +1263,7 @@ mod tests {
         };
         store.queue(done.clone()).await.unwrap();
 
-        store.queue(done.inverse()).await.unwrap();
+        store.queue(done.inverse().unwrap()).await.unwrap();
 
         assert_eq!(
             store.task(TaskId(1)).await.unwrap().unwrap().title,
@@ -1261,5 +1320,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(orphans, 0);
+    }
+
+    #[tokio::test]
+    async fn a_created_label_gets_a_provisional_id_of_its_own() {
+        // Its own counter, not the task counter: the kind column tells them apart, and
+        // sharing one would make the two id spaces depend on each other for no gain.
+        let store = Store::in_memory().unwrap();
+        let first = store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: "next".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let Mutation::CreateLabel { label } = &first.mutation else {
+            panic!("queue changed the mutation kind");
+        };
+        assert_eq!(label.id, LabelId(-1));
+        assert!(is_provisional_label(label.id));
+        assert_eq!(first.mutation.subject(), Subject::Label(LabelId(-1)));
+
+        // And a task queued after it still gets -1 of its own.
+        let task_entry = store
+            .queue(Mutation::CreateTask {
+                task: Box::new(task(0, "unrelated")),
+            })
+            .await
+            .unwrap();
+        assert_eq!(task_entry.mutation.subject(), Subject::Task(TaskId(-1)));
+    }
+
+    #[tokio::test]
+    async fn queueing_a_label_writes_it_to_the_store_immediately() {
+        // Rule 5: the local store is changed at the keystroke, not when the server answers.
+        let store = Store::in_memory().unwrap();
+        store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: "next".into(),
+                    hex_color: "4287f5".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let labels = store
+            .labels(LabelFilter::default(), LabelSort::default())
+            .await
+            .unwrap();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].title, "next");
+    }
+
+    #[tokio::test]
+    async fn a_create_cannot_be_undone_because_there_is_no_delete() {
+        let mutation = Mutation::CreateLabel {
+            label: Box::new(Label {
+                title: "next".into(),
+                ..Default::default()
+            }),
+        };
+        assert!(mutation.inverse().is_none());
     }
 }

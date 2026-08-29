@@ -522,7 +522,13 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         }
         Action::Undo => match model.undo.pop() {
             Some(mutation) => {
-                model.redo.push(mutation.inverse());
+                // Everything on the undo stack came from `edit`, which only pushes what
+                // `inverse()` answered `Some` to -- but the match still has to be
+                // exhaustive, so a mutation that cannot be inverted is skipped rather
+                // than unwrapped.
+                if let Some(back) = mutation.inverse() {
+                    model.redo.push(back);
+                }
                 model.toast(Toast::info(undo_text(&mutation)));
                 apply(model, mutation)
             }
@@ -533,7 +539,9 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         },
         Action::Redo => match model.redo.pop() {
             Some(mutation) => {
-                model.undo.push(mutation.inverse());
+                if let Some(back) = mutation.inverse() {
+                    model.undo.push(back);
+                }
                 apply(model, mutation)
             }
             None => {
@@ -1441,7 +1449,11 @@ fn truncated(title: &str) -> String {
 /// Every edit goes through here, so the undo stack cannot fall out of step with what was
 /// done — and a new edit clears the redo stack, as everywhere else.
 fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
-    model.undo.push(mutation.inverse());
+    // A mutation with no inverse -- creating a label -- is simply not remembered, so `u`
+    // reaches past it to the last change that can be taken back.
+    if let Some(back) = mutation.inverse() {
+        model.undo.push(back);
+    }
     model.redo.clear();
     apply(model, mutation)
 }
@@ -1536,6 +1548,9 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                 existing.labels.retain(|held| held.id != label.id);
             }
         }
+        // Nothing here holds labels themselves -- `model.data.tasks` only. A label
+        // picker reads the store directly once the reload runs.
+        Mutation::CreateLabel { .. } => {}
     }
     keep_selection_visible(model);
 }
@@ -1552,6 +1567,10 @@ fn undo_text(mutation: &Mutation) -> String {
         Mutation::UpdateTask { after, .. } => format!("Undone — \"{}\"", after.title),
         Mutation::AttachLabel { label, .. } => format!("Undone — added {}", label.title),
         Mutation::DetachLabel { label, .. } => format!("Undone — removed {}", label.title),
+        // Unreachable in practice: `inverse()` returns `None` for a create, so `edit`
+        // never pushes one onto the undo stack for `Action::Undo` to pop back out here.
+        // Still has to type-check against every `Mutation`, the same as every arm above.
+        Mutation::CreateLabel { label } => format!("Undone — {}", label.title),
     }
 }
 

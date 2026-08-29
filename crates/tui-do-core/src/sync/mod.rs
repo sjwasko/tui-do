@@ -473,6 +473,18 @@ impl Sync {
                 self.client.remove_label_from_task(*task, label.id).await?;
                 Sent::Done
             }
+            Mutation::CreateLabel { label } => {
+                // Deliberately minimal: nothing yet produces this mutation outside a
+                // test, so this exists only to keep the match exhaustive now that
+                // `Mutation::CreateLabel` does. Two things a real send needs are missing
+                // on purpose, both named in the label-lifecycle plan rather than guessed
+                // at here: swapping the provisional id for the server's once `deliver`
+                // knows how (a label equivalent of `settle_create`), and guarding a
+                // retry from creating a second label, since titles are not unique and
+                // `PUT /labels` ignores the body's id.
+                self.client.create_label(label).await?;
+                Sent::Done
+            }
         })
     }
 
