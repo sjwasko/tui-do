@@ -4,9 +4,14 @@ Written 2026-08-28 at the point where four places in the interface say "tui-do c
 create labels yet" and nothing in `PLAN.md` owns fixing it. Same spirit as
 `md/2026-08-25-phase-4-design.md`: the decisions and why, agreed before the code.
 
-**Nothing here is built.** One decision in it — what a queued mutation's *subject* is —
-is cheap to take now and expensive to take after the first `CreateLabel` has been written,
-which is the whole reason this document exists rather than a branch.
+**Revised 2026-08-29**: the three unknowns are measured, the two open decisions are
+taken, and one thing this document assumed would work does not — see "What was measured".
+The one line of code that came out of that session is the `update_label` verb fix; the
+feature itself is still unbuilt.
+
+**One decision here — what a queued mutation's *subject* is — is cheap to take now and
+expensive to take after the first `CreateLabel` has been written**, which is the whole
+reason this document exists rather than a branch.
 
 ## Where the gap actually is
 
@@ -141,38 +146,91 @@ So the discard rule becomes: everything sharing the subject, **plus** everything
 payload references the rejected label. That is a genuine new case, it has no equivalent
 today, and it wants its own test with the arm removed.
 
-## What has to be measured before any of this is written
+## What was measured, 2026-08-29
 
-`CLAUDE.md`'s standing rule is that the spec describes what the server means, not what it
-emits. Three unknowns, none of them answerable from `spec/vikunja.json`:
+Measured against dev with `curl`, then pinned in
+`crates/tui-do-api/tests/live.rs::a_task_round_trips_through_create_read_update_delete`.
+All of it is in `CLAUDE.md` now; what follows is what each finding does to this design.
 
-1. **A duplicate title.** Vikunja's labels are per-user and, as far as anyone here knows,
-   not unique — but "as far as anyone here knows" is how the `403`-on-detach surprise got
-   in. Create two labels called `urgent` on dev and record what happens.
-2. **`PUT /labels` with `id: 0`.** Creating a task needed the path value written into the
-   body because Vikunja binds the path first and the body second. `PUT /labels` has no
-   path parameter, so the same trap should not exist — should, not does.
-3. **Replay.** Creating a label that already exists is the third arm of the
-   `is_already_done` table, and it does not have one yet. A lost response means a retry;
-   what does the retry answer?
+**`Client::update_label` was broken, and this is what found it.** It sent
+`PUT /labels/{id}`, which is what `spec/vikunja.json` documents. The server answers
+`405 Method Not Allowed`; `OPTIONS /labels/{id}` replies
+`Allow: OPTIONS, DELETE, GET, POST`. Nothing has ever called the method, so nothing ever
+saw the 405 — and the conformance test compares path templates, not verbs, so it never
+could. Fixed to `POST`, with an assertion in the live test that fails when the verb goes
+back.
 
-## Still yours to decide
+**1. A duplicate title is allowed.** Two labels called `tui-do probe alpha`, two `201`s,
+two different ids. Labels are not unique.
 
-**1. Create only, or the whole lifecycle?** `update_label` and `delete_label` exist on the
-client and would need `RenameLabel` / `DeleteLabel` mutations of their own. Create alone
-closes the gap the interface complains about; the rest is a bigger surface, and deleting a
-label is destructive in a way `u` cannot fully undo (the label comes back with a new id and
-detaches from everything it was on).
+**2. `PUT /labels` ignores the body's `id`.** Sent `0`, got a server id; sent `-7`, got a
+server id. Good news, and one worry removed: a `CreateLabel` payload carrying a
+provisional negative id is harmless on the wire.
 
-**2. Where does it appear?** Three candidates, not exclusive: a "create" affordance in the
-`l` form, where the user is already looking at the label list; `*newlabel` in quick-add
-creating it on the spot; a create action in the `g l` picker.
+**3. A replayed create is undetectable, and this is the finding that changes the design.**
+Because titles are not unique and the body's id is ignored, a retry does not answer "you
+already did this" — it answers `201` and a second label. Nothing in the response
+distinguishes it. So `is_already_done` **cannot** grow an arm for `CreateLabel`, which is
+what this document assumed it would.
 
-**3. Should `*newlabel` create silently?** It is the one path where the user did not
-obviously ask for a label to exist — they typed a task. A typo becomes a permanent label
-on the server, and labels are the kind of thing people curate. A confirmation, or a
-config flag, or simply not doing it in quick-add at all.
+What replaces it: **a `CreateLabel` that is being retried reads first.** Before a second
+attempt, ask `GET /labels?s=<title>` (the parameter works; it matched all four probes) and
+if a label with that exact title already exists, adopt its id instead of creating. This is
+the same shape as `Task::merge_onto` — *look at the server before writing, because this
+box is not the only writer* — applied to the one mutation where a lost response is
+otherwise unrecoverable.
 
-**4. Which phase owns it?** `PLAN.md` assigns it to none. It is not Phase 5 work (markdown,
-detail screen, comments, attachments) and it is not Phase 6 (views). It is a Phase 4 gap
-found after Phase 4 was signed off.
+Two honest limits, both worth saying out loud rather than discovering later:
+
+- It protects against **our own retry**, not against two boxes creating `next` at the same
+  moment. Nothing can protect against that without a unique constraint the server does not
+  have.
+- If the user genuinely wanted a second label with the same title, a retry adopts the
+  first instead. That is the right trade — two labels called `next` in a global pool is the
+  bad state, not the good one — and it only ever happens on a retry, never on a first
+  attempt.
+
+**4. A partial body clears what it omits**, the same as a task: `POST /labels/12` carrying
+only `title` cleared `hex_color` to `""`. A rename sends the whole label.
+
+**5. The body's `id` beats the path.** `POST /labels/12` carrying `"id": 13` updated label
+**13** and left 12 alone. Worse than the task version of this trap, which 404s: this one
+succeeds against the wrong row. `update_label` now takes the whole label and derives the
+path from it, so the two cannot disagree.
+
+**6. Rename and delete of a label that is gone both answer `404` code `8002`.** Those are
+arms `is_already_done` can have, and should: another box deleting a label while this one
+had a rename queued is an ordinary fleet event, not a rejection to roll back.
+
+### What the measurements add to the build
+
+- `Mutation::CreateLabel` needs a **reconcile-before-retry** step, driven by the outbox's
+  `attempts` column, which already exists and now drives backoff.
+- `is_already_done` gains two label arms (`404`/`8002` on rename and on delete) and
+  deliberately **no** arm for create.
+- `RenameLabel` carries the whole `Label`, and — for the same reason `UpdateTask` does —
+  should read the server's copy and merge onto it before writing. A `Label::merge_onto`
+  mirroring `Task::merge_onto`, destructured exhaustively so a new field fails to compile
+  rather than becoming quietly uneditable. Three editable fields (`title`, `description`,
+  `hex_color`) makes this cheap; skipping it means box B's rename silently reverts box A's
+  recolour.
+
+## The decisions, taken 2026-08-29
+
+**1. Create, rename and recolour. No delete.** Delete is the one operation `u` cannot
+honestly reverse: the label comes back with a new id, detached from everything it was on.
+Deleting stays a web-UI job until someone asks for it, and if it is ever built it needs a
+confirmation and an honest "this cannot be undone" rather than a broken undo.
+
+**2. `*newlabel` in quick-add confirms before it creates.** Everywhere else the user is
+looking at a label list and asking for a new one; in quick-add they typed a task, and the
+label pool is global, so a typo becomes a permanent entry that pollutes autocomplete in
+every project forever. The confirmation is the difference between one keystroke to reject
+and a curation job later.
+
+**3. Where it appears:** the `l` form and the `g l` picker both grow a create affordance —
+that is where the user is already looking at the list — and quick-add creates only through
+the confirmation in decision 2.
+
+**4. Which phase owns it:** none. It is a Phase 4 gap found after Phase 4 was signed off,
+and it is being built before Phase 5 at the user's direction, 2026-08-29.
