@@ -9,7 +9,12 @@ Full phase plan in `PLAN.md`.
 `tui-do-ui` is pure and synchronous. `update(&mut Model, Msg) -> Vec<Effect>` describes side
 effects as values; the effect runtime in `crates/tui-do` executes them and sends results back
 as `Msg`. `tui-do-ui` has no `reqwest`, no `rusqlite`, no `tokio` dependency, and must never
-gain one — that dependency ban *is* the enforcement mechanism.
+gain one. Be precise about what that buys: all three arrive *transitively* through
+`tui-do-core`, and `tui_do_core::Store` is a public re-export that `update` could call
+and block the render thread with. `use rusqlite::…` will not compile here; `Store::open`
+would. What actually holds the rule is that `update` is synchronous and nothing in the
+crate calls a store — asserted by `a_pure_ui_names_no_io`, which greps the crate's own
+source for `Store`, `.await`, `spawn_blocking` and the three crate names.
 
 *Why:* the project tui-do replaces awaited network calls while holding a lock on its
 application state, freezing the terminal for the duration of every slow request.
@@ -105,6 +110,32 @@ one of them — and the filter reaches a further two minutes back, because the w
 comes from this machine's clock and `updated` from the server's, and a few seconds of
 disagreement would drop a task in the gap permanently.
 
+**Reminders travel in the task body too, and cost a real bug.** `POST /tasks/{id}`
+replaces a task's reminders from the request body exactly as it replaces assignees —
+the spec does not say so, and marks only `attachments` and `labels` read-only.
+`Task` serialises every field, so a task read back out of a store with nowhere to keep
+reminders went to the server carrying `"reminders": []`, and the server deleted them:
+renaming a task destroyed its reminders, silently, every time. Measured on dev
+2026-08-29 (one reminder in, zero out). The store keeps them now — `task_reminders`,
+schema v2 — so the body carries them back, and
+`a_task_update_replaces_reminders_from_the_body` asserts both halves: carrying them
+preserves them, and sending `[]` still clears them.
+
+The general rule this is the second instance of: **any `Vec` on `Task` that the spec
+does not mark read-only is replaced from the body**, so it must survive a store round
+trip or a write will erase it. `attachments` and `related_tasks` are the remaining
+untested ones; check them before Phase 5 sends either.
+
+**`GET /projects` omits archived projects unless asked.** `is_archived=true` reads like
+a filter and is the opposite — the spec words it "if true, *also* returns all archived
+projects". The sync engine feeds that listing to `retain_projects`, which deletes every
+project the listing did not name **and cascades to its tasks**, so the missing parameter
+deleted the user's archived projects and everything in them on *every* pull. Not
+contained by `Reach`, either: both reaches call `pull_lists` unconditionally, which is
+why the delete-safety reasoning about `Full` versus `Incremental` did not cover it.
+`an_archived_project_and_its_tasks_survive_a_pull` mocks the two shapes the way the
+server answers them.
+
 **Assignees travel in the task body; labels do not.** `POST /tasks/{id}` replaces the task
 from the body, and an empty `assignees` clears them. Labels are the opposite: they are
 attached and detached through their own endpoints and the body's `labels` field is ignored.
@@ -140,6 +171,16 @@ the server has already honoured.
 written to compensate for: a write carrying one label answered with one label, matching
 the task. The helper stays as belt and braces — one measurement of one shape, guarding a
 silent failure — but it is no longer the load-bearing step its comment claimed.
+
+**Dates the user sees are resolved in the user's zone, not UTC.** `Model.now` is a
+`DateTime<FixedOffset>` stamped from `Local::now()` by `runtime::now()`, and it is the
+only clock the interface sees. It was `Utc::now()`, which meant `due today` resolved to
+23:59 UTC — 18:59 the same evening for a UTC-5 user, so every task turned overdue hours
+early — and `relative_date` compared UTC calendar days, so a task due this evening read
+as "Tomorrow" and then flipped to "Today" at midnight UTC. This is the bug cria has, and
+`quickadd/dates.rs`'s own doc comment claims to have fixed it; the parser always was
+correct, and only the wiring was wrong. Anything asking "what day is it" converts into
+`now.timezone()` first. Anything asking "has this instant passed" does not need to.
 
 ## Environment
 
