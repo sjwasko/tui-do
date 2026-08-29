@@ -405,6 +405,11 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
         // Whatever was asked for while this pass was running still has to happen.
         match AGAIN.swap(NOTHING_AGAIN, Ordering::SeqCst) {
             PUSH_AGAIN => spawn_sync(sync, tx, Pass::Push),
+            // `r` during the startup pull landed here and was dropped: the model had
+            // already been told a sync was starting, so the status line said "Syncing"
+            // and the toast promised changed tasks, and then nothing ran until the
+            // five-minute timer. Every code `again_code` can produce needs an arm.
+            DELTA_AGAIN => spawn_sync(sync, tx, Pass::Delta),
             FULL_AGAIN => spawn_sync(sync, tx, Pass::Full),
             _ => {}
         }
