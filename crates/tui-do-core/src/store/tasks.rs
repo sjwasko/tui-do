@@ -406,14 +406,15 @@ impl Store {
             if project_ids.is_empty() {
                 removed += tx.execute(
                     "DELETE FROM tasks
-                      WHERE id NOT IN (SELECT id FROM keep_ids) AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL)",
+                      WHERE id NOT IN (SELECT id FROM keep_ids)
+                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL AND subject_kind = 'task')",
                     [],
                 )?;
             } else {
                 let mut statement = tx.prepare(
                     "DELETE FROM tasks
                       WHERE project_id = ?1 AND id NOT IN (SELECT id FROM keep_ids)
-                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL)",
+                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL AND subject_kind = 'task')",
                 )?;
                 for project in &project_ids {
                     removed += statement.execute(params![project])?;

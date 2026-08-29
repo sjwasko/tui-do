@@ -181,6 +181,18 @@ const MIGRATIONS: &[&str] = &[
     r"
     ALTER TABLE outbox ADD COLUMN next_attempt_at TEXT;
     ",
+    // v5 -- what kind of thing an outbox entry acts on.
+    //
+    // `subject_id` is untyped, and provisional ids count down from -1 for each kind, so
+    // a locally created task and a locally created label would both be -1 in the same
+    // column. Two queries break silently on that: `retain_tasks` spares a task whose id
+    // matches a queued label's subject, and `settle_create` rewrites a label entry's
+    // payload with a `TaskId`. Every existing row is a task -- there was nothing else to
+    // queue -- so the default backfills them correctly.
+    r"
+    ALTER TABLE outbox ADD COLUMN subject_kind TEXT NOT NULL DEFAULT 'task';
+    CREATE INDEX outbox_by_subject_kind ON outbox (subject_kind, subject_id);
+    ",
 ];
 
 /// The schema version this build expects.

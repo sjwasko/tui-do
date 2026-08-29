@@ -19,7 +19,7 @@ use serde_json::json;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tui_do_api::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_api::{Client, Credentials};
-use tui_do_core::store::{Mutation, Store, LAST_PULL};
+use tui_do_core::store::{Mutation, Store, Subject, LAST_PULL};
 use tui_do_core::sync::{Reach, Sync, SyncEvent};
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -341,7 +341,7 @@ async fn a_pull_does_not_delete_a_task_created_offline() {
         })
         .await
         .unwrap();
-    let provisional = created.mutation.subject();
+    let provisional = created.mutation.subject().task().unwrap();
 
     let (sync, _rx) = engine(&server, &store);
     sync.pull().await.unwrap();
@@ -396,7 +396,7 @@ async fn a_pushed_create_adopts_the_server_id_and_keeps_its_labels() {
         })
         .await
         .unwrap();
-    let provisional = created.mutation.subject();
+    let provisional = created.mutation.subject().task().unwrap();
 
     let (sync, _rx) = engine(&server, &store);
     let report = sync.push().await.unwrap();
@@ -436,7 +436,7 @@ async fn a_pushed_create_announces_the_id_it_was_given() {
         })
         .await
         .unwrap();
-    let provisional = created.mutation.subject();
+    let provisional = created.mutation.subject().task().unwrap();
 
     let (sync, mut rx) = engine(&server, &store);
     sync.push().await.unwrap();
@@ -478,7 +478,7 @@ async fn an_edit_queued_behind_a_create_reaches_the_real_task() {
         })
         .await
         .unwrap();
-    let provisional = created.mutation.subject();
+    let provisional = created.mutation.subject().task().unwrap();
     store
         .queue(Mutation::UpdateTask {
             before: Box::new(task(provisional.get(), "buy milk")),
@@ -588,7 +588,7 @@ async fn a_rejected_change_is_rolled_back_and_the_user_is_told() {
         SyncEvent::Rejected {
             subject, message, ..
         } => {
-            assert_eq!(subject, TaskId(1));
+            assert_eq!(subject, Subject::Task(TaskId(1)));
             assert!(message.contains("title cannot be empty"), "{message}");
         }
         other => panic!("wrong event: {other:?}"),
@@ -1234,7 +1234,7 @@ async fn a_create_that_names_a_missing_project_is_still_a_rejection() {
 
     assert_eq!(report.rejected, 1);
     assert!(store
-        .task(created.mutation.subject())
+        .task(created.mutation.subject().task().unwrap())
         .await
         .unwrap()
         .is_none());

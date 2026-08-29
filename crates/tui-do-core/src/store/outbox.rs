@@ -38,7 +38,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
-use tui_do_api::models::{Label, Task, TaskId};
+use tui_do_api::models::{Label, LabelId, Task, TaskId};
 
 use super::labels::upsert_label;
 use super::state::{read_state, write_state};
@@ -48,6 +48,55 @@ use crate::error::Result;
 
 /// The `sync_state` key holding the next provisional task id.
 const NEXT_LOCAL_ID: &str = "next_local_task_id";
+
+/// What a queued mutation acts on.
+///
+/// Not a bare id: `outbox.subject_id` is an untyped `INTEGER`, and provisional ids count
+/// down from `-1` **per kind**, so a locally created task and a locally created label are
+/// both `-1`. The kind is stored beside the id and every query that means "tasks" says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Subject {
+    /// A task, by id.
+    Task(TaskId),
+    /// A label, by id.
+    Label(LabelId),
+}
+
+impl Subject {
+    /// The short name stored in `outbox.subject_kind`.
+    #[must_use]
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::Task(_) => "task",
+            Self::Label(_) => "label",
+        }
+    }
+
+    /// The bare id, for the column.
+    #[must_use]
+    pub const fn id(self) -> i64 {
+        match self {
+            Self::Task(id) => id.get(),
+            Self::Label(id) => id.get(),
+        }
+    }
+
+    /// The task, when this is one. `None` for a label, which is the answer every
+    /// task-shaped caller wants.
+    #[must_use]
+    pub const fn task(self) -> Option<TaskId> {
+        match self {
+            Self::Task(id) => Some(id),
+            Self::Label(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.kind(), self.id())
+    }
+}
 
 /// A local change, queued for the server.
 ///
@@ -113,14 +162,14 @@ impl Mutation {
         }
     }
 
-    /// The task this entry acts on.
+    /// What this entry acts on.
     #[must_use]
-    pub fn subject(&self) -> TaskId {
+    pub fn subject(&self) -> Subject {
         match self {
-            Self::CreateTask { task } => task.id,
-            Self::UpdateTask { after, .. } => after.id,
-            Self::DeleteTask { before } => before.id,
-            Self::AttachLabel { task, .. } | Self::DetachLabel { task, .. } => *task,
+            Self::CreateTask { task } => Subject::Task(task.id),
+            Self::UpdateTask { after, .. } => Subject::Task(after.id),
+            Self::DeleteTask { before } => Subject::Task(before.id),
+            Self::AttachLabel { task, .. } | Self::DetachLabel { task, .. } => Subject::Task(*task),
         }
     }
 
@@ -418,13 +467,14 @@ impl Store {
             for part in mutation.decompose() {
                 part.apply(tx, now)?;
                 tx.execute(
-                    "INSERT INTO outbox (created, kind, payload, subject_id)
-                     VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO outbox (created, kind, payload, subject_id, subject_kind)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![
                         now.to_rfc3339(),
                         part.kind(),
                         serde_json::to_string(&part)?,
-                        part.subject().get(),
+                        part.subject().id(),
+                        part.subject().kind(),
                     ],
                 )?;
                 let entry = OutboxEntry {
@@ -523,7 +573,8 @@ impl Store {
     pub async fn is_pending(&self, task: TaskId) -> Result<bool> {
         self.read(move |connection| {
             Ok(connection.query_row(
-                "SELECT exists(SELECT 1 FROM outbox WHERE subject_id = ?1)",
+                "SELECT exists(SELECT 1 FROM outbox
+                                WHERE subject_id = ?1 AND subject_kind = 'task')",
                 params![task.get()],
                 |row| row.get::<_, i64>(0),
             )? == 1)
@@ -584,8 +635,10 @@ impl Store {
             tx.execute("DELETE FROM outbox WHERE id = ?1", params![entry])?;
 
             let queued: Vec<(i64, String)> = {
-                let mut statement =
-                    tx.prepare("SELECT id, payload FROM outbox WHERE subject_id = ?1")?;
+                let mut statement = tx.prepare(
+                    "SELECT id, payload FROM outbox
+                      WHERE subject_id = ?1 AND subject_kind = 'task'",
+                )?;
                 let rows = statement.query_map(params![provisional.get()], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                 })?;
@@ -747,9 +800,37 @@ mod tests {
             .unwrap();
 
         // The UI can render it immediately, without waiting for a request.
-        let stored = store.task(entry.mutation.subject()).await.unwrap();
+        let stored = store
+            .task(entry.mutation.subject().task().unwrap())
+            .await
+            .unwrap();
         assert_eq!(stored.expect("the task").title, "buy milk");
         assert_eq!(store.pending_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_queued_entry_records_what_kind_of_thing_it_acts_on() {
+        // `subject_id` is a bare INTEGER and provisional ids count down from -1 for each
+        // kind, so task -1 and label -1 are the same value in the same column. The kind
+        // is what keeps `retain_tasks` and `settle_create` from confusing them.
+        let store = Store::in_memory().unwrap();
+        let entry = store
+            .queue(Mutation::CreateTask {
+                task: Box::new(task(0, "written")),
+            })
+            .await
+            .unwrap();
+        assert_eq!(entry.mutation.subject().kind(), "task");
+
+        let kinds: Vec<String> = store
+            .read(|connection| {
+                let mut statement = connection.prepare("SELECT subject_kind FROM outbox")?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(kinds, vec!["task".to_string()]);
     }
 
     #[tokio::test]
@@ -770,9 +851,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(is_provisional(first.mutation.subject()));
-        assert_eq!(first.mutation.subject(), TaskId(-1));
-        assert_eq!(second.mutation.subject(), TaskId(-2));
+        assert!(is_provisional(first.mutation.subject().task().unwrap()));
+        assert_eq!(first.mutation.subject(), Subject::Task(TaskId(-1)));
+        assert_eq!(second.mutation.subject(), Subject::Task(TaskId(-2)));
     }
 
     #[tokio::test]
@@ -797,7 +878,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(second.mutation.subject(), TaskId(-2));
+        assert_eq!(second.mutation.subject(), Subject::Task(TaskId(-2)));
     }
 
     #[tokio::test]
@@ -842,7 +923,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let provisional = created.mutation.subject();
+        let provisional = created.mutation.subject().task().unwrap();
         store
             .queue(Mutation::UpdateTask {
                 before: Box::new(task(provisional.get(), "buy milk")),
@@ -871,7 +952,7 @@ mod tests {
         for entry in &pending {
             assert_eq!(
                 entry.mutation.subject(),
-                TaskId(4242),
+                Subject::Task(TaskId(4242)),
                 "an entry still points at the provisional id"
             );
         }
@@ -914,7 +995,7 @@ mod tests {
         store.discard(&entry).await.unwrap();
 
         assert!(store
-            .task(entry.mutation.subject())
+            .task(entry.mutation.subject().task().unwrap())
             .await
             .unwrap()
             .is_none());

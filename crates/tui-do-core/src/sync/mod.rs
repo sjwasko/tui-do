@@ -42,7 +42,7 @@ use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
 use crate::store::{
-    Mutation, OutboxEntry, Store, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
+    Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
 };
 
 /// How far back an incremental pull reaches beyond the watermark.
@@ -186,8 +186,8 @@ pub enum SyncEvent {
     /// The only event the user must be shown: their edit has just disappeared from the
     /// screen and they are owed an explanation.
     Rejected {
-        /// The task the change was about.
-        subject: TaskId,
+        /// What the change was about.
+        subject: Subject,
         /// What the change was, as [`Mutation::kind`] spells it.
         kind: String,
         /// What the server said.
@@ -316,8 +316,7 @@ impl Sync {
         // held back every other change the user had made. On a fleet, where a box may
         // carry a long backlog, that is the difference between one stuck task and a box
         // that has stopped syncing.
-        let mut blocked: std::collections::HashSet<tui_do_api::models::TaskId> =
-            std::collections::HashSet::new();
+        let mut blocked: std::collections::HashSet<Subject> = std::collections::HashSet::new();
         // Guards against an entry that survives its own successful send, which would
         // otherwise spin this loop against the server forever.
         let mut attempted: std::collections::HashSet<i64> = std::collections::HashSet::new();
