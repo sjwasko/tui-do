@@ -37,7 +37,7 @@
 //! the entry stays.
 
 use tokio::sync::mpsc::UnboundedSender;
-use tui_do_api::models::{ProjectId, Task, TaskId};
+use tui_do_api::models::{Label, ProjectId, Task, TaskId};
 use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
@@ -194,19 +194,29 @@ pub enum SyncEvent {
         message: String,
     },
 
-    /// The server accepted a create and named the task.
+    /// The server accepted a create and named the thing it created.
     ///
-    /// A created task carries a provisional, negative id until the server answers, and
-    /// the store swaps it for the real one. Anything still holding the provisional id is
-    /// then holding an id no server has ever seen: an edit made against it is sent as
-    /// `POST /tasks/-14` and comes back `404 This task does not exist`. The interface is
-    /// one such holder — its list, its selection and its undo stack — so the swap has to
-    /// be told, not inferred from a later pull that a push-only pass never runs.
+    /// A created task or label carries a provisional, negative id until the server
+    /// answers, and the store swaps it for the real one. Anything still holding the
+    /// provisional id is then holding an id no server has ever seen: an edit made against
+    /// it is sent as `POST /tasks/-14` and comes back `404 This task does not exist`. The
+    /// interface is one such holder — its list, its selection and its undo stack — so the
+    /// swap has to be told, not inferred from a later pull that a push-only pass never
+    /// runs.
+    ///
+    /// A label has *more* holders than a task, which is why the two ids are a
+    /// [`Subject`] rather than a `TaskId`: a label id sits on every task carrying that
+    /// label, in the filter the user is looking at, in the undo stack — and, most easily
+    /// missed, in an open `Modal::Labels`, which is drawn from a list it read before the
+    /// server had named anything.
+    ///
+    /// Both fields are the same kind. A `Task` provisional is never answered by a `Label`
+    /// assignment; a receiver may match the pair and ignore a mismatch.
     Adopted {
-        /// The id the task had locally.
-        provisional: TaskId,
-        /// The id the server gave it.
-        assigned: TaskId,
+        /// What the thing was called locally.
+        provisional: Subject,
+        /// What the server called it.
+        assigned: Subject,
     },
 
     /// The push half finished, whether or not a pull follows.
@@ -235,6 +245,11 @@ enum Sent {
     Created(Box<Task>),
     /// A task was updated, and this is the server's copy of it.
     Updated(Box<Task>),
+    /// A label was created, and this is the server's copy of it.
+    ///
+    /// Which may be the copy an *earlier* attempt of the same entry created: a retry
+    /// reads before it writes, and what it finds is settled exactly as a fresh create is.
+    LabelCreated(Box<Label>),
     /// It landed and there is nothing to store.
     Done,
 }
@@ -412,8 +427,21 @@ impl Sync {
                 // renumbered first and then met a store failure would be pointing at a
                 // row that does not exist.
                 self.emit(SyncEvent::Adopted {
-                    provisional,
-                    assigned: named,
+                    provisional: Subject::Task(provisional),
+                    assigned: Subject::Task(named),
+                });
+            }
+            (Sent::LabelCreated(assigned), Mutation::CreateLabel { label }) => {
+                let (provisional, named) = (label.id, assigned.id);
+                self.store
+                    .settle_create_label(entry.id, provisional, *assigned)
+                    .await?;
+                // As above: the store first, then the news. A label has more holders than
+                // a task -- every task carrying it, the filter, an open label modal --
+                // and all of them are downstream of the row actually existing.
+                self.emit(SyncEvent::Adopted {
+                    provisional: Subject::Label(provisional),
+                    assigned: Subject::Label(named),
                 });
             }
             (Sent::Updated(updated), Mutation::UpdateTask { after, .. }) => {
@@ -474,16 +502,34 @@ impl Sync {
                 Sent::Done
             }
             Mutation::CreateLabel { label } => {
-                // Deliberately minimal: nothing yet produces this mutation outside a
-                // test, so this exists only to keep the match exhaustive now that
-                // `Mutation::CreateLabel` does. Two things a real send needs are missing
-                // on purpose, both named in the label-lifecycle plan rather than guessed
-                // at here: swapping the provisional id for the server's once `deliver`
-                // knows how (a label equivalent of `settle_create`), and guarding a
-                // retry from creating a second label, since titles are not unique and
-                // `PUT /labels` ignores the body's id.
-                self.client.create_label(label).await?;
-                Sent::Done
+                // A create that has already failed once reads before it writes. Titles
+                // are not unique and `PUT /labels` ignores the body's id, so a replayed
+                // create answers `201` and a *second* label, with nothing in the response
+                // to tell it from the first -- `is_already_done` has nothing to match on
+                // and deliberately has no arm for this. Measured on dev 2026-08-29:
+                // creating `tui-do probe alpha` twice answered `201` twice with two
+                // different ids, and `0` and `-7` in the body both came back
+                // server-assigned.
+                //
+                // Gated on `attempts > 0` rather than done always: a *first* attempt that
+                // read first would adopt a label another box legitimately created and
+                // silently merge two users' intentions.
+                //
+                // So this protects against *our own* retry, not against two boxes
+                // creating the same label at the same moment. Nothing can protect against
+                // that without a unique constraint the server does not have.
+                if entry.attempts > 0 {
+                    if let Some(existing) = self
+                        .client
+                        .labels_named(&label.title)
+                        .await?
+                        .into_iter()
+                        .next()
+                    {
+                        return Ok(Sent::LabelCreated(Box::new(existing)));
+                    }
+                }
+                Sent::LabelCreated(Box::new(self.client.create_label(label).await?))
             }
         })
     }
@@ -734,6 +780,13 @@ fn is_permanent(error: &ApiError) -> bool {
 /// Deliberately narrow otherwise. A `404` creating a task means the *project* is gone,
 /// which is a real rejection, and a `404` updating one means the task is gone, which the
 /// user should hear about.
+///
+/// `CreateLabel` has no arm here and will never get one. Measured on dev 2026-08-29:
+/// creating the same title twice answers `201` twice with two different ids, so a replayed
+/// create *succeeds* and there is no error to match on — the duplicate is invisible from
+/// here. What guards it instead is a read: [`Sync::transmit`] asks
+/// [`tui_do_api::Client::labels_named`] what exists before an entry that has already
+/// failed writes again.
 fn is_already_done(mutation: &Mutation, error: &ApiError) -> bool {
     /// Vikunja's code for "this label already exists on the task".
     const LABEL_ALREADY_ATTACHED: i64 = 8001;

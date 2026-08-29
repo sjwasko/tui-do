@@ -516,6 +516,32 @@ async fn projects_and_labels_paginate_too() {
 }
 
 #[tokio::test]
+async fn labels_can_be_looked_up_by_title() {
+    // What a retried create reconciles against. `s` is Vikunja's search parameter and it
+    // matches substrings, so the caller compares titles exactly -- asking for "next"
+    // must not adopt "next week".
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/labels"))
+        .and(query_param("s", "next"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![
+                    json!({"id": 41, "title": "next"}),
+                    json!({"id": 42, "title": "next week"}),
+                ]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let found = client(&server).labels_named("next").await.expect("search");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, tui_do_api::models::LabelId(41));
+}
+
+#[tokio::test]
 async fn the_projects_listing_asks_for_archived_ones_too() {
     // `is_archived=true` reads like a filter and is the opposite: the spec words it "if
     // true, *also* returns all archived projects". The sync engine hands this listing to

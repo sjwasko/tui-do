@@ -1023,8 +1023,8 @@ fn a_created_task_learns_the_id_the_server_gave_it() {
     let effects = update(
         &mut model,
         Msg::Sync(SyncEvent::Adopted {
-            provisional,
-            assigned: TaskId(3901),
+            provisional: Subject::Task(provisional),
+            assigned: Subject::Task(TaskId(3901)),
         }),
     );
 
@@ -1058,8 +1058,8 @@ fn an_edit_after_a_create_is_sent_against_the_id_the_server_knows() {
     update(
         &mut model,
         Msg::Sync(SyncEvent::Adopted {
-            provisional: TaskId(-1),
-            assigned: TaskId(3901),
+            provisional: Subject::Task(TaskId(-1)),
+            assigned: Subject::Task(TaskId(3901)),
         }),
     );
 
@@ -1090,8 +1090,8 @@ fn an_adoption_leaves_a_task_it_does_not_name_alone() {
     update(
         &mut model,
         Msg::Sync(SyncEvent::Adopted {
-            provisional: TaskId(-9),
-            assigned: TaskId(4000),
+            provisional: Subject::Task(TaskId(-9)),
+            assigned: Subject::Task(TaskId(4000)),
         }),
     );
 
