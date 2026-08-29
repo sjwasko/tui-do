@@ -153,6 +153,25 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX project_views_by_project ON project_views (project_id);
     ",
+    // v2 -- reminders.
+    //
+    // Not a display feature: `POST /tasks/{id}` replaces a task's reminders from the
+    // request body, the way it replaces assignees, and `Task` serialises every field. So
+    // a task that had been through a store with nowhere to keep reminders went back to
+    // the server carrying `"reminders": []` and lost them. Measured on dev 2026-08-29 by
+    // `a_task_update_does_not_wipe_reminders_it_was_not_told_about`: one reminder in,
+    // zero out. Keeping them here is what makes read-mutate-write safe.
+    //
+    // No id column: Vikunja identifies a reminder by its contents, and the pair is what
+    // travels on the wire.
+    r"
+    CREATE TABLE task_reminders (
+        task_id         INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        reminder        TEXT,
+        relative_period INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (task_id, reminder, relative_period)
+    );
+    ",
 ];
 
 /// The schema version this build expects.

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
-use tui_do_api::models::{ProjectId, Task, TaskId, User};
+use tui_do_api::models::{ProjectId, Task, TaskId, TaskReminder, User};
 
 use super::labels::{labels_for, upsert_label};
 use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
@@ -201,6 +201,7 @@ impl Store {
             };
             task.labels = labels_for(connection, id)?;
             task.assignees = assignees_for(connection, id)?;
+            task.reminders = reminders_for(connection, id)?;
             Ok(Some(task))
         })
         .await
@@ -261,6 +262,7 @@ impl Store {
             for task in &mut tasks {
                 task.labels = labels_for(connection, task.id)?;
                 task.assignees = assignees_for(connection, task.id)?;
+                task.reminders = reminders_for(connection, task.id)?;
             }
             Ok(tasks)
         })
@@ -485,11 +487,55 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
         )?;
     }
 
+    // Replaced wholesale, like labels and assignees. Reminders are stored at all because
+    // `POST /tasks/{id}` replaces them from the request body: a task that round-tripped
+    // through a store with nowhere to keep them went back carrying `"reminders": []` and
+    // the server deleted them.
+    tx.execute(
+        "DELETE FROM task_reminders WHERE task_id = ?1",
+        params![task.id.get()],
+    )?;
+    for reminder in &task.reminders {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_reminders (task_id, reminder, relative_period)
+             VALUES (?1, ?2, ?3)",
+            params![
+                task.id.get(),
+                stamp(reminder.reminder.get()),
+                reminder.relative_period
+            ],
+        )?;
+    }
+
     if let Some(creator) = &task.created_by {
         upsert_user(tx, creator)?;
     }
 
     Ok(())
+}
+
+/// The reminders set on a task.
+///
+/// Loaded with every task rather than on demand, because the reason they are stored is
+/// that `update_task` sends them back — a task read for editing must carry them or the
+/// server deletes them.
+fn reminders_for(connection: &Connection, task: TaskId) -> Result<Vec<TaskReminder>> {
+    let mut statement = connection.prepare(
+        "SELECT reminder, relative_period FROM task_reminders
+          WHERE task_id = ?1
+          ORDER BY reminder, relative_period",
+    )?;
+    let rows = statement.query_map(params![task.get()], |row| {
+        Ok(TaskReminder {
+            reminder: instant(row, "reminder")?.into(),
+            relative_period: row.get("relative_period")?,
+        })
+    })?;
+    let mut reminders = Vec::new();
+    for reminder in rows {
+        reminders.push(reminder?);
+    }
+    Ok(reminders)
 }
 
 /// The users assigned to a task.
@@ -588,6 +634,53 @@ mod tests {
         assert_eq!(read.due_date.get(), original.due_date.get());
         assert!((read.percent_done - 0.25).abs() < f64::EPSILON);
         assert_eq!(read.identifier, "CORE-1");
+    }
+
+    #[tokio::test]
+    async fn reminders_survive_the_store_because_a_write_sends_them_back() {
+        // Measured on dev 2026-08-29: `POST /tasks/{id}` replaces a task's reminders from
+        // the request body, so a task read out of a store that did not keep them went
+        // back carrying `"reminders": []` and the server deleted them. Every optimistic
+        // edit -- renaming a task, ticking it off -- destroyed its reminders silently.
+        // Keeping them here is the whole fix; the assertion is that a read-mutate-write
+        // cycle still has something to send.
+        let store = Store::in_memory().unwrap();
+        let mut original = task(1, "Renew the passport");
+        original.reminders = vec![
+            TaskReminder {
+                reminder: at("2026-09-01T09:00:00Z").into(),
+                relative_period: 0,
+            },
+            TaskReminder {
+                reminder: None.into(),
+                relative_period: -3600,
+            },
+        ];
+
+        store.upsert_tasks(vec![original.clone()]).await.unwrap();
+        let read = store.task(TaskId(1)).await.unwrap().expect("the task");
+        assert_eq!(read.reminders.len(), 2, "{:?}", read.reminders);
+        assert!(read
+            .reminders
+            .iter()
+            .any(|r| r.reminder.get() == at("2026-09-01T09:00:00Z")));
+        assert!(read.reminders.iter().any(|r| r.relative_period == -3600));
+
+        // The list path loads them too: an edit made from the task list is the common
+        // case, and it is the one that was losing them.
+        let listed = store
+            .tasks(TaskFilter::default(), TaskSort::default())
+            .await
+            .unwrap();
+        let from_list = listed.iter().find(|t| t.id == TaskId(1)).expect("listed");
+        assert_eq!(from_list.reminders.len(), 2);
+
+        // And they are replaced wholesale rather than accumulated, like labels.
+        let mut fewer = read.clone();
+        fewer.reminders.truncate(1);
+        store.upsert_tasks(vec![fewer]).await.unwrap();
+        let again = store.task(TaskId(1)).await.unwrap().expect("the task");
+        assert_eq!(again.reminders.len(), 1);
     }
 
     #[tokio::test]
