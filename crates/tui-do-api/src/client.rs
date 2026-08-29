@@ -507,6 +507,37 @@ impl Client {
         self.labels()?.collect_all().await
     }
 
+    /// `GET /labels?s=` — every label whose title is exactly `title`.
+    ///
+    /// The search parameter matches *substrings*, so the exact comparison happens here: a
+    /// retried `CreateLabel` uses this to find the label its lost response created, and
+    /// adopting "next week" when the user asked for "next" would be worse than the
+    /// duplicate it is avoiding.
+    ///
+    /// Case-insensitive, matching how the interface resolves a label name, because
+    /// Vikunja will happily hold `Next` and `next` and the user means one thing by them.
+    ///
+    /// This exists because a replayed create is otherwise undetectable. Measured on dev
+    /// 2026-08-29: creating `tui-do probe alpha` twice answered `201` twice with two
+    /// different ids, and nothing in the response tells a duplicate from a first
+    /// creation.
+    ///
+    /// # Errors
+    /// [`ApiError::NotAuthenticated`] if no credential is configured, or any failure from
+    /// any page.
+    pub async fn labels_named(&self, title: &str) -> Result<Vec<Label>> {
+        self.require_auth("searching labels")?;
+        let call =
+            Call::new(Method::GET, self.resolve(endpoints::LABELS, &[])?).with_query("s", title);
+        let found = Pager::<Label>::new(self.clone(), call, self.page_size())
+            .collect_all()
+            .await?;
+        Ok(found
+            .into_iter()
+            .filter(|label| label.title.eq_ignore_ascii_case(title))
+            .collect())
+    }
+
     // ---- writes ----------------------------------------------------------------
     //
     // Vikunja's verbs are not the REST convention: creation is `PUT` and updates are

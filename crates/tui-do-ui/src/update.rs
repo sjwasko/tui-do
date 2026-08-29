@@ -9,7 +9,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use tui_do_core::config::{QuickAction, QuickActionKind};
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
-use tui_do_core::store::Mutation;
+use tui_do_core::store::{Mutation, Subject};
 use tui_do_core::sync::{Phase, Stage};
 use tui_do_core::SyncEvent;
 
@@ -1458,7 +1458,28 @@ fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
     apply(model, mutation)
 }
 
-/// Swap a provisional task id for the one the server gave it.
+/// Swap a provisional id for the one the server gave it.
+///
+/// Split by kind because the two id spaces are unrelated: a task id and a label id of the
+/// same number name different things, and a single renumbering routine taking both would
+/// be one typo away from moving the wrong one. The event carries both sides as a
+/// [`Subject`] for exactly that reason, and a mismatched pair — which the engine never
+/// emits — is ignored rather than guessed at.
+fn adopt(model: &mut Model, provisional: Subject, assigned: Subject) -> Vec<Effect> {
+    match (provisional, assigned) {
+        (Subject::Task(provisional), Subject::Task(assigned)) => {
+            adopt_task(model, provisional, assigned)
+        }
+        // A label the server has just named has holders of its own -- every task carrying
+        // it, the label the filter names, the undo stack, and an open label modal drawn
+        // from a list read before the server named anything. Renumbering them is its own
+        // piece of work, and nothing in the interface queues a `CreateLabel` yet, so
+        // there is so far nothing here to renumber.
+        _ => Vec::new(),
+    }
+}
+
+/// The task half: the row on screen, the selection, and the undo stack.
 ///
 /// The store has already done this to its own rows and to anything still queued. What is
 /// left is everything the interface holds by id, and *all* of it has to move together:
@@ -1471,7 +1492,7 @@ fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
 /// `404 This task does not exist` — the task it just created. The undo stack is the one
 /// most easily forgotten: a create pushes a delete of the provisional id, so `u` right
 /// after creating a task would ask the server to delete something it never had.
-fn adopt(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<Effect> {
+fn adopt_task(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<Effect> {
     if let Some(task) = find(&mut model.data.tasks, provisional) {
         task.id = assigned;
     }

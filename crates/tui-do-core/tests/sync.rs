@@ -19,7 +19,7 @@ use serde_json::json;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tui_do_api::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_api::{Client, Credentials};
-use tui_do_core::store::{Mutation, Store, Subject, LAST_PULL};
+use tui_do_core::store::{LabelFilter, LabelSort, Mutation, Store, Subject, LAST_PULL};
 use tui_do_core::sync::{Reach, Sync, SyncEvent};
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -436,7 +436,7 @@ async fn a_pushed_create_announces_the_id_it_was_given() {
         })
         .await
         .unwrap();
-    let provisional = created.mutation.subject().task().unwrap();
+    let provisional = created.mutation.subject();
 
     let (sync, mut rx) = engine(&server, &store);
     sync.push().await.unwrap();
@@ -445,10 +445,110 @@ async fn a_pushed_create_announces_the_id_it_was_given() {
     assert!(
         seen.contains(&SyncEvent::Adopted {
             provisional,
-            assigned: TaskId(4242),
+            assigned: Subject::Task(TaskId(4242)),
         }),
         "a create that the server named must say so; saw {seen:?}"
     );
+}
+
+#[tokio::test]
+async fn a_label_create_is_sent_and_takes_the_id_the_server_gave_it() {
+    // The first attempt writes without reading: a create that has never been sent has no
+    // earlier attempt of its own to find, and adopting a label another box legitimately
+    // created would silently merge two users' intentions.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 41, "title": "next"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject();
+
+    let (sync, mut rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        labels.len(),
+        1,
+        "the provisional row is gone; saw {labels:?}"
+    );
+    assert_eq!(labels[0].id, LabelId(41));
+
+    let seen = events(&mut rx);
+    assert!(
+        seen.contains(&SyncEvent::Adopted {
+            provisional,
+            assigned: Subject::Label(LabelId(41)),
+        }),
+        "a label the server named must say so; saw {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_retried_label_create_adopts_the_one_the_lost_response_made() {
+    // Measured on dev 2026-08-29: creating the same title twice answers 201 twice with
+    // two different ids, and nothing in the response says which. So a create that has
+    // already failed once looks before it writes -- and finding its own earlier attempt
+    // is the whole point. `is_already_done` cannot help here and deliberately has no arm
+    // for a label create.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels")))
+        .and(query_param("s", "next"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![json!({"id": 41, "title": "next"})]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // No PUT mock at all: a second create is a test failure, not a fallback.
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    // One failed attempt, which is what arms the read. `Retry-After: 0` is the server's
+    // own way of saying "try again now", and it is how the entry is put past its backoff
+    // without the suite sleeping through the five-second first step.
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap();
+    assert_eq!(labels.len(), 1, "one label, not two; saw {labels:?}");
+    assert_eq!(labels[0].id, LabelId(41));
 }
 
 #[tokio::test]
