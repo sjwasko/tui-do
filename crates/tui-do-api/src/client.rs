@@ -509,12 +509,15 @@ impl Client {
 
     // ---- writes ----------------------------------------------------------------
     //
-    // Vikunja's verbs are not the REST convention and are not internally consistent:
-    // creation is `PUT`, updates are `POST` -- except for a label, which updates with
-    // `PUT` on its own id. Every method below is taken from `spec/vikunja.json` rather
-    // than from what the shape of the URL suggests, because guessing here is exactly how
+    // Vikunja's verbs are not the REST convention: creation is `PUT` and updates are
+    // `POST`. Every method below is taken from `spec/vikunja.json` rather than from what
+    // the shape of the URL suggests, because guessing here is exactly how
     // `seed-from-prod.sh` ended up sending `POST` to a migration endpoint that answers
     // `405 Allow: OPTIONS, PUT`.
+    //
+    // The spec is not the last word either. It documents `PUT /labels/{id}` for a label
+    // update, and the server answers `405` to it -- see `update_label`. Where the two
+    // disagree the server wins, and only a live test can tell them apart.
 
     /// `PUT /projects/{id}/tasks` — create a task in a project.
     ///
@@ -633,17 +636,28 @@ impl Client {
         self.send::<Label>(call).await.map(|(label, _)| label)
     }
 
-    /// `PUT /labels/{id}` — update a label.
+    /// `POST /labels/{id}` — update a label.
     ///
-    /// Note the verb: every other update in this API is a `POST`, and this one is not.
-    /// The spec says `PUT`, so this says `PUT`.
+    /// The spec says `put`. The server answers `405 Method Not Allowed` to a `PUT` here
+    /// and `OPTIONS /labels/{id}` replies `Allow: OPTIONS, DELETE, GET, POST` — measured
+    /// on dev 2026-08-29, and the fourth time the spec has lost to the server on a verb
+    /// or a body. Nothing called this method, so the `405` was never seen.
+    ///
+    /// The whole label goes in the body, not the fields being changed: a body carrying
+    /// only `title` cleared `hex_color` to `""`, exactly as a partial task body clears
+    /// what it omits.
+    ///
+    /// Takes the label rather than an id and a patch **because the body's `id` beats the
+    /// path**: `POST /labels/12` carrying `"id": 13` updated label 13 and left 12
+    /// untouched, answering with 13. One argument means the two cannot disagree.
     ///
     /// # Errors
-    /// Any transport or status failure.
+    /// Any transport or status failure. `404` with Vikunja code `8002` when the label is
+    /// gone, which is what a replayed rename after a delete answers.
     pub async fn update_label(&self, label: &Label) -> Result<Label> {
         self.require_auth("updating a label")?;
         let call = Call::new(
-            Method::PUT,
+            Method::POST,
             self.resolve(endpoints::LABEL, &[("id", &label.id.to_string())])?,
         )
         .with_json(label)?;
