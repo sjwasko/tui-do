@@ -1364,6 +1364,111 @@ async fn a_different_400_on_an_attach_is_still_a_rejection() {
 }
 
 #[tokio::test]
+async fn a_refused_label_create_takes_the_attaches_that_named_it() {
+    // The attach's subject is the *task*, not the label -- same-subject filtering on the
+    // rejected `CreateLabel` cannot find it, and leaving it queued sends an attach for a
+    // label id no server has ever heard of.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"code": 4001, "message": "invalid"})),
+        )
+        .mount(&server)
+        .await;
+    // Never actually called if the widening works: the attach dies with the create it
+    // depended on, rather than going out and being independently rejected (which would
+    // pass this test for the wrong reason -- a lost response for a different reason).
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/7/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": -1})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(7, "errand")]).await.unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(7),
+            label: Box::new(label(-1, "next")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    sync.push().await.unwrap();
+
+    assert!(
+        store.pending(None).await.unwrap().is_empty(),
+        "an attach naming a label the server refused to create is still queued"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_task_does_not_widen_into_entries_that_merely_mention_it() {
+    // The widening exists only for a rejected *label* create -- a rejected task must keep
+    // the narrow, same-subject blast radius it always had. An `AttachLabel` for a
+    // different task, naming the same label the rejected task carried in its own edit,
+    // has to survive: `references` is never even consulted unless the rejected subject is
+    // a label.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "code": 4001, "message": "The task title cannot be empty."
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/2/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": 9})))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let mut before = task(1, "original");
+    before.labels = vec![label(9, "urgent")];
+    store
+        .upsert_tasks(vec![before.clone(), task(2, "other")])
+        .await
+        .unwrap();
+    let mut after = task(1, "");
+    after.labels = vec![label(9, "urgent")];
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(before),
+            after: Box::new(after),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(2),
+            label: Box::new(label(9, "urgent")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 1, "only the task edit was rejected");
+    assert_eq!(
+        report.sent, 1,
+        "the attach on a different task names the same label but must still go out"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn a_create_that_names_a_missing_project_is_still_a_rejection() {
     // The narrow reading of 404: it means the *project* is gone, not that the task is
     // already created, so this one does roll back.
