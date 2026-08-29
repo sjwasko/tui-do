@@ -184,12 +184,13 @@ pub fn render(
     columns: &[MeasuredColumn],
     context: RowContext<'_>,
 ) -> Vec<RenderedRow> {
+    let marked = says_priority_in_the_title(columns);
     tasks
         .iter()
         .map(|task| {
             let cells: Vec<Vec<Line<'static>>> = columns
                 .iter()
-                .map(|column| cell(task, column, context))
+                .map(|column| cell(task, column, context, marked))
                 .collect();
             let height = height_of(&cells);
             RenderedRow {
@@ -218,11 +219,38 @@ fn height_of(cells: &[Vec<Line<'static>>]) -> u16 {
 /// came to show seven tasks while the selection was on the eighteenth.
 #[must_use]
 pub fn row_height(task: &Task, columns: &[MeasuredColumn], context: RowContext<'_>) -> u16 {
+    let marked = says_priority_in_the_title(columns);
     let cells: Vec<Vec<Line<'static>>> = columns
         .iter()
-        .map(|column| cell(task, column, context))
+        .map(|column| cell(task, column, context, marked))
         .collect();
     height_of(&cells)
+}
+
+/// Whether these columns leave the title to say what the priority is.
+///
+/// A layout carrying `Pri` says it in its own column, and saying it twice on one row is
+/// noise. `measure` drops columns from the right when they do not fit, so a terminal too
+/// narrow to keep `Pri` gets the marker back -- which is what should happen: the fact
+/// does not stop mattering because the window got small.
+fn says_priority_in_the_title(columns: &[MeasuredColumn]) -> bool {
+    !columns
+        .iter()
+        .any(|column| column.column == Column::Priority)
+}
+
+/// How a high priority reads in the title: `!!!` at High, one more `!` per step above it.
+///
+/// `None` below High, because [`Theme::priority`] already draws nothing there -- colouring
+/// "low" spends the reader's attention on the tasks that least deserve it -- and `None`
+/// for a finished task, the same way [`Theme::due`] mutes a done task's date. The urgency
+/// was about getting it done.
+fn priority_marker(task: &Task) -> Option<String> {
+    if task.done || task.priority < 3 {
+        return None;
+    }
+    let steps = usize::try_from(task.priority.min(5)).unwrap_or(3);
+    Some("!".repeat(steps))
 }
 
 /// How many whole rows fit in `height` lines, starting at `first`.
@@ -281,9 +309,50 @@ pub fn first_visible(
 }
 
 /// One cell, wrapped or truncated to its column's width.
-fn cell(task: &Task, column: &MeasuredColumn, context: RowContext<'_>) -> Vec<Line<'static>> {
+///
+/// `marked` is whether the title carries the priority marker; see
+/// [`says_priority_in_the_title`].
+fn cell(
+    task: &Task,
+    column: &MeasuredColumn,
+    context: RowContext<'_>,
+    marked: bool,
+) -> Vec<Line<'static>> {
     let theme = context.theme;
     let width = column.width;
+
+    // A high priority is said in the title itself rather than in a gutter of its own, so
+    // the marked title is the one that gives up the room and the rows without a priority
+    // -- the majority -- pay nothing for it. Two spans, so the marker keeps the colour
+    // the theme gives a priority while the title keeps its own.
+    if column.column == Column::Title && marked {
+        if let Some(mark) = priority_marker(task) {
+            let text = format!("{mark} {}", task.title);
+            let lines = if column.wrap {
+                wrap(&text, width, MAX_ROW_LINES)
+            } else {
+                vec![truncate(&text, width)]
+            };
+            return lines
+                .into_iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    // Only the first line opens with the marker, and only when the width
+                    // left it whole -- a title squeezed to nothing keeps its own colour
+                    // rather than showing half a marker in the priority's.
+                    if index == 0 {
+                        if let Some(rest) = line.strip_prefix(mark.as_str()) {
+                            return Line::from(vec![
+                                Span::styled(mark.clone(), theme.priority(task.priority)),
+                                Span::styled(rest.to_string(), theme.text()),
+                            ]);
+                        }
+                    }
+                    Line::from(Span::styled(line, theme.text()))
+                })
+                .collect();
+        }
+    }
 
     // Labels are the one cell that is not a single run of text: each chip carries the
     // colour the server gave it.
@@ -1221,6 +1290,104 @@ mod tests {
         let context = plain_context();
         assert_eq!(first_visible(&tasks, &narrow(), context, 2, 1), 2);
         assert_eq!(fit(&tasks, &narrow(), context, 2, 1), 1);
+    }
+    /// The title cell's first line, span by span.
+    fn title_line(task: Task, columns: &[MeasuredColumn]) -> Vec<(String, ratatui::style::Style)> {
+        let index = columns
+            .iter()
+            .position(|column| column.column == Column::Title)
+            .unwrap();
+        let rows = render(&[task], columns, plain_context());
+        rows[0].cells[index]
+            .first()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|span| (span.content.to_string(), span.style))
+            .collect()
+    }
+
+    fn prioritised(priority: i64) -> Task {
+        Task {
+            id: TaskId(1),
+            title: "Renew the domain before it lapses".to_string(),
+            priority,
+            ..Task::default()
+        }
+    }
+
+    fn title_only(width: u16) -> Vec<MeasuredColumn> {
+        measure(&layout(vec![ColumnSpec::new(Column::Title)]), width)
+    }
+
+    #[test]
+    fn a_high_priority_is_said_in_the_title_and_a_low_one_is_not() {
+        let columns = title_only(40);
+        // Below High, nothing at all. Colouring "low" spends the reader's attention on
+        // the tasks that least deserve it, which is the rule `Theme::priority` already
+        // states and the rule the web UI follows.
+        for priority in [0, 1, 2] {
+            let spans = title_line(prioritised(priority), &columns);
+            assert_eq!(spans.len(), 1, "priority {priority} marked the title");
+            assert_eq!(spans[0].0, "Renew the domain before it lapses");
+        }
+        // From High up, one `!` per step, in the colour the theme already gives it.
+        for (priority, mark) in [(3, "!!!"), (4, "!!!!"), (5, "!!!!!")] {
+            let spans = title_line(prioritised(priority), &columns);
+            assert_eq!(spans[0].0, mark);
+            assert_eq!(spans[0].1, plain_context().theme.priority(priority));
+            assert_eq!(spans[1].0, " Renew the domain before it lapses");
+        }
+    }
+
+    #[test]
+    fn a_finished_task_stops_shouting() {
+        // The same reasoning `Theme::due` uses when it mutes a done task's date: the
+        // urgency was about getting it done, and it is done.
+        let spans = title_line(
+            Task {
+                done: true,
+                ..prioritised(5)
+            },
+            &title_only(40),
+        );
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].0, "Renew the domain before it lapses");
+    }
+
+    #[test]
+    fn the_marker_stands_down_when_the_layout_already_shows_the_priority() {
+        // Both at once says it twice on one row. If the terminal is too narrow to keep
+        // the Pri column, `measure` drops it and the marker comes back -- which is the
+        // behaviour wanted, not an accident.
+        let columns = measure(
+            &layout(vec![
+                ColumnSpec::new(Column::Priority),
+                ColumnSpec::new(Column::Title),
+            ]),
+            40,
+        );
+        assert!(columns
+            .iter()
+            .any(|column| column.column == Column::Priority));
+        let spans = title_line(prioritised(5), &columns);
+        assert_eq!(spans.len(), 1);
+        assert!(spans[0].0.starts_with("Renew the domain"));
+    }
+
+    #[test]
+    fn the_marker_is_paid_for_out_of_the_title_it_marks() {
+        // It lives inside the title cell rather than in a gutter of its own, so the
+        // marked title gives up the room and every other row pays nothing.
+        let columns = title_only(20);
+        let spans = title_line(prioritised(3), &columns);
+        assert_eq!(spans[0].0, "!!!");
+        assert_eq!(display_width(&spans[1].0), 17);
+        assert!(spans[1].0.ends_with('\u{2026}'));
+
+        let plain = title_line(prioritised(0), &columns);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(display_width(&plain[0].0), 20);
     }
 }
 
