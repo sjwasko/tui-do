@@ -42,10 +42,14 @@ Read `x-pagination-total-pages` and `x-pagination-result-count`; take the page c
 *Why:* cria requests `per_page=10000`, is silently capped at 50, and drops tasks past the
 first page without telling anyone.
 
-**5. Writes are optimistic.**
+**5. Writes are optimistic, and merged before they are sent.**
 `update` mutates the local store immediately and queues an outbox entry. On rejection the
 sync engine emits `Msg::SyncFailed`, which rolls back and toasts. Undo/redo rides on this
 mechanism rather than a parallel one.
+
+A queued `UpdateTask` is *not* sent as it was queued. The push reads the server's current
+copy and replays the user's field-level change onto it (`Task::merge_onto`), because
+tui-do is multi-instance — see below.
 
 ## Wire-format facts the spec does not tell you
 
@@ -181,6 +185,35 @@ as "Tomorrow" and then flipped to "Today" at midnight UTC. This is the bug cria 
 `quickadd/dates.rs`'s own doc comment claims to have fixed it; the parser always was
 correct, and only the wiring was wrong. Anything asking "what day is it" converts into
 `now.timezone()` first. Anything asking "has this instant passed" does not need to.
+
+## tui-do is multi-instance
+
+A developer with a fleet of boxes, tui-do on each, all against one Vikunja. Each box has
+its own SQLite store; the server is the only shared state. So the concurrency that matters
+is **concurrent writers against one server**, not two processes on one database file —
+there is no shared file, and nothing here needs cross-process locking.
+
+**Vikunja offers nothing to build on.** No version field, no ETag, and `updated` is
+server-set and explicitly unwritable. There is no conditional write to ask for.
+
+**A partial body clears every field it omits.** Measured on dev 2026-08-29: a
+`POST /tasks/{id}` carrying only `id` and `title` cleared `description` to `""`, `priority`
+to `0` and `due_date` to the zero time. So "send only what changed" is not available
+either — a write must carry the whole task.
+
+Both roads being closed is what forces the third: **read, merge, write.** `Task::merge_onto`
+is a three-way merge of `before` (what the user started from), `after` (what they want)
+and the server's current copy — their fields win, everything else keeps the server's value.
+It does not make concurrent editing safe; it narrows the window from "since this box last
+pulled", which is minutes at best and hours after an offline spell, to one request.
+
+On a true collision — both changed the same field — the user's value wins and
+`SyncEvent::Overwrote` toasts it. Refusing would lose what they just typed; overwriting in
+silence is how a fleet loses work nobody can account for.
+
+`server` is destructured exhaustively in `merge_onto` on purpose: a new field on `Task`
+fails to compile there rather than silently keeping the server's value, which is how a
+field quietly becomes uneditable.
 
 ## Environment
 
