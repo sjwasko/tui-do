@@ -274,8 +274,10 @@ impl Config {
                 path: parent.display().to_string(),
                 reason: e.to_string(),
             })?;
+            restrict_to_owner(parent);
         }
-        std::fs::write(path, self.to_yaml()?).map_err(|e| CoreError::Config {
+        let yaml = self.to_yaml()?;
+        write_private(path, yaml.as_bytes()).map_err(|e| CoreError::Config {
             path: path.display().to_string(),
             reason: e.to_string(),
         })
@@ -348,6 +350,54 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Credential-bearing files that other accounts on this machine can read.
+    ///
+    /// Returns a description per file, ready to show. The config itself counts whenever
+    /// it carries an inline `server.token`; a `token_file` counts always, since it holds
+    /// nothing but the credential.
+    ///
+    /// This exists as a return value rather than a `tracing::warn!` because a warning the
+    /// user never sees is not a warning. The log line that used to be the only mechanism
+    /// went to a subscriber that was never installed, and even with one installed the
+    /// interface owns the terminal — so the finding has to reach the model to be worth
+    /// making.
+    #[must_use]
+    pub fn exposed_credential_files(&self, config_path: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut check = |path: &Path| {
+            if world_readable(path) {
+                found.push(format!(
+                    "{} is readable by other users; chmod 600 it",
+                    path.display()
+                ));
+            }
+        };
+
+        if self.server.token.is_some() {
+            check(config_path);
+        }
+        if let Some(file) = &self.server.token_file {
+            check(&resolve_relative(file, config_path));
+        }
+        found
+    }
+}
+
+/// Whether anyone but the owner can read this path.
+#[cfg(unix)]
+fn world_readable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o077 != 0)
+}
+
+/// Unknown on platforms without Unix permission bits, which is reported as "fine".
+#[cfg(not(unix))]
+fn world_readable(_path: &Path) -> bool {
+    false
+}
+
 /// Expand `~` and resolve a relative path against the config file's directory.
 fn resolve_relative(path: &Path, config_path: &Path) -> PathBuf {
     if let Ok(rest) = path.strip_prefix("~") {
@@ -382,6 +432,59 @@ fn read_token_file(path: &Path) -> Result<String> {
     }
     Ok(token.to_string())
 }
+
+/// Write a file only its owner can read.
+///
+/// `std::fs::write` creates at `0o666 & !umask`, which on a default umask is `0o644` —
+/// world-readable. The config carries `server.token` whenever `tui-do migrate` copies one
+/// out of a cria config, so the plain call handed the user's API token to every account on
+/// the machine and then printed advice about dotfile repositories. The mode is set at
+/// creation rather than afterwards: a `chmod` after the fact leaves a window in which the
+/// token is on disk and readable.
+///
+/// Applied unconditionally rather than only when a token is present, so that adding one
+/// later cannot quietly land in a file that was created permissive.
+fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    // An existing file keeps the mode it already had, so tighten it too.
+    restrict_to_owner(path);
+    Ok(())
+}
+
+/// Take group and other permissions off a path, best-effort.
+///
+/// Silent on failure: this hardens a path that has already been written, and a filesystem
+/// that cannot express the mode is not a reason to fail the write.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    let mode = metadata.permissions().mode();
+    // Directories need the owner's execute bit to be traversable; files do not get it.
+    let wanted = if metadata.is_dir() { 0o700 } else { 0o600 };
+    if mode & 0o077 != 0 {
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(wanted);
+        let _ = std::fs::set_permissions(path, permissions);
+    }
+}
+
+/// No-op on platforms without Unix permission bits.
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) {}
 
 /// Say something when a credential file is readable by more than its owner.
 ///
@@ -597,5 +700,39 @@ quick_actions:
     target: away
 ";
         assert!(Config::from_yaml(yaml).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_config_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `std::fs::write` creates at 0644. The config carries `server.token` whenever
+        // `tui-do migrate` copies one out of a cria config, so the plain call published
+        // the user's API token to every account on the machine.
+        let dir = std::env::temp_dir().join(format!("tui-do-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+
+        let mut config = minimal();
+        config.server.token = Some("tk_secret".to_string());
+        config.save(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "written as {mode:o}");
+        assert_eq!(config.exposed_credential_files(&path), Vec::<String>::new());
+
+        // And a file that was already permissive is reported rather than ignored.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let exposed = config.exposed_credential_files(&path);
+        assert_eq!(exposed.len(), 1, "{exposed:?}");
+        assert!(exposed[0].contains("chmod 600"));
+
+        // A config with no inline token has nothing of its own to expose.
+        let mut tokenless = minimal();
+        tokenless.server.token = None;
+        assert!(tokenless.exposed_credential_files(&path).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

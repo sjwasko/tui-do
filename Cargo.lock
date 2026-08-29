@@ -3070,6 +3070,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
+ "dirs",
  "ratatui",
  "tokio",
  "tracing",
