@@ -113,6 +113,10 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
             message: problem.clone(),
         };
         model.toast(tui_do_ui::model::Toast::error(problem));
+    } else if let Some(exposed) = config.exposed_credential_files(&config_path).first() {
+        // Second in line: a token readable by other accounts is worth saying, but not at
+        // the cost of hiding a credential that does not work at all.
+        model.toast(tui_do_ui::model::Toast::warning(exposed.clone()));
     }
 
     let stop = Arc::new(AtomicBool::new(false));

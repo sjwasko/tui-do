@@ -171,8 +171,46 @@ struct MigrateArgs {
     force: bool,
 }
 
+/// Send `tracing` output to a file, if the user asked for any.
+///
+/// Off unless `TUI_DO_LOG` is set, and never to stdout or stderr: the interface owns the
+/// terminal, and a log line written into the alternate screen corrupts the frame the user
+/// is looking at. `TUI_DO_LOG` takes the usual `RUST_LOG` syntax (`tui_do=debug`), and
+/// `TUI_DO_LOG_FILE` overrides where it lands.
+///
+/// Until this existed there was no subscriber at all, so every `tracing::warn!` in the
+/// workspace was discarded — including the one that tells a user their API token is
+/// readable by other accounts, and the one guarding `Effect`'s `non_exhaustive`.
+fn init_logging() -> Option<PathBuf> {
+    let filter = std::env::var("TUI_DO_LOG").ok()?;
+    let path = std::env::var("TUI_DO_LOG_FILE").map_or_else(
+        |_| {
+            dirs::state_dir()
+                .or_else(dirs::data_local_dir)
+                .map(|dir| dir.join("tui-do").join("tui-do.log"))
+        },
+        |raw| Some(PathBuf::from(raw)),
+    )?;
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_writer(std::sync::Arc::new(file))
+        .with_ansi(false)
+        .try_init()
+        .ok()?;
+    tracing::info!(path = %path.display(), "logging started");
+    Some(path)
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    init_logging();
 
     match cli.command {
         Some(Command::Add(args)) => run_add(&args, cli.config.as_deref(), cli.i_know_this_is_prod),
@@ -516,6 +554,20 @@ mod tests {
         assert!(std::fs::read_to_string(&to)
             .unwrap()
             .contains("tk_secret_value"));
+
+        // And only its owner may read it. `std::fs::write` creates at 0644, so the
+        // migration that copies a token out of a cria config used to hand it to every
+        // account on the machine -- while printing advice about dotfile repositories.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&to).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "the config carrying the token is readable by others: {mode:o}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
