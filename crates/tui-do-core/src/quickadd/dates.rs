@@ -259,10 +259,10 @@ fn simple_phrase(words: &[String], today: NaiveDate) -> Option<NaiveDate> {
 
     // `feb 17`, `17 feb`, `february 17th`
     if words.len() == 2 {
-        if let (Some(month), Some(day)) = (month(&words[0]), day_number(&words[1])) {
+        if let (Some(month), Some(day)) = (month_name(&words[0]), day_number(&words[1])) {
             return on_or_after(today, month, day);
         }
-        if let (Some(day), Some(month)) = (day_number(&words[0]), month(&words[1])) {
+        if let (Some(day), Some(month)) = (day_number(&words[0]), month_name(&words[1])) {
             return on_or_after(today, month, day);
         }
     }
@@ -331,25 +331,12 @@ fn weekday(word: &str) -> Option<chrono::Weekday> {
     }
 }
 
-/// Recognise a month name or its three-letter abbreviation.
-fn month(word: &str) -> Option<u32> {
-    let short: String = word.chars().take(3).collect();
-    match short.as_str() {
-        "jan" => Some(1),
-        "feb" => Some(2),
-        "mar" => Some(3),
-        "apr" => Some(4),
-        "may" => Some(5),
-        "jun" => Some(6),
-        "jul" => Some(7),
-        "aug" => Some(8),
-        "sep" => Some(9),
-        "oct" => Some(10),
-        "nov" => Some(11),
-        "dec" => Some(12),
-        _ => None,
-    }
-}
+// `month` used to live here: it took a word's first three letters and read them as a
+// month, on the reasoning that `feb 17` had already been split into words so a prefix was
+// safe. It was not. A word is a word, and the prefix match made a date out of the first
+// one in "Decide 3 things to do" -- `dec` plus a bare number -- which both moved the due
+// date to 3 December and ate "Decide" out of the title. `month_name` is whole-word and
+// covers the same spellings plus `sept`, so it is the only reading of a month there is.
 
 /// Parse `17` or `17th`.
 fn day_number(word: &str) -> Option<u32> {
