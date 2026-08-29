@@ -552,6 +552,61 @@ async fn a_retried_label_create_adopts_the_one_the_lost_response_made() {
 }
 
 #[tokio::test]
+async fn a_retried_label_create_whose_read_finds_nothing_still_creates_it() {
+    // The other half of the reason the read exists. When the first attempt never reached
+    // the server -- a connect timeout, a DNS failure -- there is no earlier attempt to
+    // find, and the retry must go on and create the label. An empty answer is a fact
+    // about the server, not a failure and not a reason to give up: treating it as either
+    // would drop the user's label on the floor every time their connection dropped
+    // before the request went out.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels")))
+        .and(query_param("s", "next"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(Vec::<serde_json::Value>::new()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 41, "title": "next"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap();
+    assert_eq!(labels.len(), 1, "the label is created, not lost");
+    assert_eq!(labels[0].id, LabelId(41));
+}
+
+#[tokio::test]
 async fn an_edit_queued_behind_a_create_reaches_the_real_task() {
     // The user types a task and renames it before the connection comes back. The rename
     // has to arrive at the id the server assigned, not the provisional one.

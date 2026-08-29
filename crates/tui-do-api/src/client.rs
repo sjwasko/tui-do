@@ -516,6 +516,11 @@ impl Client {
     ///
     /// Case-insensitive, matching how the interface resolves a label name, because
     /// Vikunja will happily hold `Next` and `next` and the user means one thing by them.
+    /// **ASCII-only** case folding, though: `Über` does not match `über`, so a retried
+    /// create of a non-ASCII title creates a duplicate rather than adopting. That is the
+    /// fail-safe direction — a duplicate is visible and deletable, a wrong adoption is
+    /// neither — and it keeps this in step with `resolve_labels`, which folds the same
+    /// way. Both would have to move together to gain Unicode folding.
     ///
     /// This exists because a replayed create is otherwise undetectable. Measured on dev
     /// 2026-08-29: creating `tui-do probe alpha` twice answered `201` twice with two
