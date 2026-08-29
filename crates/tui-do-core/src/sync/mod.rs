@@ -37,7 +37,7 @@
 //! the entry stays.
 
 use tokio::sync::mpsc::UnboundedSender;
-use tui_do_api::models::{Label, ProjectId, Task, TaskId};
+use tui_do_api::models::{Label, LabelId, ProjectId, Task, TaskId};
 use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
@@ -373,10 +373,19 @@ impl Sync {
                     let subject = entry.mutation.subject();
                     let message = error.to_string();
                     // Everything queued behind this for the same task was built on a
-                    // state the server has refused to have, so it goes too.
+                    // state the server has refused to have, so it goes too. A rejected
+                    // `CreateLabel` needs one thing more: an `AttachLabel` built on it
+                    // has the *task* as its subject, not the label, so it survives a
+                    // same-subject filter and would ask the server to attach an id it
+                    // never issued. `references` finds those without widening the
+                    // discard for a rejected task, whose blast radius stays exactly the
+                    // entries that share its subject.
                     let doomed: Vec<OutboxEntry> = pending
                         .into_iter()
-                        .filter(|queued| queued.mutation.subject() == subject)
+                        .filter(|queued| {
+                            queued.mutation.subject() == subject
+                                || matches!(subject, Subject::Label(id) if references(&queued.mutation, id))
+                        })
                         .collect();
                     report.rejected += doomed.len();
                     self.store.discard_all(doomed).await?;
@@ -804,6 +813,28 @@ fn is_permanent(error: &ApiError) -> bool {
         error,
         ApiError::Rejected { .. } | ApiError::Forbidden { .. }
     )
+}
+
+/// Whether this mutation would send an id that a rejected `CreateLabel` was going to
+/// define.
+///
+/// A rejected `CreateLabel` is the one case where "everything queued for the same
+/// subject" is not enough: an `AttachLabel` built on it has the *task* as its subject and
+/// carries the label by value, so a subject filter cannot see it -- and sending it means
+/// asking the server to attach a label id it has never issued. Exhaustive over
+/// [`Mutation`] rather than a wildcard arm, so a new variant fails to compile here rather
+/// than silently answering "does not reference this label".
+fn references(mutation: &Mutation, label: LabelId) -> bool {
+    match mutation {
+        Mutation::AttachLabel { label: carried, .. }
+        | Mutation::DetachLabel { label: carried, .. } => carried.id == label,
+        Mutation::UpdateLabel { after, .. } => after.id == label,
+        Mutation::CreateTask { task } => task.labels.iter().any(|l| l.id == label),
+        Mutation::UpdateTask { after, .. } => after.labels.iter().any(|l| l.id == label),
+        // `CreateLabel` is the rejected entry itself, already caught by the subject
+        // match; a delete has no label to carry.
+        Mutation::CreateLabel { .. } | Mutation::DeleteTask { .. } => false,
+    }
 }
 
 /// Whether a refusal means the server had already done what was asked.
