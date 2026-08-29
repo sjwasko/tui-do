@@ -1470,11 +1470,12 @@ fn adopt(model: &mut Model, provisional: Subject, assigned: Subject) -> Vec<Effe
         (Subject::Task(provisional), Subject::Task(assigned)) => {
             adopt_task(model, provisional, assigned)
         }
-        // A label the server has just named has holders of its own -- every task carrying
-        // it, the label the filter names, the undo stack, and an open label modal drawn
-        // from a list read before the server named anything. Renumbering them is its own
-        // piece of work, and nothing in the interface queues a `CreateLabel` yet, so
-        // there is so far nothing here to renumber.
+        (Subject::Label(provisional), Subject::Label(assigned)) => {
+            adopt_label(model, provisional, assigned)
+        }
+        // A create is answered by a create of the same kind, so a mismatched pair is a
+        // bug in the sync engine. Renumbering a label because a task id happened to match
+        // would hide it behind whatever it corrupted.
         _ => Vec::new(),
     }
 }
@@ -1505,6 +1506,98 @@ fn adopt_task(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<E
     // The store now holds the server's own copy of the row -- its identifier, its index,
     // its created stamp -- which the optimistic one never had.
     reload_tasks(model)
+}
+
+/// The label half: two snapshots, the filter, both stacks, and the modal stack.
+///
+/// The store has already renumbered its own rows, the `task_labels` links and anything
+/// still queued. What is left is everything the interface holds by id, and *all* of it has
+/// to move together or the next write names `/labels/-1` — a `404` about the label the
+/// server has just created.
+///
+/// A label has more holders than a task, and they are worth naming because missing one is
+/// silent:
+///
+/// * `model.data.labels`, which the picker lists, which `resolve_labels` matches a
+///   quick-add `*name` against, and where a colour is looked up,
+/// * the `labels` carried on every task in the list, which is a *second* and independent
+///   copy — the row chips are drawn from it, and it is the lesson `apply_locally`'s
+///   `UpdateLabel` arm already had to learn,
+/// * the undo and redo stacks, whose mutations name the label they act on,
+/// * [`Scope::Label`], when the list is being filtered by the label just created — a
+///   reload against the provisional id answers with nothing at all,
+/// * the modal stack, which is the one most easily missed. An open [`Modal::Labels`] is on
+///   screen at precisely this moment, because that form is where the label was created: it
+///   holds cloned labels and a `chosen` list of ticked ids, and `set_labels` resolves
+///   those ids against `model.data.labels` when the user presses Enter. Move one and not
+///   the other and the tick the user is looking at queues nothing whatsoever.
+///
+/// The whole stack rather than its top, and every variant that holds an id rather than the
+/// label form alone: a label picker's candidates become the list's filter, and the edit
+/// form keeps the task whole as `before`, which is what `apply_edit` computes its attach
+/// and detach sets against.
+fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Vec<Effect> {
+    let swap = |id: &mut LabelId| {
+        if *id == provisional {
+            *id = assigned;
+        }
+    };
+    for label in &mut model.data.labels {
+        swap(&mut label.id);
+    }
+    for task in &mut model.data.tasks {
+        for label in &mut task.labels {
+            swap(&mut label.id);
+        }
+    }
+    for mutation in model.undo.iter_mut().chain(model.redo.iter_mut()) {
+        mutation.retarget_label(provisional, assigned);
+    }
+    // Before the reload below, which reads the scope to build its filter.
+    if model.query.scope == Scope::Label(provisional) {
+        model.query.scope = Scope::Label(assigned);
+    }
+    for modal in &mut model.modals {
+        match modal {
+            Modal::Labels(state) => {
+                for label in &mut state.labels {
+                    swap(&mut label.id);
+                }
+                for id in &mut state.chosen {
+                    swap(id);
+                }
+            }
+            Modal::Picker(state) => {
+                for candidate in &mut state.candidates {
+                    if let Pick::Label(id) = &mut candidate.pick {
+                        swap(id);
+                    }
+                }
+            }
+            Modal::Edit(state) => {
+                for label in &mut state.before.labels {
+                    swap(&mut label.id);
+                }
+            }
+            // Nothing else holds a label id: help and the quick-action menu are drawn
+            // from the keymap and the config, search and add are text, and the priority
+            // and due fields carry one value each. Listed rather than wildcarded so a
+            // modal that grows one has to come back here and say so.
+            Modal::Help(_)
+            | Modal::Search(_)
+            | Modal::Add(_)
+            | Modal::Priority(_)
+            | Modal::Due(_)
+            | Modal::QuickActions(_) => {}
+        }
+    }
+    // The store now holds the server's own copy of the label -- its identifier, and
+    // whatever it made of the colour -- and the task links moved with it, so both
+    // snapshots are re-read rather than only patched in place. Not `reload_everything`:
+    // no project changed, and a label carries no per-project count.
+    let mut effects = reload_tasks(model);
+    effects.push(Effect::LoadLabels);
+    effects
 }
 
 /// Apply a mutation to the model's own copy, and ask for it to be stored and queued.
@@ -1603,7 +1696,8 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
         // cannot be on a task in the list, and it is not in `model.data.labels` either --
         // but that is because the create is queued from a screen that reloads, not because
         // anything here reads the store directly. Nothing in this model does; both label
-        // snapshots above are written by `Msg::LabelsLoaded` and nowhere else.
+        // snapshots above are written by `Msg::LabelsLoaded`, and rewritten only by the
+        // arm above and by `adopt_label`, which renumbers what the server has just named.
         Mutation::CreateLabel { .. } => {}
     }
     keep_selection_visible(model);
@@ -1622,12 +1716,16 @@ fn undo_text(mutation: &Mutation) -> String {
         Mutation::AttachLabel { label, .. } => format!("Undone — added {}", label.title),
         Mutation::DetachLabel { label, .. } => format!("Undone — removed {}", label.title),
         // `after` is where the undo left it, which is the label's title *before* the
-        // rename -- the same reading as the `UpdateTask` arm above.
-        Mutation::UpdateLabel { after, .. } => format!("Undone — {}", after.title),
+        // rename. It needs the noun that the two arms above get for free from their verb:
+        // a bare `Undone — urgent` says nothing about what happened to `urgent`, and
+        // "reverted" rather than "renamed" because an `UpdateLabel` can be a recolour.
+        Mutation::UpdateLabel { after, .. } => format!("Undone — reverted label {}", after.title),
         // Unreachable in practice: `inverse()` returns `None` for a create, so `edit`
         // never pushes one onto the undo stack for `Action::Undo` to pop back out here.
-        // Still has to type-check against every `Mutation`, the same as every arm above.
-        Mutation::CreateLabel { label } => format!("Undone — {}", label.title),
+        // Still has to type-check against every `Mutation`, the same as every arm above,
+        // and still has to read as a sentence if it ever does surface -- a create on the
+        // undo stack is the inverse of a delete, which is the `CreateTask` arm's reading.
+        Mutation::CreateLabel { label } => format!("Undone — restored label {}", label.title),
     }
 }
 

@@ -13,7 +13,7 @@ use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, Subject, TaskCoun
 use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use tui_do_core::{Config, SyncEvent};
 use tui_do_ui::keymap::Key;
-use tui_do_ui::modal::{Modal, ModalView};
+use tui_do_ui::modal::{Candidate, Modal, ModalView, Pick, PickerKind, PickerState};
 use tui_do_ui::model::{Focus, PaneState, SyncStatus};
 use tui_do_ui::query::Scope;
 use tui_do_ui::update::{reload_everything, update};
@@ -1105,6 +1105,195 @@ fn an_adoption_leaves_a_task_it_does_not_name_alone() {
         Some(TaskId(2)),
         "the selection stays put"
     );
+}
+
+#[test]
+fn a_created_label_learns_the_id_the_server_gave_it() {
+    // The label half of B1. A label created here carries a provisional negative id until
+    // the server names it, and the interface holds more copies of a label than it does of
+    // a task: two independent snapshots, the filter, and both history stacks.
+    let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
+    model.query.scope = Scope::Label(LabelId(-1));
+    model.undo.push(Mutation::DetachLabel {
+        task: TaskId(1),
+        label: Box::new(label(-1, "next")),
+    });
+    model.redo.push(Mutation::AttachLabel {
+        task: TaskId(1),
+        label: Box::new(label(-1, "next")),
+    });
+
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+
+    assert_eq!(
+        model.data.labels[0].id,
+        LabelId(41),
+        "the labels snapshot, which the picker lists and quick-add resolves against"
+    );
+    assert_eq!(
+        model.data.tasks[0].labels[0].id,
+        LabelId(41),
+        "the second snapshot: the copy carried on the task, which draws the row chip"
+    );
+    assert_eq!(
+        model.query.scope,
+        Scope::Label(LabelId(41)),
+        "the filter the list is drawn from, or the next reload asks for an id nothing has"
+    );
+    match model.undo.last().expect("the undo stack kept its entry") {
+        Mutation::DetachLabel { label, .. } => assert_eq!(
+            label.id,
+            LabelId(41),
+            "`u` must not detach an id the server has never seen"
+        ),
+        other => panic!("the undo stack was rewritten into {other:?}"),
+    }
+    match model.redo.last().expect("the redo stack kept its entry") {
+        Mutation::AttachLabel { label, .. } => {
+            assert_eq!(label.id, LabelId(41), "and neither must `ctrl-r`")
+        }
+        other => panic!("the redo stack was rewritten into {other:?}"),
+    }
+    assert!(
+        loaded_query(&effects).is_some(),
+        "the store now holds the server's own row, and the task links moved with it"
+    );
+    assert!(
+        effects.contains(&Effect::LoadLabels),
+        "including the label row itself"
+    );
+}
+
+#[test]
+fn adopting_a_label_reaches_the_open_form_that_created_it() {
+    // The form is open at exactly the moment this happens -- the user created the label
+    // from it -- and it holds cloned labels and a list of ticked ids. Leaving it behind
+    // means the next tick sends an id no server has seen.
+    let mut model = with_labels(vec![label(-1, "next")], vec![]);
+    press(&mut model, 'l');
+    press(&mut model, ' ');
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+
+    let Some(Modal::Labels(state)) = model.modals.last() else {
+        panic!("the form closed: {:?}", model.modals);
+    };
+    assert_eq!(state.labels[0].id, LabelId(41), "the cloned label");
+    assert_eq!(state.chosen, vec![LabelId(41)], "and the ticked ids");
+}
+
+#[test]
+fn an_attach_from_the_form_that_created_a_label_names_the_id_the_server_gave_it() {
+    // The same failure end to end, which is what actually reaches the user: tick the
+    // label just created, the server names it while the form is still open, press Enter.
+    // A form left on the provisional id resolves nothing and queues nothing at all.
+    let mut model = with_labels(vec![label(-1, "next")], vec![]);
+    press(&mut model, 'l');
+    press(&mut model, ' ');
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    match applied(&effects).expect("ticking a label queues an attach") {
+        Mutation::AttachLabel { label, .. } => assert_eq!(
+            label.id,
+            LabelId(41),
+            "`PUT /tasks/1/labels/-1` is a 404 about the label just created"
+        ),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn adopting_a_label_reaches_a_picker_and_an_open_edit_form() {
+    // Two more holders on the modal stack. The picker's candidate becomes the list's
+    // filter, and the edit form's `before` is what `apply_edit` computes the attach and
+    // detach sets against -- so a stale one queues a detach of an id the server never had.
+    let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
+    press(&mut model, 'e');
+    model.modals.insert(
+        0,
+        Modal::Picker(PickerState::new(
+            PickerKind::Label,
+            vec![Candidate::new(Pick::Label(LabelId(-1)), "next")],
+        )),
+    );
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+
+    let Some(Modal::Picker(picker)) = model.modals.first() else {
+        panic!("the picker went missing: {:?}", model.modals);
+    };
+    assert_eq!(picker.candidates[0].pick, Pick::Label(LabelId(41)));
+    let Some(Modal::Edit(edit)) = model.modals.last() else {
+        panic!("the edit form went missing: {:?}", model.modals);
+    };
+    assert_eq!(edit.before.labels[0].id, LabelId(41));
+}
+
+#[test]
+fn an_adoption_leaves_a_label_it_does_not_name_alone() {
+    let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
+    model.query.scope = Scope::Label(LabelId(-1));
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-9)),
+            assigned: Subject::Label(LabelId(50)),
+        }),
+    );
+
+    assert_eq!(
+        model.data.labels[0].id,
+        LabelId(-1),
+        "a different create waits"
+    );
+    assert_eq!(model.data.tasks[0].labels[0].id, LabelId(-1));
+    assert_eq!(model.query.scope, Scope::Label(LabelId(-1)));
+}
+
+#[test]
+fn a_mismatched_adoption_renumbers_nothing() {
+    // A create is answered by a create of the same kind, so this pair is a bug in the
+    // sync engine. Renumbering a label because a task id matched would hide it.
+    let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
+    model.data.tasks[0].id = TaskId(-1);
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Task(TaskId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+
+    assert_eq!(model.data.labels[0].id, LabelId(-1));
+    assert_eq!(model.data.tasks[0].id, TaskId(-1));
 }
 
 #[test]
@@ -2498,7 +2687,9 @@ fn undoing_a_label_rename_renames_both_copies_of_the_label() {
         other => panic!("wrong mutation: {other:?}"),
     }
     // Exact, not `contains`: the plausible mistake in `undo_text` is reading `before`
-    // instead of `after`, which yields "Undone — next up" -- and that contains "next".
+    // instead of `after`, which yields "reverted label next up" -- and that contains
+    // "next". The noun is part of the assertion because a bare "Undone — next" is the
+    // wording this arm used to have, and it reads as a fragment beside its neighbours.
     let toast = model.status.toast.as_ref().expect("the user is told");
-    assert_eq!(toast.text, "Undone — next");
+    assert_eq!(toast.text, "Undone — reverted label next");
 }
