@@ -1435,6 +1435,282 @@ fn an_adoption_leaves_a_label_it_does_not_name_alone() {
     assert_eq!(form.chosen, vec![LabelId(-1)]);
 }
 
+/// The open label form, or a panic naming what is on the stack instead.
+fn label_edit_form(model: &Model) -> &tui_do_ui::modal::LabelEditState {
+    match model.modals.last() {
+        Some(Modal::LabelEdit(state)) => state,
+        other => panic!("the label edit form is not open: {other:?}"),
+    }
+}
+
+/// Type `text` into whatever has the keyboard, clearing the field first.
+fn retype(model: &mut Model, text: &str) {
+    press_ctrl(model, 'u');
+    for c in text.chars() {
+        press(model, c);
+    }
+}
+
+#[test]
+fn renaming_a_label_from_the_task_form_carries_both_fields_and_keeps_the_ticks() {
+    // The whole path a human drives, through the keys they actually press: `l`, `C-e`,
+    // retype the title, Tab, retype the colour, Enter. One request and one undo step,
+    // because a partial body clears what it omits -- and the form underneath is still
+    // open, still holding the ticks, now showing the new name.
+    let mut model = with_labels(
+        vec![
+            Label {
+                id: LabelId(1),
+                title: "urgent".to_string(),
+                hex_color: "4287f5".to_string(),
+                ..Label::default()
+            },
+            label(2, "next"),
+        ],
+        vec![label(1, "urgent")],
+    );
+    press(&mut model, 'l');
+    assert_eq!(label_form(&model).chosen, vec![LabelId(1)]);
+
+    press_ctrl(&mut model, 'e');
+    assert_eq!(label_edit_form(&model).label.id, LabelId(1));
+    assert_eq!(
+        model.modals.len(),
+        2,
+        "the ticks are still underneath: {:?}",
+        model.modals
+    );
+
+    retype(&mut model, "critical");
+    press_code(&mut model, KeyCode::Tab);
+    retype(&mut model, "e8384f");
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    match applied(&effects).expect("the rename is queued") {
+        Mutation::UpdateLabel { before, after } => {
+            assert_eq!(before.title, "urgent");
+            assert_eq!(before.hex_color, "4287f5");
+            assert_eq!(after.title, "critical");
+            assert_eq!(after.hex_color, "e8384f");
+            assert_eq!(
+                after.id,
+                LabelId(1),
+                "and it names the label it opened over"
+            );
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    // Undoable, unlike a create: the inverse is the label as it was.
+    assert_eq!(model.undo.len(), 1);
+
+    // The form the user was in is back on top, showing what they just renamed -- it
+    // holds its own clones, which no reload reaches.
+    let form = label_form(&model);
+    assert_eq!(form.labels[0].title, "critical");
+    assert_eq!(
+        form.chosen,
+        vec![LabelId(1)],
+        "the tick survived the detour"
+    );
+    // And the row the list draws its chips from moved with it.
+    assert_eq!(model.data.tasks[0].labels[0].title, "critical");
+    assert_eq!(model.data.labels[0].title, "critical");
+}
+
+#[test]
+fn a_rejected_rename_puts_the_old_title_back_in_the_list_that_asked_for_it() {
+    // The list the user renamed from is still open, and it holds its own clones --
+    // `apply_locally` wrote the optimistic title into them. The store rolls a rejected
+    // `UpdateLabel` back and the rejection reloads the pool, so the reload is the only
+    // route back: without it the toast says the rename failed while the row underneath
+    // still reads `critical`.
+    let mut model = with_labels(vec![label(1, "urgent")], vec![label(1, "urgent")]);
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+    retype(&mut model, "critical");
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(label_form(&model).labels[0].title, "critical");
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(1)),
+            kind: "label update".to_string(),
+            message: "This label does not exist.".to_string(),
+        }),
+    );
+    // What the store answers with once it has rolled the row back.
+    update(&mut model, Msg::LabelsLoaded(vec![label(1, "urgent")]));
+
+    let form = label_form(&model);
+    assert_eq!(form.labels[0].title, "urgent");
+    assert_eq!(form.chosen, vec![LabelId(1)], "and the tick is left alone");
+    assert!(
+        model.undo.is_empty(),
+        "the inverse of a change that never happened is not an undo"
+    );
+}
+
+#[test]
+fn the_picker_opens_the_same_form_over_the_same_label() {
+    // A label edited from `g l` must not be a different thing from a label edited from
+    // the task form, so both surfaces send the same submission and open the same modal.
+    let mut model = with_labels(vec![label(1, "urgent"), label(2, "next")], Vec::new());
+    press(&mut model, 'g');
+    press(&mut model, 'l');
+    // The candidates are sorted by title, so the second row is `urgent`.
+    press_code(&mut model, KeyCode::Down);
+    press_ctrl(&mut model, 'e');
+
+    assert_eq!(label_edit_form(&model).label.id, LabelId(1));
+    retype(&mut model, "critical");
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    match applied(&effects).expect("the rename is queued") {
+        Mutation::UpdateLabel { before, after } => {
+            assert_eq!(before.title, "urgent");
+            assert_eq!(after.title, "critical");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    // The picker is still open -- it was `Outcome::Update`, not a submit -- and its
+    // candidates are a third copy of the title, which nothing else rewrites.
+    let Some(Modal::Picker(picker)) = model.modals.last() else {
+        panic!("the picker closed: {:?}", model.modals);
+    };
+    assert_eq!(picker.candidates[1].title, "critical");
+    assert_eq!(
+        picker.current().map(|c| c.pick),
+        Some(Pick::Label(LabelId(1)))
+    );
+}
+
+#[test]
+fn a_colour_the_server_would_reject_never_reaches_the_queue() {
+    // A server rejection rolls the *whole* mutation back, taking the rename with it --
+    // minutes later, over whatever the user has moved on to.
+    let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+    press_code(&mut model, KeyCode::Tab);
+    retype(&mut model, "nope");
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    assert!(applied(&effects).is_none(), "nothing was queued");
+    assert!(model.undo.is_empty());
+    let form = label_edit_form(&model);
+    assert!(form.error.is_some(), "and the form says why, still open");
+
+    // Fix it in place and the same Enter goes through.
+    retype(&mut model, "e8384f");
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(matches!(
+        applied(&effects),
+        Some(Mutation::UpdateLabel { .. })
+    ));
+}
+
+#[test]
+fn a_form_closed_without_a_change_queues_nothing() {
+    // Enter submits whether or not anything was typed. An `UpdateLabel` that changes
+    // nothing is still a read, a merge and a write, so it is a way to overwrite another
+    // box's rename with the value already on screen.
+    let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(applied(&effects).is_none());
+    assert!(model.undo.is_empty());
+}
+
+#[test]
+fn a_label_only_a_task_carries_is_not_renamed_from_a_guess() {
+    // The form shows labels the task holds that the pool has not caught up with -- a
+    // pull stores tasks and labels in separate passes. There is no `before` to merge
+    // against for one of those, so the user is told rather than shown a form built from
+    // a guess.
+    let mut model = with_labels(Vec::new(), vec![label(2, "backend")]);
+    press(&mut model, 'l');
+    assert_eq!(label_form(&model).labels, vec![label(2, "backend")]);
+
+    press_ctrl(&mut model, 'e');
+    assert!(
+        matches!(model.modals.last(), Some(Modal::Labels(_))),
+        "no form opened: {:?}",
+        model.modals
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("synced"), "{}", toast.text);
+}
+
+#[test]
+fn a_label_named_by_the_server_while_the_form_is_open_is_renamed_under_its_new_id() {
+    // `C-n` then `C-e` is two keystrokes, and the id the form is holding is what its
+    // submission names. Left at the provisional, the rename queues against `/labels/-1`
+    // -- a 404 about the label the server has just created.
+    let mut model = with_labels(vec![label(-1, "next")], Vec::new());
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+    assert_eq!(label_edit_form(&model).label.id, LabelId(-1));
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+    update(&mut model, Msg::LabelsLoaded(vec![label(41, "next")]));
+    assert_eq!(label_edit_form(&model).label.id, LabelId(41));
+
+    retype(&mut model, "next up");
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the rename is queued") {
+        Mutation::UpdateLabel { after, .. } => assert_eq!(after.id, LabelId(41)),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_collision_says_which_thing_was_written_over() {
+    // `SyncEvent::Overwrote` has carried a `Subject` since the label mutations landed and
+    // nothing read it, so a label collision toasted word for word like a task one --
+    // `(title)`, which reads as being about the task on screen. Overwriting somebody on a
+    // label is different news: it is worn by every task that carries it.
+    let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Overwrote {
+            subject: Subject::Label(LabelId(1)),
+            fields: vec!["title".to_string()],
+        }),
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("label \"urgent\""), "{}", toast.text);
+    assert!(toast.text.contains("(title)"), "{}", toast.text);
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Overwrote {
+            subject: Subject::Task(TaskId(1)),
+            fields: vec!["title".to_string()],
+        }),
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("task \"first\""), "{}", toast.text);
+
+    // And a subject this box has never loaded is named by its kind rather than invented.
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Overwrote {
+            subject: Subject::Label(LabelId(404)),
+            fields: vec!["hex_color".to_string()],
+        }),
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("a label"), "{}", toast.text);
+}
+
 #[test]
 fn a_mismatched_adoption_renumbers_nothing() {
     // A create is answered by a create of the same kind, so this pair is a bug in the

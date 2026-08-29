@@ -17,8 +17,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, DueState, EditDraft, EditState, HelpState, LabelsState, Modal, Outcome, Pick,
-    PickerKind, PickerState, PriorityState, QuickActionsState, SearchState, Submission, TextInput,
+    Candidate, DueState, EditDraft, EditState, HelpState, LabelEditState, LabelsState, Modal,
+    Outcome, Pick, PickerKind, PickerState, PriorityState, QuickActionsState, SearchState,
+    Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -80,9 +81,47 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // screen at exactly this moment, because that is where the label was made.
             // A form left without it shows no tick, so the user's next Enter queues
             // nothing at all for the label they just created.
+            //
+            // And the route back for a title, which a rename made necessary: both lists
+            // hold their own clones, `apply_locally` writes the optimistic new title
+            // into them, and the store is what decides whether that title survives. A
+            // rejected `UpdateLabel` rolls the row back and reloads *this* -- so without
+            // the refresh below the pool says `urgent` while the form the user is still
+            // looking at says `critical`, which is the rename they were just told failed.
+            // Another box's rename arrives the same way.
             for modal in &mut model.modals {
-                if let Modal::Labels(state) = modal {
-                    state.absorb_created(&model.data.labels);
+                match modal {
+                    Modal::Labels(state) => {
+                        state.absorb_created(&model.data.labels);
+                        state.refresh(&model.data.labels);
+                    }
+                    Modal::Picker(state) => {
+                        for candidate in &mut state.candidates {
+                            let Pick::Label(id) = candidate.pick else {
+                                continue;
+                            };
+                            if let Some(known) =
+                                model.data.labels.iter().find(|label| label.id == id)
+                            {
+                                candidate.title.clone_from(&known.title);
+                            }
+                        }
+                    }
+                    // Two that hold a label and are deliberately left as they are:
+                    // `LabelEdit`'s copy is the `before` half of a three-way merge and
+                    // its fields are what the user is part-way through typing, so a
+                    // refresh would overwrite them -- a rename that landed underneath is
+                    // what `Label::merge_onto` is for, and it toasts. `Edit` holds label
+                    // *names* the user typed, which are theirs until they save. The rest
+                    // hold no label at all.
+                    Modal::LabelEdit(_)
+                    | Modal::Help(_)
+                    | Modal::Search(_)
+                    | Modal::Add(_)
+                    | Modal::Edit(_)
+                    | Modal::Priority(_)
+                    | Modal::Due(_)
+                    | Modal::QuickActions(_) => {}
                 }
             }
             Vec::new()
@@ -134,14 +173,21 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             };
             Vec::new()
         }
-        SyncEvent::Overwrote { fields, .. } => {
+        SyncEvent::Overwrote { subject, fields } => {
             // The write went through -- the user's value is what the server holds now --
             // so there is nothing to roll back and nothing to reload. What is owed is the
             // news, because on a fleet the person who loses the edit is on another box
             // and will never otherwise know why their change evaporated.
+            //
+            // Named, now that a label can collide too. `(title)` alone reads as being
+            // about the task on screen, and a label is a thing shared by every task that
+            // carries it -- "you overwrote somebody on a label" is a different piece of
+            // news from "you overwrote somebody on this task", and the user cannot act on
+            // either without knowing which.
             let what = fields.join(", ");
             model.toast(Toast::warning(format!(
-                "saved over a change made elsewhere ({what})"
+                "saved over a change made elsewhere to {} ({what})",
+                names(model, subject)
             )));
             Vec::new()
         }
@@ -288,6 +334,12 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::Due(text) => set_due(model, &text),
         Submission::Labels(chosen) => set_labels(model, &chosen),
         Submission::CreateLabel(title) => create_label(model, title),
+        Submission::EditLabel(id) => open_label_form(model, id),
+        Submission::EditedLabel {
+            id,
+            title,
+            hex_color,
+        } => rename_label(model, id, title, hex_color),
         Submission::QuickAction(index) => run_quick_action(model, index),
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
@@ -1135,6 +1187,86 @@ fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
     effects
 }
 
+/// Open the label form over `id`, from whichever list asked.
+///
+/// Both surfaces that list labels send this, so the form they open is one form: a label
+/// renamed from the `l` ticks and a label renamed from `g l` are the same operation
+/// against the same `before`.
+///
+/// The pool's copy rather than the asking list's, because a picker holds a title and an
+/// id and a label form holds a clone taken when it opened -- `model.data.labels` is the
+/// one a pull refreshes, and it is the `before` half of a three-way merge. Missing only
+/// for a label a *task* carries that the labels table has not caught up with, which is
+/// the same gap `Action::SetLabels` fills when it opens the form; there is nothing
+/// honest to rename it from, so the user is told rather than shown a form built from a
+/// guess.
+fn open_label_form(model: &mut Model, id: LabelId) -> Vec<Effect> {
+    let Some(label) = model
+        .data
+        .labels
+        .iter()
+        .find(|label| label.id == id)
+        .cloned()
+    else {
+        model.toast(Toast::info("That label has not been synced here yet"));
+        return Vec::new();
+    };
+    model
+        .modals
+        .push(Modal::LabelEdit(LabelEditState::new(label)));
+    Vec::new()
+}
+
+/// Queue the rename and recolour the label form asked for.
+///
+/// One `UpdateLabel` carrying both fields, because the write carries the whole label
+/// either way: a partial body clears what it omits, so two mutations would be two writes
+/// that each undo half of the other, and two rows on the undo stack for one keystroke.
+///
+/// Nothing is queued when neither field moved. The form submits on Enter whether or not
+/// anything was typed, and an `UpdateLabel` that changes nothing is still a read, a merge
+/// and a write against a server that may have a newer copy -- so "no change" would be a
+/// way to overwrite somebody else's rename with the value already on screen.
+fn rename_label(model: &mut Model, id: LabelId, title: String, hex_color: String) -> Vec<Effect> {
+    let Some(before) = model
+        .data
+        .labels
+        .iter()
+        .find(|label| label.id == id)
+        .cloned()
+    else {
+        // Gone between opening the form and pressing Enter -- a pull that dropped it, or
+        // another box's delete. Queuing against it would name an id the server has not
+        // got.
+        model.toast(Toast::info("That label is no longer here"));
+        return Vec::new();
+    };
+    let after = Label {
+        title,
+        hex_color,
+        ..before.clone()
+    };
+    if after == before {
+        return Vec::new();
+    }
+    let mut effects = edit(
+        model,
+        Mutation::UpdateLabel {
+            before: Box::new(before),
+            after: Box::new(after.clone()),
+        },
+    );
+    model.toast(Toast::info(format!(
+        "Saved label {}",
+        truncated(&after.title)
+    )));
+    // The labels table has changed under every list that reads it. `apply_locally` has
+    // already patched both of the model's own snapshots and any open form, so this is
+    // the store catching up rather than the screen waiting on it.
+    effects.push(Effect::LoadLabels);
+    effects
+}
+
 fn plural(count: usize) -> &'static str {
     if count == 1 {
         ""
@@ -1515,6 +1647,35 @@ fn nothing_selected(model: &mut Model) -> Vec<Effect> {
     Vec::new()
 }
 
+/// What a [`Subject`] is called, for a message the user has to act on.
+///
+/// The kind always, the title only when this box can honestly supply one: the list is
+/// filtered and the label pool is a snapshot, so a subject the model has never loaded --
+/// or has since dropped -- has no title here, and inventing one would be worse than the
+/// bare noun. The event carries an id and nothing else, which is why this is a lookup and
+/// not a field.
+fn names(model: &Model, subject: Subject) -> String {
+    let found = match subject {
+        Subject::Task(id) => model
+            .data
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.title.clone()),
+        Subject::Label(id) => model
+            .data
+            .labels
+            .iter()
+            .find(|label| label.id == id)
+            .map(|label| label.title.clone()),
+    };
+    let kind = subject.kind();
+    match found {
+        Some(title) => format!("{kind} \"{}\"", truncated(&title)),
+        None => format!("a {kind}"),
+    }
+}
+
 /// A title short enough to sit in a message beside other words.
 fn truncated(title: &str) -> String {
     crate::rows::truncate(title, 40)
@@ -1655,6 +1816,11 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
                     swap(&mut label.id);
                 }
             }
+            // Reachable, and the worst one to miss: the label form opens over a label it
+            // may have created moments earlier -- `C-n` then `C-e` is two keystrokes --
+            // and the id it is holding is what its `EditedLabel` names. Left at the
+            // provisional, the rename would queue against `/labels/-1`.
+            Modal::LabelEdit(state) => swap(&mut state.label.id),
             // Nothing else holds a label id: help and the quick-action menu are drawn
             // from the keymap and the config, search and add are text, and the priority
             // and due fields carry one value each. Listed rather than wildcarded so a
@@ -1765,6 +1931,57 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
             for known in &mut model.data.labels {
                 if known.id == after.id {
                     *known = (**after).clone();
+                }
+            }
+            // And a *third* copy, which became reachable the moment a label could be
+            // renamed from a list of labels: the form the user pressed the key in is
+            // still open underneath, and it holds its own clones. Neither is a view of
+            // `model.data.labels` -- the label form has to keep its own, because it also
+            // shows labels a task carries that the pool has not caught up with -- so a
+            // rename that stopped at the two snapshots above leaves the user reading the
+            // old title on the row they just renamed.
+            for modal in &mut model.modals {
+                match modal {
+                    Modal::Labels(state) => {
+                        for held in &mut state.labels {
+                            if held.id == after.id {
+                                *held = (**after).clone();
+                            }
+                        }
+                    }
+                    // The candidate list is rebuilt from `model.data.labels` only when
+                    // the picker opens, and `matches` indexes into it, so the title is
+                    // rewritten in place rather than the list rebuilt: the highlight
+                    // stays on the row the user is looking at, and the next keystroke
+                    // refilters against the new title.
+                    Modal::Picker(state) => {
+                        for candidate in &mut state.candidates {
+                            if candidate.pick == Pick::Label(after.id) {
+                                candidate.title.clone_from(&after.title);
+                            }
+                        }
+                    }
+                    // Two that hold a label and are deliberately left alone, because
+                    // modals are exclusive and neither can be on the stack when this
+                    // runs:
+                    //
+                    // * `LabelEdit` is the form that asked, and `Outcome::Submit` pops it
+                    //   before `on_submit` is called. Nothing opens a second one over it,
+                    //   and `u` is a key the top modal would have eaten.
+                    // * `Edit` cannot be underneath a form that renames a label: the two
+                    //   surfaces that open one are reached from the task screen, which
+                    //   `Edit` covers. Its own `labels` field is *names* the user typed
+                    //   anyway, resolved against `model.data.labels` -- rewritten above.
+                    //
+                    // The rest hold no label at all.
+                    Modal::LabelEdit(_)
+                    | Modal::Help(_)
+                    | Modal::Search(_)
+                    | Modal::Add(_)
+                    | Modal::Edit(_)
+                    | Modal::Priority(_)
+                    | Modal::Due(_)
+                    | Modal::QuickActions(_) => {}
                 }
             }
         }

@@ -13,8 +13,8 @@ use ratatui::Frame;
 
 use crate::keymap::{help_rows, HelpRow};
 use crate::modal::{
-    DueState, EditField, EditState, LabelsState, Modal, PickerState, PriorityState,
-    QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
+    DueState, EditField, EditState, LabelEditState, LabelField, LabelsState, Modal, PickerState,
+    PriorityState, QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
 };
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
@@ -593,6 +593,10 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         // adding a modal is a compile error until it has been given a size.
         Modal::Search(_) | Modal::Add(_) | Modal::Due(_) => (60, 3),
         Modal::Picker(_) | Modal::Labels(_) => (60, 16),
+        // Two fields and the line that says why the last Enter was refused, plus the
+        // border. The third row is always drawn: it holds the hint when there is no
+        // refusal, so the box does not resize under the user as they type.
+        Modal::LabelEdit(_) => (60, 5),
         // One row per priority plus the field and the border: the whole range is on
         // screen at once, which is the point of a fixed scale.
         Modal::Priority(_) => (44, MAX_PRIORITY as u16 + 4),
@@ -631,6 +635,7 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         }
         Modal::Priority(state) => priority_body(state, frame, inner, theme),
         Modal::Labels(state) => labels_body(state, frame, inner, theme),
+        Modal::LabelEdit(state) => label_edit_body(state, frame, inner, theme),
         Modal::QuickActions(state) => quick_actions_body(state, frame, inner, theme),
     }
 }
@@ -927,23 +932,50 @@ fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
     place_cursor(frame, area, &state.input, 4);
 }
 
+/// The footer of the label form: the two keys the modal handles itself.
+///
+/// The only place either is ever advertised. Both are modal-local -- the modal stack
+/// takes every key before `KEYMAP` is consulted -- so the help modal, which is rendered
+/// from that table, cannot know about them. Each is shown exactly when it would do
+/// something, which is also when the user is looking for it: `C-n` when what has been
+/// typed is a name no label has, `C-e` when there is a row under the cursor to rename.
+fn labels_offer(state: &LabelsState, theme: Theme, width: u16) -> Option<Line<'static>> {
+    let creatable = state.creatable().map(ToString::to_string);
+    let editable = state.current().map(|label| label.title.clone());
+    if creatable.is_none() && editable.is_none() {
+        return None;
+    }
+    // With both on the row, each title gets half of what is left over, so a long label
+    // cannot push the other key off the end of a line nobody scrolls.
+    let room = if creatable.is_some() && editable.is_some() {
+        width.saturating_sub(34) / 2
+    } else {
+        width.saturating_sub(15)
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if let Some(title) = creatable {
+        spans.push(Span::styled(" C-n ", theme.accent()));
+        spans.push(Span::styled(
+            format!("creates \"{}\"", rows::truncate(&title, room)),
+            theme.muted(),
+        ));
+    }
+    if let Some(title) = editable {
+        spans.push(Span::styled(
+            if spans.is_empty() { " C-e " } else { "  C-e " }.to_string(),
+            theme.accent(),
+        ));
+        spans.push(Span::styled(
+            format!("edits \"{}\"", rows::truncate(&title, room)),
+            theme.muted(),
+        ));
+    }
+    Some(Line::from(spans))
+}
+
 /// The label form: every label, with the ones on the task ticked.
 fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme) {
-    // The only place `C-n` is ever advertised: it is a modal-local key, so the help
-    // modal — which is rendered from `KEYMAP` — cannot know about it. Shown exactly when
-    // it would do something, which is also when the user is looking for it.
-    let offer = state.creatable().map(|title| {
-        Line::from(vec![
-            Span::styled(" C-n ", theme.accent()),
-            Span::styled(
-                format!(
-                    "creates \"{}\"",
-                    rows::truncate(title, area.width.saturating_sub(15))
-                ),
-                theme.muted(),
-            ),
-        ])
-    });
+    let offer = labels_offer(state, theme, area.width);
     // A row of its own, taken off the list rather than added to the box: `lines` is
     // truncated to the height at the end, and a full list would otherwise push the offer
     // off the bottom -- hiding the key precisely when it is being offered.
@@ -996,6 +1028,78 @@ fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme)
     lines.extend(offer);
     frame.render_widget(Paragraph::new(lines), area);
     place_cursor(frame, area, &state.input, 2);
+}
+
+/// The label form: a title, a colour, and the colour worn as the user types it.
+///
+/// The chip is the reason the colour is a field rather than a prompt. Six hex digits are
+/// not a colour anybody can read, and the label is about to be worn by every task that
+/// carries it -- so it is shown in the colour it would have, in the same chip style the
+/// list rows use.
+fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme: Theme) {
+    /// Room for the wider of the two field names plus its gap.
+    const GUTTER: u16 = 10;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut caret: Option<(u16, u16)> = None;
+    for field in [LabelField::Title, LabelField::Colour] {
+        let focused = state.field == field;
+        let input = state.field(field);
+        let room = area.width.saturating_sub(GUTTER + 1);
+        // The label carries the focus, the same as the task form: which field has the
+        // keyboard is readable without hunting for the caret.
+        let name = Span::styled(
+            format!(
+                " {:<width$}",
+                field.label(),
+                width = usize::from(GUTTER) - 1
+            ),
+            if focused {
+                theme.pane(true).add_modifier(Modifier::BOLD)
+            } else {
+                theme.muted()
+            },
+        );
+        if focused {
+            let before: String = input.value().chars().take(input.cursor()).collect();
+            caret = Some((
+                area.x + GUTTER + rows::display_width(&before).min(room),
+                area.y + u16::try_from(lines.len()).unwrap_or(0),
+            ));
+        }
+        let mut spans = vec![
+            name,
+            Span::styled(
+                rows::truncate(input.value(), room),
+                value_style(theme, focused),
+            ),
+        ];
+        if field == LabelField::Colour && state.colour_is_valid() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!(" {} ", rows::truncate(state.typed_title(), 20)),
+                theme.label(state.colour()),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    // Always a third row, holding the refusal or the rule it broke. A colour that is not
+    // six hex digits is refused here rather than queued, because the server's answer
+    // arrives minutes later and rolls the *whole* mutation back -- rename included.
+    lines.push(match &state.error {
+        Some(why) => Line::from(Span::styled(format!(" {why}"), theme.error())),
+        None => Line::from(Span::styled(
+            " six hex digits, or empty for the interface's own".to_string(),
+            theme.muted(),
+        )),
+    });
+    frame.render_widget(Paragraph::new(lines), area);
+    // After the widget, so the cursor is not painted over by it.
+    if let Some((x, y)) = caret {
+        if x < area.right() && y < area.bottom() {
+            frame.set_cursor_position((x, y));
+        }
+    }
 }
 
 /// The quick-action menu: one line per configured key.

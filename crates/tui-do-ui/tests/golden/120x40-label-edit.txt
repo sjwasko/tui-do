@@ -10,16 +10,16 @@ Projects               │ !!! Ship the release    Work                Tomorrow 
                        │                                                        │ Labels    urgent  backend
                        │                                                        │
                        │                                                        │ The refresh call needs the cookie set
-                       │      ┌Labels  —  Space toggles, Enter applies, Esc cancels──────┐/login.
+                       │      ┌Go to label  —  C-e edits─────────────────────────────────┐/login.
                        │      │>                                                         │
-                       │      │ [x] urgent                                               │
-                       │      │ [x] backend                                              │
-                       │      │ C-e edits "urgent"                                       │
+                       │      │ urgent                                                   │
                        │      │                                                          │
                        │      │                                                          │
-                       │      │                                                          │
-                       │      │                                                          │
-                       │      │                                                          │
+                       │      ┌Edit label  —  Tab moves, Enter saves, Esc cancels────────┐
+                       │      │ Title    urgent                                          │
+                       │      │ Colour   e05454   urgent                                 │
+                       │      │ six hex digits, or empty for the interface's own         │
+                       │      └──────────────────────────────────────────────────────────┘
                        │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
