@@ -214,7 +214,10 @@ impl PickerKind {
     pub const fn title(self) -> &'static str {
         match self {
             Self::Project => "Go to project",
-            Self::Label => "Go to label",
+            // The only place the picker's `C-e` is ever advertised: it is a modal-local
+            // key, so the help modal -- which is rendered from `KEYMAP` -- cannot know
+            // about it, and a picker has no footer to put it in.
+            Self::Label => "Go to label  —  C-e edits",
             Self::Command => "Run a command",
             Self::MoveProject => "Move to project",
         }
@@ -355,6 +358,8 @@ pub enum Modal {
     Due(DueState),
     /// Ticking labels on and off one task.
     Labels(LabelsState),
+    /// Renaming or recolouring one label.
+    LabelEdit(LabelEditState),
     /// Waiting for a configured quick-action key.
     QuickActions(QuickActionsState),
 }
@@ -393,6 +398,23 @@ pub enum Submission {
     /// asked stays open, because the user is part-way through deciding one task's
     /// labels and closing it would throw away every tick they had already made.
     CreateLabel(String),
+    /// Open the label form over this label. Always an [`Outcome::Update`], from both
+    /// surfaces that list labels: the list the user pressed the key in stays open
+    /// underneath, because they are part-way through ticking labels or picking a filter
+    /// and a rename is not a reason to throw that away.
+    EditLabel(LabelId),
+    /// Rename and recolour this label, in one request and one undo step.
+    ///
+    /// Both fields whether or not both were touched: a partial body clears what it omits,
+    /// measured on dev 2026-08-29.
+    EditedLabel {
+        /// Which label.
+        id: LabelId,
+        /// Its new title.
+        title: String,
+        /// Its new colour: six hex digits, or empty for "the interface picks one".
+        hex_color: String,
+    },
     /// Run the configured quick action at this index.
     QuickAction(usize),
 }
@@ -918,6 +940,28 @@ impl LabelsState {
         self.refilter();
     }
 
+    /// Take the pool's copy of every label this form already holds.
+    ///
+    /// The counterpart to [`Self::absorb_created`], and deliberately the opposite shape:
+    /// that one *adds* what this form asked for and ticks it, this one only rewrites
+    /// labels already on the list and ticks nothing. A label can be renamed from this
+    /// form now, and the optimistic new title is written straight into these clones --
+    /// so when the store rolls that write back, or another box renames the same label,
+    /// the reload has to be able to write it back out again. Without this the pool says
+    /// `urgent` while the row the user is looking at says `critical`: the rename they
+    /// were just told had failed.
+    ///
+    /// The order is left alone on purpose. `matches` is fuzzy-ranked by title, so
+    /// re-sorting here would reshuffle the list under someone mid-keystroke; the next
+    /// key they press refilters against the new titles.
+    pub fn refresh(&mut self, known: &[Label]) {
+        for held in &mut self.labels {
+            if let Some(fresh) = known.iter().find(|label| label.id == held.id) {
+                held.clone_from(fresh);
+            }
+        }
+    }
+
     /// The label under the cursor.
     #[must_use]
     pub fn current(&self) -> Option<&Label> {
@@ -985,6 +1029,20 @@ impl ModalView for LabelsState {
                     None => Outcome::Consumed,
                 }
             }
+            // Ctrl-E edits the highlighted label, the same key the `g l` picker uses --
+            // a label edited from here and one edited from there must be the same
+            // operation, not two that can drift apart.
+            //
+            // Handled here rather than in `KEYMAP` for the same reason Ctrl-N is: the
+            // modal stack takes every key before the table is consulted, so a row there
+            // would be a row nobody could reach. The footer is what advertises it.
+            KeyCode::Char('e') if key.mods.contains(KeyModifiers::CONTROL) => {
+                match self.current() {
+                    Some(label) => Outcome::Update(Submission::EditLabel(label.id)),
+                    // Nothing matched the filter, so there is nothing to rename.
+                    None => Outcome::Consumed,
+                }
+            }
             KeyCode::Down | KeyCode::Tab => {
                 if !self.matches.is_empty() {
                     self.selected = (self.selected + 1) % self.matches.len();
@@ -1011,6 +1069,171 @@ impl ModalView for LabelsState {
 
     fn title(&self) -> String {
         "Labels  —  Space toggles, Enter applies, Esc cancels".to_string()
+    }
+}
+
+/// Which field of the label form has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelField {
+    /// The label's text.
+    Title,
+    /// Its six hex digits, without a leading `#`.
+    Colour,
+}
+
+impl LabelField {
+    /// What this field is called on screen.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Title => "Title",
+            Self::Colour => "Colour",
+        }
+    }
+
+    /// The other one. Two fields, so `Tab` and `S-Tab` are the same move.
+    #[must_use]
+    const fn other(self) -> Self {
+        match self {
+            Self::Title => Self::Colour,
+            Self::Colour => Self::Title,
+        }
+    }
+}
+
+/// Editing one label's title and colour.
+///
+/// Both at once because they are one `POST /labels/{id}`, one undo step and one row in
+/// the queue -- and because a partial body clears what it omits (measured on dev
+/// 2026-08-29: a body carrying only `title` cleared `hex_color` to `""`), so the write
+/// carries both whether or not the user touched both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelEditState {
+    /// The label as it was when the form opened, which becomes the mutation's `before`.
+    ///
+    /// Kept whole rather than by id for the same reason [`EditState`] keeps its task: it
+    /// is the `before` half of a three-way merge, and a `before` assembled later from
+    /// whatever the pool holds by then is not what the user started from.
+    pub label: Label,
+    /// The title being typed.
+    pub title: TextInput,
+    /// The colour being typed.
+    pub hex: TextInput,
+    /// Which field has the keyboard.
+    pub field: LabelField,
+    /// Why the last submission was refused, if it was.
+    pub error: Option<String>,
+}
+
+impl LabelEditState {
+    /// A form over `label`, with both fields filled in from it.
+    #[must_use]
+    pub fn new(label: Label) -> Self {
+        Self {
+            title: TextInput::new(label.title.clone()),
+            hex: TextInput::new(label.hex_color.clone()),
+            label,
+            field: LabelField::Title,
+            error: None,
+        }
+    }
+
+    /// The colour as it would go on the wire: trimmed, and without the leading `#`.
+    ///
+    /// Vikunja stores six bare hex digits, but `#4287f5` is what a colour picker puts on
+    /// the clipboard and [`crate::theme::parse_hex`] already tolerates it -- so the form
+    /// takes the hash and drops it rather than refusing a paste for a character the rest
+    /// of the codebase ignores.
+    #[must_use]
+    pub fn colour(&self) -> &str {
+        self.hex.value().trim().trim_start_matches('#')
+    }
+
+    /// The title as it would go on the wire.
+    #[must_use]
+    pub fn typed_title(&self) -> &str {
+        self.title.value().trim()
+    }
+
+    /// Whether the colour is something Vikunja will take: six hex digits, or empty for
+    /// "the interface picks one".
+    #[must_use]
+    pub fn colour_is_valid(&self) -> bool {
+        let hex = self.colour();
+        hex.is_empty() || (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// Why this form cannot be sent as it stands, if it cannot.
+    ///
+    /// Refused *here* rather than queued and rejected minutes later, because a server
+    /// rejection rolls the whole mutation back -- taking the rename with it, along with
+    /// whatever else the user had done in between.
+    #[must_use]
+    fn refusal(&self) -> Option<String> {
+        if self.typed_title().is_empty() {
+            // Not measured against the server, and deliberately not left to it: a label
+            // with no title is one nobody can find again in any of the three lists that
+            // name it, and the only way back would be the id the interface never shows.
+            return Some("A label needs a title".to_string());
+        }
+        if !self.colour_is_valid() {
+            return Some("A colour is six hex digits, like 4287f5 — or empty".to_string());
+        }
+        None
+    }
+
+    /// The field with the keyboard.
+    fn current(&mut self) -> &mut TextInput {
+        match self.field {
+            LabelField::Title => &mut self.title,
+            LabelField::Colour => &mut self.hex,
+        }
+    }
+
+    /// One field's text, for drawing.
+    #[must_use]
+    pub const fn field(&self, which: LabelField) -> &TextInput {
+        match which {
+            LabelField::Title => &self.title,
+            LabelField::Colour => &self.hex,
+        }
+    }
+}
+
+impl ModalView for LabelEditState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            KeyCode::Esc => Outcome::Dismiss,
+            // Enter saves, unlike the task form, because neither field is multi-line and
+            // there is nothing else for it to mean.
+            KeyCode::Enter => match self.refusal() {
+                Some(why) => {
+                    self.error = Some(why);
+                    Outcome::Consumed
+                }
+                None => Outcome::Submit(Submission::EditedLabel {
+                    id: self.label.id,
+                    title: self.typed_title().to_string(),
+                    hex_color: self.colour().to_string(),
+                }),
+            },
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.field = self.field.other();
+                Outcome::Consumed
+            }
+            _ => {
+                // A refusal that outlived the keystroke that fixed it would be a form
+                // shouting about a mistake the user has already corrected.
+                if self.current().press(key) {
+                    self.error = None;
+                }
+                Outcome::Consumed
+            }
+        }
+    }
+
+    fn title(&self) -> String {
+        "Edit label  —  Tab moves, Enter saves, Esc cancels".to_string()
     }
 }
 
@@ -1143,6 +1366,19 @@ impl ModalView for PickerState {
                 // key was swallowed.
                 None => Outcome::Consumed,
             },
+            // The second surface that lists labels, on the same key as the first. Only
+            // over a label: there is nothing behind a project or a command for this form
+            // to edit, and `Pick` is what says which is which.
+            //
+            // Modal-local like the label form's, and advertised the same way -- in the
+            // title, because a picker has no footer and this one is worth naming whether
+            // or not anything is highlighted.
+            KeyCode::Char('e') if key.mods.contains(KeyModifiers::CONTROL) => {
+                match self.current().map(|candidate| candidate.pick) {
+                    Some(Pick::Label(id)) => Outcome::Update(Submission::EditLabel(id)),
+                    _ => Outcome::Consumed,
+                }
+            }
             KeyCode::Down | KeyCode::Tab => {
                 if !self.matches.is_empty() {
                     self.selected = (self.selected + 1) % self.matches.len();
@@ -1184,6 +1420,7 @@ impl Modal {
             Self::Priority(state) => state,
             Self::Due(state) => state,
             Self::Labels(state) => state,
+            Self::LabelEdit(state) => state,
             Self::QuickActions(state) => state,
         }
     }
@@ -1205,6 +1442,7 @@ impl Modal {
             Self::Priority(state) => state.title(),
             Self::Due(state) => state.title(),
             Self::Labels(state) => state.title(),
+            Self::LabelEdit(state) => state.title(),
             Self::QuickActions(state) => state.title(),
         }
     }
@@ -1444,6 +1682,189 @@ mod tests {
         assert_eq!(form.creatable(), None);
         form.absorb_created(&[a_label(-1, "next")]);
         assert_eq!(form.labels.len(), 1);
+    }
+
+    fn a_coloured_label(id: i64, title: &str, hex: &str) -> Label {
+        Label {
+            id: LabelId(id),
+            title: title.to_string(),
+            hex_color: hex.to_string(),
+            ..Label::default()
+        }
+    }
+
+    #[test]
+    fn the_label_form_starts_from_what_the_label_is_now() {
+        let state = LabelEditState::new(a_coloured_label(41, "next", "4287f5"));
+        assert_eq!(state.title.value(), "next");
+        assert_eq!(state.hex.value(), "4287f5");
+        assert_eq!(state.field, LabelField::Title);
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn submitting_the_label_form_carries_both_fields() {
+        // One request, one undo step, one `UpdateLabel` -- so a rename that never touched
+        // the colour still sends it, because a partial body clears what it omits.
+        let mut form =
+            Modal::LabelEdit(LabelEditState::new(a_coloured_label(41, "next", "4287f5")));
+        for _ in 0.."next".len() {
+            form.handle(code(KeyCode::Backspace));
+        }
+        for c in "next up".chars() {
+            form.handle(key(c));
+        }
+        assert_eq!(
+            form.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::EditedLabel {
+                id: LabelId(41),
+                title: "next up".to_string(),
+                hex_color: "4287f5".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn tab_moves_between_the_two_fields_and_esc_abandons_both() {
+        let mut form = LabelEditState::new(a_coloured_label(41, "next", "4287f5"));
+        assert_eq!(form.handle(code(KeyCode::Tab)), Outcome::Consumed);
+        assert_eq!(form.field, LabelField::Colour);
+        for _ in 0.."4287f5".len() {
+            form.handle(code(KeyCode::Backspace));
+        }
+        for c in "e8384f".chars() {
+            form.handle(key(c));
+        }
+        assert_eq!(form.title.value(), "next", "the title field is untouched");
+        assert_eq!(form.handle(code(KeyCode::BackTab)), Outcome::Consumed);
+        assert_eq!(form.field, LabelField::Title);
+        assert_eq!(
+            form.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::EditedLabel {
+                id: LabelId(41),
+                title: "next".to_string(),
+                hex_color: "e8384f".to_string(),
+            })
+        );
+
+        let mut abandoned = LabelEditState::new(a_coloured_label(41, "next", "4287f5"));
+        abandoned.handle(key('x'));
+        assert_eq!(abandoned.handle(code(KeyCode::Esc)), Outcome::Dismiss);
+    }
+
+    #[test]
+    fn a_colour_that_is_not_six_hex_digits_is_refused_in_the_form() {
+        // Rather than queued and rejected by the server minutes later, which rolls the
+        // whole mutation back -- taking the rename with it.
+        let mut form = LabelEditState::new(a_coloured_label(41, "next", ""));
+        form.handle(code(KeyCode::Tab));
+        for c in "nope".chars() {
+            form.handle(key(c));
+        }
+        assert_eq!(form.handle(code(KeyCode::Enter)), Outcome::Consumed);
+        assert!(
+            form.error.as_deref().is_some_and(|why| why.contains("hex")),
+            "the form says why: {:?}",
+            form.error
+        );
+
+        // And the message does not outlive the mistake it is about.
+        form.handle(code(KeyCode::Backspace));
+        assert!(form.error.is_none());
+    }
+
+    #[test]
+    fn an_empty_colour_is_a_colour_and_a_leading_hash_is_taken_off() {
+        // Empty is what Vikunja holds for a label nobody coloured, and what clearing one
+        // has to send. `#4287f5` is what a colour picker puts on the clipboard;
+        // `theme::parse_hex` already tolerates the hash, and the wire format has none.
+        let mut cleared = LabelEditState::new(a_coloured_label(41, "next", "4287f5"));
+        cleared.handle(code(KeyCode::Tab));
+        cleared.handle(Key::ctrl('u'));
+        assert_eq!(cleared.hex.value(), "");
+        assert_eq!(
+            cleared.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::EditedLabel {
+                id: LabelId(41),
+                title: "next".to_string(),
+                hex_color: String::new(),
+            })
+        );
+
+        let mut hashed = LabelEditState::new(a_coloured_label(41, "next", "#4287f5"));
+        assert_eq!(
+            hashed.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::EditedLabel {
+                id: LabelId(41),
+                title: "next".to_string(),
+                hex_color: "4287f5".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_label_cannot_be_renamed_to_nothing() {
+        // Not measured against the server, and that is the point: a label with no title
+        // is one nobody can find again in any of the three lists that name it, and the
+        // only way back would be the id the interface never shows.
+        let mut form = LabelEditState::new(a_coloured_label(41, "next", "4287f5"));
+        for _ in 0.."next".len() {
+            form.handle(code(KeyCode::Backspace));
+        }
+        assert_eq!(form.handle(code(KeyCode::Enter)), Outcome::Consumed);
+        assert!(form.error.is_some());
+    }
+
+    #[test]
+    fn both_lists_of_labels_open_the_same_form_on_the_highlighted_one() {
+        // A label edited from the task form and one edited from `g l` must be the same
+        // operation, so both surfaces ask for it the same way -- and both stay open,
+        // because `Submit` would pop the form the user is still working in.
+        let mut ticks = LabelsState::new(vec![a_label(1, "urgent"), a_label(2, "next")], vec![]);
+        ticks.handle(code(KeyCode::Down));
+        assert_eq!(
+            ticks.handle(Key::ctrl('e')),
+            Outcome::Update(Submission::EditLabel(LabelId(2)))
+        );
+
+        let mut picker = PickerState::new(
+            PickerKind::Label,
+            vec![
+                Candidate::new(Pick::Label(LabelId(1)), "urgent"),
+                Candidate::new(Pick::Label(LabelId(2)), "next"),
+            ],
+        );
+        picker.handle(code(KeyCode::Down));
+        assert_eq!(
+            picker.handle(Key::ctrl('e')),
+            Outcome::Update(Submission::EditLabel(LabelId(2)))
+        );
+
+        // Only the label picker. There is nothing to edit behind a project or a command.
+        let mut projects = PickerState::new(
+            PickerKind::Project,
+            vec![Candidate::new(Pick::Project(ProjectId(1)), "Work")],
+        );
+        assert_eq!(projects.handle(Key::ctrl('e')), Outcome::Consumed);
+    }
+
+    #[test]
+    fn editing_nothing_does_nothing_rather_than_panicking() {
+        let mut ticks = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        for c in "zzz".chars() {
+            ticks.handle(key(c));
+        }
+        assert!(ticks.current().is_none());
+        assert_eq!(ticks.handle(Key::ctrl('e')), Outcome::Consumed);
+
+        let mut picker = PickerState::new(
+            PickerKind::Label,
+            vec![Candidate::new(Pick::Label(LabelId(1)), "urgent")],
+        );
+        for c in "zzz".chars() {
+            picker.handle(key(c));
+        }
+        assert_eq!(picker.handle(Key::ctrl('e')), Outcome::Consumed);
     }
 
     #[test]

@@ -304,6 +304,55 @@ fn the_label_form_and_its_offer_to_create() {
 }
 
 #[test]
+fn the_label_edit_form_shows_the_colour_it_is_about_to_save() {
+    // Six hex digits are not a colour anybody can read, and the label is about to be
+    // worn by every task that carries it -- so the chip is drawn in the colour being
+    // typed, in the style the list rows use.
+    let mut model = fixture((120, 40));
+    for key in ['g', 'l'] {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+        );
+    }
+    // The picker is where the key is advertised: it has no footer, so its title says so.
+    let drawn = draw(&model);
+    assert!(drawn.contains("C-e edits"), "{drawn}");
+
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+    );
+    let drawn = draw(&model);
+    assert!(drawn.contains("Title"), "{drawn}");
+    assert!(drawn.contains("e05454"), "the colour it has now:\n{drawn}");
+    assert!(
+        drawn.contains("six hex digits"),
+        "the rule, before it is broken:\n{drawn}"
+    );
+    golden("120x40-label-edit.txt", &drawn);
+
+    // And a colour it cannot save says so on the same row, rather than letting the
+    // server answer minutes later and roll the rename back with it.
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+    );
+    for c in "zz".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(drawn.contains("A colour is six hex digits"), "{drawn}");
+}
+
+#[test]
 fn a_label_form_over_an_empty_pool_invites_a_name_rather_than_blaming_the_filter() {
     // What the deleted "No labels exist yet" toast used to say, now said inside the form
     // that can actually do something about it.
@@ -368,9 +417,12 @@ fn a_full_label_list_does_not_push_the_offer_off_the_bottom() {
     let drawn = draw(&model);
     assert!(drawn.contains("alpha 01"), "the list is drawn:\n{drawn}");
     assert!(drawn.contains("C-n creates \"a\""), "{drawn}");
-    // One row fewer of list than without the offer, not one row more of box.
+    // One row fewer of list than without the offer, not one row more of box. Counted by
+    // the tick box rather than the title, because the footer names a label too -- `C-e`
+    // is offered beside `C-n` whenever there is a row under the cursor to edit.
+    assert!(drawn.contains("C-e edits \"alpha 01\""), "{drawn}");
     assert_eq!(
-        drawn.matches("alpha ").count(),
+        drawn.matches("[ ] alpha ").count(),
         12,
         "the offer took its row off the list:\n{drawn}"
     );
