@@ -291,14 +291,16 @@ impl Store {
                 // the user's queued edits with it, and the entry left behind resurrects
                 // the task as a ghost when the server answers 404.
                 //
-                // Only the tasks. `outbox.subject_id` is a *task* id, so the same
-                // subquery against `projects` would keep a project alive whenever its id
-                // happened to match a pending task's.
+                // Only the tasks. `outbox.subject_kind = 'task'` is what makes
+                // `subject_id` a task id here -- without that filter the same subquery
+                // against `projects` would keep a project alive whenever its id happened
+                // to match a pending task's, or (once labels are queueable) spare a task
+                // whose id happened to match a pending label's.
                 let mut delete_tasks = tx.prepare(
                     "DELETE FROM tasks
                       WHERE project_id = ?1
                         AND id NOT IN (SELECT subject_id FROM outbox
-                                        WHERE subject_id IS NOT NULL)",
+                                        WHERE subject_id IS NOT NULL AND subject_kind = 'task')",
                 )?;
                 for id in &orphaned {
                     delete_tasks.execute(params![id])?;
@@ -453,7 +455,7 @@ fn row_to_project(row: &Row<'_>) -> rusqlite::Result<Project> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use tui_do_api::models::{Task, TaskId, User, UserId};
+    use tui_do_api::models::{Label, LabelId, Task, TaskId, User, UserId};
 
     fn project(id: i64, title: &str) -> Project {
         Project {
@@ -825,6 +827,62 @@ mod tests {
             .unwrap()
             .expect("a queued edit was deleted with its project");
         assert_eq!(survivor.title, "edited");
+    }
+
+    #[tokio::test]
+    async fn retaining_projects_does_not_spare_a_task_whose_id_collides_with_a_queued_labels_subject(
+    ) {
+        // `subject_id` is untyped and provisional ids count down from -1 per kind, so a
+        // queued label can share an id with a real task -- here, both are 10. Without
+        // `subject_kind` in the cascade's guard, the label's queue entry reads as "task
+        // 10 has unsent changes", sparing it from its project's deletion and leaving a
+        // task row pointing at a project that no longer exists.
+        let store = Store::in_memory().unwrap();
+        store
+            .upsert_projects(vec![project(1, "deleted server-side")])
+            .await
+            .unwrap();
+        store
+            .upsert_tasks(vec![Task {
+                id: TaskId(10),
+                project_id: ProjectId(1),
+                title: "orphaned".into(),
+                ..Task::default()
+            }])
+            .await
+            .unwrap();
+
+        // No `Mutation` variant produces a label subject yet -- that arrives with the
+        // outbox's next task -- so the collision is built directly: an entry whose
+        // `subject_id` matches task 10 but whose `subject_kind` says `label`.
+        let payload = serde_json::to_string(&crate::store::Mutation::AttachLabel {
+            task: TaskId(10),
+            label: Box::new(Label {
+                id: LabelId(1),
+                title: "urgent".into(),
+                ..Label::default()
+            }),
+        })
+        .unwrap();
+        store
+            .write(move |tx| {
+                tx.execute(
+                    "INSERT INTO outbox (created, kind, payload, subject_id, subject_kind)
+                     VALUES ('2026-08-29T00:00:00Z', 'attach_label', ?1, 10, 'label')",
+                    params![payload],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        store.retain_projects(Vec::new()).await.unwrap();
+
+        assert!(store.project(ProjectId(1)).await.unwrap().is_none());
+        assert!(
+            store.task(TaskId(10)).await.unwrap().is_none(),
+            "a queued label sharing task 10's id spared it from its project's cascade"
+        );
     }
 
     #[tokio::test]

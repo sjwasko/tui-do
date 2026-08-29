@@ -669,13 +669,24 @@ mod tests {
 
         // No `Mutation` variant produces a label subject yet -- that arrives with the
         // outbox's next task -- so the collision is built directly: an entry whose
-        // `subject_id` matches task 1 but whose `subject_kind` says `label`.
+        // `subject_id` matches task 1 but whose `subject_kind` says `label`. The payload
+        // is a real serialized `Mutation::AttachLabel` rather than a placeholder, so a
+        // future reader of the queue meets a value it can actually parse.
+        let payload = serde_json::to_string(&crate::store::Mutation::AttachLabel {
+            task: TaskId(1),
+            label: Box::new(Label {
+                id: LabelId(1),
+                title: "urgent".into(),
+                ..Label::default()
+            }),
+        })
+        .unwrap();
         store
-            .write(|tx| {
+            .write(move |tx| {
                 tx.execute(
                     "INSERT INTO outbox (created, kind, payload, subject_id, subject_kind)
-                     VALUES ('2026-08-29T00:00:00Z', 'attach_label', '{}', ?1, 'label')",
-                    params![1_i64],
+                     VALUES ('2026-08-29T00:00:00Z', 'attach_label', ?1, 1, 'label')",
+                    params![payload],
                 )?;
                 Ok(())
             })
