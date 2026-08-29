@@ -331,6 +331,65 @@ fn a_label_form_over_an_empty_pool_invites_a_name_rather_than_blaming_the_filter
     assert!(!drawn.contains("nothing matches"), "{drawn}");
 }
 
+/// A model whose label pool is longer than the form's box, filtered to `typed`.
+fn overfull_label_form(size: (u16, u16), typed: &str) -> Model {
+    let mut model = fixture(size);
+    let many: Vec<Label> = (1..=20)
+        .map(|n| Label {
+            id: LabelId(100 + n),
+            title: format!("alpha {n:02}"),
+            ..Label::default()
+        })
+        .collect();
+    update(&mut model, Msg::LabelsLoaded(many));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+    );
+    for c in typed.chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    model
+}
+
+#[test]
+fn a_full_label_list_does_not_push_the_offer_off_the_bottom() {
+    // *This was nearly broken:* the offer was appended after `lines.truncate(height)`,
+    // which cuts from the end, so a list long enough to fill the box would have eaten the
+    // only place `C-n` is ever advertised. The row is reserved before the list is laid
+    // out instead.
+    //
+    // `a` matches all twenty fuzzily and is nobody's title, so the list overflows and the
+    // offer stands.
+    let model = overfull_label_form((120, 40), "a");
+    let drawn = draw(&model);
+    assert!(drawn.contains("alpha 01"), "the list is drawn:\n{drawn}");
+    assert!(drawn.contains("C-n creates \"a\""), "{drawn}");
+    // One row fewer of list than without the offer, not one row more of box.
+    assert_eq!(
+        drawn.matches("alpha ").count(),
+        12,
+        "the offer took its row off the list:\n{drawn}"
+    );
+}
+
+#[test]
+fn a_label_form_clipped_to_one_row_keeps_what_is_being_typed() {
+    // `centered` clips the box to whatever the terminal has, so the inner area can come
+    // out at a single row. What the user is typing outranks the offer to create it --
+    // without the `.max(1)` the input line was the line that went.
+    let model = overfull_label_form((120, 3), "zz");
+    let drawn = draw(&model);
+    assert!(drawn.contains("> zz"), "the field survived:\n{drawn}");
+    assert!(
+        !drawn.contains("C-n"),
+        "and the offer is what gave way, not the field:\n{drawn}"
+    );
+}
+
 #[test]
 fn the_command_palette() {
     let mut model = fixture((120, 40));
