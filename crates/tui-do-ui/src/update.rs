@@ -336,10 +336,10 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::CreateLabel(title) => create_label(model, title),
         Submission::EditLabel(id) => open_label_form(model, id),
         Submission::EditedLabel {
-            id,
+            before,
             title,
             hex_color,
-        } => rename_label(model, id, title, hex_color),
+        } => rename_label(model, *before, title, hex_color),
         Submission::QuickAction(index) => run_quick_action(model, index),
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
@@ -1193,22 +1193,37 @@ fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
 /// renamed from the `l` ticks and a label renamed from `g l` are the same operation
 /// against the same `before`.
 ///
-/// The pool's copy rather than the asking list's, because a picker holds a title and an
-/// id and a label form holds a clone taken when it opened -- `model.data.labels` is the
-/// one a pull refreshes, and it is the `before` half of a three-way merge. Missing only
-/// for a label a *task* carries that the labels table has not caught up with, which is
-/// the same gap `Action::SetLabels` fills when it opens the form; there is nothing
-/// honest to rename it from, so the user is told rather than shown a form built from a
-/// guess.
-fn open_label_form(model: &mut Model, id: LabelId) -> Vec<Effect> {
-    let Some(label) = model
+/// The pool first, then the labels the tasks are carrying.
+///
+/// Two places, because the `l` form shows both: a pull stores labels and tasks in
+/// separate passes, so a task can hold a label `model.data.labels` has not caught up
+/// with, and the form lists those too. Offering `C-e` on a row and then refusing it would
+/// be a key that dead-ends on whichever rows happen to be in that window.
+///
+/// It is a window and not a hole: the store reads a task's labels by joining the labels
+/// table (`store::labels`), so a label on a task in the list has a row in the store, and
+/// only this crate's snapshot of it is behind. The write lands on the same row either
+/// way.
+fn known_label(model: &Model, id: LabelId) -> Option<Label> {
+    model
         .data
         .labels
         .iter()
+        .chain(model.data.tasks.iter().flat_map(|task| task.labels.iter()))
         .find(|label| label.id == id)
         .cloned()
-    else {
-        model.toast(Toast::info("That label has not been synced here yet"));
+}
+
+/// Open the label form over `id`, from whichever list asked.
+///
+/// Both surfaces that list labels send this, so the form they open is one form: a label
+/// renamed from the `l` ticks and a label renamed from `g l` are the same operation
+/// against the same `before`.
+fn open_label_form(model: &mut Model, id: LabelId) -> Vec<Effect> {
+    let Some(label) = known_label(model, id) else {
+        // Nowhere on this box at all: a pull that dropped it, or another box's delete
+        // landing between the list being drawn and the key being pressed.
+        model.toast(Toast::info("That label is no longer here"));
         return Vec::new();
     };
     model
@@ -1223,24 +1238,25 @@ fn open_label_form(model: &mut Model, id: LabelId) -> Vec<Effect> {
 /// either way: a partial body clears what it omits, so two mutations would be two writes
 /// that each undo half of the other, and two rows on the undo stack for one keystroke.
 ///
+/// `before` is the form's own copy, carried through the submission rather than read back
+/// out of the pool here. It is the half of a three-way merge that says *what the user
+/// started from*, and `Label::merge_onto` decides whether a field is theirs by comparing
+/// it with `after` -- so re-reading it would hand the merge a `before` the user never
+/// saw. `Msg::LabelsLoaded` lands under an open form on every pull, so that is a live
+/// difference, not a race: see the two tests named for it.
+///
 /// Nothing is queued when neither field moved. The form submits on Enter whether or not
 /// anything was typed, and an `UpdateLabel` that changes nothing is still a read, a merge
 /// and a write against a server that may have a newer copy -- so "no change" would be a
 /// way to overwrite somebody else's rename with the value already on screen.
-fn rename_label(model: &mut Model, id: LabelId, title: String, hex_color: String) -> Vec<Effect> {
-    let Some(before) = model
-        .data
-        .labels
-        .iter()
-        .find(|label| label.id == id)
-        .cloned()
-    else {
+fn rename_label(model: &mut Model, before: Label, title: String, hex_color: String) -> Vec<Effect> {
+    if known_label(model, before.id).is_none() {
         // Gone between opening the form and pressing Enter -- a pull that dropped it, or
-        // another box's delete. Queuing against it would name an id the server has not
-        // got.
+        // another box's delete. Queuing against it would name an id this box can no
+        // longer show the user anything about.
         model.toast(Toast::info("That label is no longer here"));
         return Vec::new();
-    };
+    }
     let after = Label {
         title,
         hex_color,

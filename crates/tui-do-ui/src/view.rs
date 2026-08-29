@@ -940,33 +940,55 @@ fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
 /// something, which is also when the user is looking for it: `C-n` when what has been
 /// typed is a name no label has, `C-e` when there is a row under the cursor to rename.
 fn labels_offer(state: &LabelsState, theme: Theme, width: u16) -> Option<Line<'static>> {
+    /// What each hint is keyed and worded as. The pair is the single source of both the
+    /// spans below and the width they are measured at, so a rewording cannot leave the
+    /// truncation sized for the old text.
+    const CREATE: (&str, &str) = (" C-n ", "creates");
+    const EDIT: (&str, &str) = (" C-e ", "edits");
+    /// What separates them when both are on the row.
+    const GAP: &str = " ";
+
+    /// The row a hint spends before its title: the key, the verb, and the quotes the
+    /// title is written inside. Measured from the very string that gets rendered, with
+    /// the title left out.
+    fn chrome((key, verb): (&str, &str)) -> u16 {
+        rows::display_width(key) + rows::display_width(&format!("{verb} \"\""))
+    }
+
     let creatable = state.creatable().map(ToString::to_string);
     let editable = state.current().map(|label| label.title.clone());
     if creatable.is_none() && editable.is_none() {
         return None;
     }
-    // With both on the row, each title gets half of what is left over, so a long label
-    // cannot push the other key off the end of a line nobody scrolls.
-    let room = if creatable.is_some() && editable.is_some() {
-        width.saturating_sub(34) / 2
-    } else {
-        width.saturating_sub(15)
-    };
+    let mut spent = rows::display_width(GAP);
+    if creatable.is_some() {
+        spent += chrome(CREATE);
+    }
+    if editable.is_some() {
+        spent += chrome(EDIT);
+    }
+    // What is left over, split between however many titles are on the row -- so a long
+    // label cannot push the other key off the end of a line nobody can scroll.
+    let titles = u16::from(creatable.is_some()) + u16::from(editable.is_some());
+    let room = width.saturating_sub(spent) / titles.max(1);
+
     let mut spans: Vec<Span<'static>> = Vec::new();
     if let Some(title) = creatable {
-        spans.push(Span::styled(" C-n ", theme.accent()));
+        spans.push(Span::styled(CREATE.0.to_string(), theme.accent()));
         spans.push(Span::styled(
-            format!("creates \"{}\"", rows::truncate(&title, room)),
+            format!("{} \"{}\"", CREATE.1, rows::truncate(&title, room)),
             theme.muted(),
         ));
     }
     if let Some(title) = editable {
+        let key = if spans.is_empty() {
+            EDIT.0.to_string()
+        } else {
+            format!("{GAP}{}", EDIT.0)
+        };
+        spans.push(Span::styled(key, theme.accent()));
         spans.push(Span::styled(
-            if spans.is_empty() { " C-e " } else { "  C-e " }.to_string(),
-            theme.accent(),
-        ));
-        spans.push(Span::styled(
-            format!("edits \"{}\"", rows::truncate(&title, room)),
+            format!("{} \"{}\"", EDIT.1, rows::truncate(&title, room)),
             theme.muted(),
         ));
     }

@@ -1517,6 +1517,136 @@ fn renaming_a_label_from_the_task_form_carries_both_fields_and_keeps_the_ticks()
     assert_eq!(model.data.labels[0].title, "critical");
 }
 
+/// The same label, recoloured -- what another box's edit looks like when it arrives.
+fn coloured(id: i64, title: &str, hex: &str) -> Label {
+    Label {
+        id: LabelId(id),
+        title: title.to_string(),
+        hex_color: hex.to_string(),
+        ..Label::default()
+    }
+}
+
+#[test]
+fn a_field_the_user_did_not_touch_is_not_claimed_as_their_edit() {
+    // `Label::merge_onto` decides whether a field is the user's by comparing `before`
+    // with `after`, so `before` has to be what they started from. Re-reading it out of
+    // the pool at Enter reads a colour another box changed under the open form as *this*
+    // user's edit: the merge would then overwrite the other box's colour with a value
+    // this user never typed, and toast `Overwrote` blaming them for it.
+    let mut model = with_labels(vec![coloured(1, "urgent", "4287f5")], Vec::new());
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+
+    // The other box's recolour lands while the form is open. `LabelEdit` is deliberately
+    // not refreshed from it -- the fields are mid-typing -- so the two now disagree.
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![coloured(1, "urgent", "e8384f")]),
+    );
+    retype(&mut model, "critical");
+    let effects = press_code(&mut model, KeyCode::Enter);
+
+    match applied(&effects).expect("the rename is queued") {
+        Mutation::UpdateLabel { before, after } => {
+            assert_eq!(before.hex_color, "4287f5", "what the user started from");
+            assert_eq!(
+                after.hex_color, before.hex_color,
+                "the colour is untouched, so the merge keeps the server's"
+            );
+            assert_eq!(after.title, "critical");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn enter_over_a_rename_that_landed_underneath_queues_nothing() {
+    // The other half of the same fault. With `before` re-read from the pool, an Enter
+    // over a form nobody typed in has `after.title` (the form's, old) differing from
+    // `before.title` (the pool's, new), so the no-change return does not fire and the
+    // write reverts the other box's rename.
+    let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+    update(&mut model, Msg::LabelsLoaded(vec![label(1, "next steps")]));
+
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(applied(&effects).is_none(), "nothing was typed here");
+    assert!(model.undo.is_empty());
+    assert_eq!(model.data.labels[0].title, "next steps", "and it stands");
+}
+
+#[test]
+fn a_reload_carries_a_rename_into_an_open_picker() {
+    // The picker's counterpart to `LabelsState::refresh`. Its candidates are a copy of
+    // the title made when it opened, and nothing else rewrites them -- so a rename from
+    // another box, or the store rolling this box's own rename back, would leave `g l`
+    // offering a name that no longer exists.
+    let mut model = with_labels(vec![label(1, "urgent"), label(2, "next")], Vec::new());
+    press(&mut model, 'g');
+    press(&mut model, 'l');
+
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(1, "critical"), label(2, "next")]),
+    );
+
+    let Some(Modal::Picker(picker)) = model.modals.last() else {
+        panic!("the picker went missing: {:?}", model.modals);
+    };
+    // Sorted by title when it opened, so `next` is first and `urgent` second. The order
+    // is deliberately left as it was: re-sorting would move the highlight under someone
+    // mid-keystroke.
+    assert_eq!(picker.candidates[1].title, "critical");
+    assert_eq!(picker.candidates[1].pick, Pick::Label(LabelId(1)));
+    assert_eq!(picker.candidates[0].title, "next");
+}
+
+#[test]
+fn a_label_only_a_task_carries_can_still_be_renamed() {
+    // The `l` form lists labels the task holds that the pool has not caught up with --
+    // a pull stores labels and tasks in separate passes -- and offers `C-e` on them like
+    // any other row. The store reads a task's labels by joining the labels table, so the
+    // row is there; only this crate's snapshot is behind, and the write lands on the same
+    // row either way.
+    let mut model = with_labels(Vec::new(), vec![coloured(2, "backend", "1973ff")]);
+    press(&mut model, 'l');
+    press_ctrl(&mut model, 'e');
+
+    assert_eq!(label_edit_form(&model).label.id, LabelId(2));
+    retype(&mut model, "infra");
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the rename is queued") {
+        Mutation::UpdateLabel { before, after } => {
+            assert_eq!(before.title, "backend");
+            assert_eq!(before.hex_color, "1973ff", "carried, not defaulted");
+            assert_eq!(after.title, "infra");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    assert_eq!(model.data.tasks[0].labels[0].title, "infra");
+}
+
+#[test]
+fn a_label_that_is_nowhere_on_this_box_says_so_rather_than_opening_a_form() {
+    // A pull that dropped it, or another box's delete, landing between the list being
+    // drawn and the key being pressed.
+    let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
+    press(&mut model, 'g');
+    press(&mut model, 'l');
+    update(&mut model, Msg::LabelsLoaded(Vec::new()));
+    press_ctrl(&mut model, 'e');
+
+    assert!(
+        matches!(model.modals.last(), Some(Modal::Picker(_))),
+        "no form opened: {:?}",
+        model.modals
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("no longer here"), "{}", toast.text);
+}
+
 #[test]
 fn a_rejected_rename_puts_the_old_title_back_in_the_list_that_asked_for_it() {
     // The list the user renamed from is still open, and it holds its own clones --
@@ -1621,26 +1751,6 @@ fn a_form_closed_without_a_change_queues_nothing() {
     let effects = press_code(&mut model, KeyCode::Enter);
     assert!(applied(&effects).is_none());
     assert!(model.undo.is_empty());
-}
-
-#[test]
-fn a_label_only_a_task_carries_is_not_renamed_from_a_guess() {
-    // The form shows labels the task holds that the pool has not caught up with -- a
-    // pull stores tasks and labels in separate passes. There is no `before` to merge
-    // against for one of those, so the user is told rather than shown a form built from
-    // a guess.
-    let mut model = with_labels(Vec::new(), vec![label(2, "backend")]);
-    press(&mut model, 'l');
-    assert_eq!(label_form(&model).labels, vec![label(2, "backend")]);
-
-    press_ctrl(&mut model, 'e');
-    assert!(
-        matches!(model.modals.last(), Some(Modal::Labels(_))),
-        "no form opened: {:?}",
-        model.modals
-    );
-    let toast = model.status.toast.as_ref().expect("the user is told");
-    assert!(toast.text.contains("synced"), "{}", toast.text);
 }
 
 #[test]
