@@ -208,6 +208,40 @@ impl Mutation {
         }
     }
 
+    /// Point this mutation at a different label id.
+    ///
+    /// Separate from [`Self::retarget`] rather than a second argument to it: the two id
+    /// spaces are unrelated and a single method taking both would be one typo away from
+    /// renumbering a task with a label's id.
+    pub fn retarget_label(&mut self, from: LabelId, to: LabelId) {
+        let swap = |id: &mut LabelId| {
+            if *id == from {
+                *id = to;
+            }
+        };
+        match self {
+            Self::CreateLabel { label } => swap(&mut label.id),
+            Self::AttachLabel { label, .. } | Self::DetachLabel { label, .. } => {
+                swap(&mut label.id);
+            }
+            Self::CreateTask { task } => {
+                for label in &mut task.labels {
+                    swap(&mut label.id);
+                }
+            }
+            Self::UpdateTask { before, after } => {
+                for label in before.labels.iter_mut().chain(after.labels.iter_mut()) {
+                    swap(&mut label.id);
+                }
+            }
+            Self::DeleteTask { before } => {
+                for label in &mut before.labels {
+                    swap(&mut label.id);
+                }
+            }
+        }
+    }
+
     /// What undoing this would be, when it can be undone.
     ///
     /// Undo queues the inverse as an ordinary mutation, so it is optimistic, rolls back
@@ -683,6 +717,68 @@ impl Store {
                 tx.execute(
                     "UPDATE outbox SET payload = ?1, subject_id = ?2 WHERE id = ?3",
                     params![serde_json::to_string(&mutation)?, assigned.id.get(), id],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Replace a locally created label with the one the server assigned an id to.
+    ///
+    /// The same order as [`Self::settle_create`], and for the same reason: the server's
+    /// row goes in first, `task_labels` is re-pointed at it, and only then is the
+    /// provisional row deleted, because SQLite cascades a delete but not an update.
+    ///
+    /// Unlike a task, the entries that have to move are **not** found by subject: an
+    /// `AttachLabel` queued behind this create has the *task* as its subject and carries
+    /// the label by value inside its payload. So every queued entry is re-encoded, and
+    /// `subject_id` is rewritten too -- a queued mutation whose subject *is* the label
+    /// (an `UpdateLabel`, once one exists) must follow just the same.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure, or
+    /// [`crate::CoreError::Encoding`] if a queued payload cannot be re-encoded.
+    pub async fn settle_create_label(
+        &self,
+        entry: i64,
+        provisional: LabelId,
+        assigned: Label,
+    ) -> Result<()> {
+        let now = Utc::now();
+        self.write(move |tx| {
+            upsert_label(tx, &assigned, now)?;
+            tx.execute(
+                "UPDATE OR IGNORE task_labels SET label_id = ?1 WHERE label_id = ?2",
+                params![assigned.id.get(), provisional.get()],
+            )?;
+            tx.execute(
+                "DELETE FROM labels WHERE id = ?1",
+                params![provisional.get()],
+            )?;
+            tx.execute("DELETE FROM outbox WHERE id = ?1", params![entry])?;
+
+            let queued: Vec<(i64, String)> = {
+                let mut statement = tx.prepare("SELECT id, payload FROM outbox")?;
+                let rows = statement.query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+                let mut all = Vec::new();
+                for row in rows {
+                    all.push(row?);
+                }
+                all
+            };
+            for (id, payload) in queued {
+                let mut mutation: Mutation = serde_json::from_str(&payload)?;
+                mutation.retarget_label(provisional, assigned.id);
+                tx.execute(
+                    "UPDATE outbox SET payload = ?1, subject_id = ?2 WHERE id = ?3",
+                    params![
+                        serde_json::to_string(&mutation)?,
+                        mutation.subject().id(),
+                        id
+                    ],
                 )?;
             }
             Ok(())
@@ -1351,11 +1447,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(task_entry.mutation.subject(), Subject::Task(TaskId(-1)));
+
+        // A second label create must not collide with the first: two labels both
+        // allocated -1 would meet in `upsert_label`'s `ON CONFLICT (id) DO UPDATE`, and
+        // the second create would silently overwrite the first's row while both entries
+        // still sat in the queue.
+        let second = store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: "another".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.mutation.subject(), Subject::Label(LabelId(-2)));
     }
 
     #[tokio::test]
     async fn queueing_a_label_writes_it_to_the_store_immediately() {
         // Rule 5: the local store is changed at the keystroke, not when the server answers.
+        // Colour is asserted, not just title: this feature's whole point is create *and*
+        // recolour, so a test that never checked `hex_color` would pass even if
+        // `upsert_label` dropped it.
         let store = Store::in_memory().unwrap();
         store
             .queue(Mutation::CreateLabel {
@@ -1372,7 +1486,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].id, LabelId(-1));
         assert_eq!(labels[0].title, "next");
+        assert_eq!(labels[0].hex_color, "4287f5");
     }
 
     #[tokio::test]
@@ -1384,5 +1500,92 @@ mod tests {
             }),
         };
         assert!(mutation.inverse().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_label_create_leaves_nothing_behind() {
+        // The label equivalent of `a_rejected_create_leaves_nothing_behind`: apply then
+        // rollback must leave the store exactly as it was before the create was queued.
+        let store = Store::in_memory().unwrap();
+        let entry = store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: "doomed".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(store.label_count().await.unwrap(), 1);
+
+        store.discard(&entry).await.unwrap();
+
+        assert!(store.label(LabelId(-1)).await.unwrap().is_none());
+        assert_eq!(store.label_count().await.unwrap(), 0);
+        assert_eq!(store.pending_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn adopting_a_label_moves_everything_that_named_it() {
+        let store = Store::in_memory().unwrap();
+        // `task_labels.task_id` is a foreign key; the brief's snippet queues an attach
+        // against task 7 without the row existing first, which the schema does not allow.
+        store.upsert_tasks(vec![task(7, "chores")]).await.unwrap();
+        let created = store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(Label {
+                    id: LabelId(0),
+                    title: "next".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let provisional = LabelId(-1);
+
+        // An attach queued behind it, whose subject is the task and whose payload carries
+        // the provisional label by value. This is the entry a subject lookup cannot find.
+        store
+            .queue(Mutation::AttachLabel {
+                task: TaskId(7),
+                label: Box::new(Label {
+                    id: provisional,
+                    title: "next".into(),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+
+        store
+            .settle_create_label(
+                created.id,
+                provisional,
+                Label {
+                    id: LabelId(41),
+                    title: "next".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(queued.len(), 1, "the create should have been dropped");
+        let Mutation::AttachLabel { label, .. } = &queued[0].mutation else {
+            panic!("the attach is gone");
+        };
+        assert_eq!(
+            label.id,
+            LabelId(41),
+            "the attach still names the provisional label"
+        );
+
+        let labels = store
+            .labels(LabelFilter::default(), LabelSort::default())
+            .await
+            .unwrap();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].id, LabelId(41));
     }
 }
