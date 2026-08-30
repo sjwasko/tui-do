@@ -3474,7 +3474,7 @@ fn a_rejected_label_create_does_not_wedge_the_task_that_asked_for_it() {
         &mut model,
         Msg::Sync(SyncEvent::Rejected {
             subject: Subject::Label(LabelId(-1)),
-            kind: "create label".to_string(),
+            kind: "create_label".to_string(),
             message: "nope".to_string(),
         }),
     );
@@ -3488,11 +3488,64 @@ fn a_rejected_label_create_does_not_wedge_the_task_that_asked_for_it() {
         other => panic!("wrong mutations: {other:?}"),
     }
     assert!(model.modals.is_empty(), "and nothing is left waiting");
+    // One message, not two written over each other: the slot is one deep, the rejection
+    // is the half the user cannot work out by looking, and the note about the task going
+    // out unlabelled would otherwise leave the task row as its only signal.
     let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("rejected"), "{}", toast.text);
     assert!(
-        toast.text.contains("rejected"),
-        "the rejection is the news, not the note about the label being left off: {}",
+        toast.text.contains("waiting"),
+        "and what it cost them: {}",
         toast.text
+    );
+}
+
+#[test]
+fn a_rejected_rename_leaves_a_create_that_is_still_in_flight_alone() {
+    // The release is gated on the mutation's *kind*, not merely on the subject being a
+    // label. A rejected rename of some other label says nothing about a create the server
+    // has not answered yet -- abandoning that wait leaves the user with a label that does
+    // get made and a task that does not carry it, and the combined toast above would not
+    // even mention it, because nothing was released to mention.
+    let (mut model, _) = asked_about_waiting();
+    press(&mut model, 'y');
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(9)),
+            kind: "update_label".to_string(),
+            message: "This label does not exist.".to_string(),
+        }),
+    );
+    assert!(
+        all_applied(&effects).is_empty(),
+        "the held task is still waiting for the label it asked for: {effects:?}"
+    );
+    assert!(matches!(model.modals.last(), Some(Modal::ConfirmLabels(_))));
+
+    // And when the create it *is* waiting for lands, it still resumes.
+    let effects = update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(-1, "waiting")]),
+    );
+    assert!(matches!(
+        all_applied(&effects).as_slice(),
+        [Mutation::CreateTask { .. }]
+    ));
+}
+
+#[test]
+fn the_kind_the_release_gates_on_is_the_one_the_store_reports() {
+    // `release_held_labels` compares against a literal, because the event carries a
+    // `String` and the interface has no `Mutation` to ask. This is the coupling: if the
+    // store ever renames the kind, the release silently stops firing and every held
+    // submission wedges on a rejection.
+    assert_eq!(
+        Mutation::CreateLabel {
+            label: Box::new(Label::default())
+        }
+        .kind(),
+        "create_label"
     );
 }
 
@@ -3609,4 +3662,110 @@ fn enter_does_not_create_a_label_by_reflex() {
         other => panic!("wrong mutations: {other:?}"),
     }
     assert!(model.modals.is_empty());
+}
+
+#[test]
+fn two_unknown_labels_are_one_question_and_the_task_waits_for_both() {
+    // One question, not one per typo: the box names both, `y` queues both creates, and
+    // `Waiting::Creating` is only empty -- and the task only queued -- once both have
+    // come back. A resume on the first would land the task carrying half of what the user
+    // agreed to.
+    let mut model = loaded();
+    update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
+    press(&mut model, 'a');
+    for c in "Call the VA *urgent *waiting *blocked".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(
+        confirmation(&model).unknown,
+        vec!["waiting".to_string(), "blocked".to_string()],
+        "in the order they were typed"
+    );
+    assert!(
+        confirmation(&model).title().contains("No such labels"),
+        "plural: {}",
+        confirmation(&model).title()
+    );
+
+    let effects = press(&mut model, 'y');
+    let titles: Vec<&str> = all_applied(&effects)
+        .iter()
+        .filter_map(|mutation| match mutation {
+            Mutation::CreateLabel { label } => Some(label.title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, vec!["waiting", "blocked"], "both, and in order");
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("labels"), "plural: {}", toast.text);
+
+    // One of the two lands. The other is still outstanding, so nothing resumes.
+    let effects = update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(-1, "waiting")]),
+    );
+    assert!(
+        all_applied(&effects).is_empty(),
+        "half the answer is not the answer: {effects:?}"
+    );
+
+    let effects = update(
+        &mut model,
+        Msg::LabelsLoaded(vec![
+            label(4, "urgent"),
+            label(-1, "waiting"),
+            label(-2, "blocked"),
+        ]),
+    );
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => assert_eq!(
+            task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![LabelId(4), LabelId(-1), LabelId(-2)]
+        ),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty());
+}
+
+#[test]
+fn one_rejected_create_of_two_still_lands_the_task_with_the_other() {
+    // The bounded answer, written down: the event names an id neither waiting modal ever
+    // learned, so a rejection ends the wait for *all* the titles rather than the one that
+    // failed. The survivor is really made -- the reload brings it into the pool -- and the
+    // task simply goes out without it, which is recoverable in one keystroke, where a box
+    // nobody can close is not.
+    let mut model = loaded();
+    update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
+    press(&mut model, 'a');
+    for c in "Call the VA *urgent *waiting *blocked".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    press(&mut model, 'y');
+
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(-2)),
+            kind: "create_label".to_string(),
+            message: "You do not have the right to do this.".to_string(),
+        }),
+    );
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => assert_eq!(
+            task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![LabelId(4)],
+            "neither new label is on it: the pool has not named either one yet"
+        ),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty(), "and nothing is left waiting");
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("rejected"), "{}", toast.text);
+    assert!(
+        toast.text.contains("waiting") && toast.text.contains("blocked"),
+        "and both names it went out without: {}",
+        toast.text
+    );
 }
