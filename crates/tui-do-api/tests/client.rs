@@ -1,7 +1,7 @@
 //! Client behaviour against a mock Vikunja.
 //!
-//! The responses here are shaped from real captures of the dev instance (see
-//! `md/2026-08-24-1045-continuity.md`): its 3,876 tasks at a 50-item page cap are exactly
+//! The responses here are shaped from real captures of the dev instance, probed
+//! 2026-08-24: its 3,876 tasks at a 50-item page cap are exactly
 //! 78 pages, and that is the scenario the pagination test reproduces. cria, given the
 //! same server, shows 50 tasks and says nothing about the other 3,826.
 

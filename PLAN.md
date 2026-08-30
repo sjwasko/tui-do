@@ -262,8 +262,14 @@ of `md/MANUAL-CHECKS2.md`.
   the Arch repos and Omarchy, but not in Ubuntu 26.04's default set). Configurable as
   `markdown_renderer: glow | builtin | auto`, default `auto`; `tui-do doctor` reports which is active and
   tells the user how to install `glow` for the better rendering.
-- Task detail pane, comments, attachments (incl. terminal image preview), subtasks and relations — cria has
-  relations half-built and disabled; do it properly or not at all — and URL extraction/opening.
+- Task detail pane, comments, subtasks and relations — cria has relations half-built and disabled; do it
+  properly or not at all — and URL extraction/opening.
+- **Attachments are out of scope, decided 2026-08-30.** Not deferred with a plan to return: dropped. Reading
+  them needs a download path and a place to put files; writing them needs multipart upload, which nothing in
+  `tui-do-api` does; and showing them in a terminal needs image-protocol negotiation per terminal. That is
+  the largest item in this phase and the one a task client is least often reached for. `Task::attachments`
+  still deserialises, and a task carrying attachments survives an update untouched — measured 2026-08-30,
+  recorded in `CLAUDE.md` — so nothing here loses data. The detail pane may say how many there are.
 
 ### Phase 6 — Vikunja-parity views
 
