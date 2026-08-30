@@ -21,6 +21,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tui_do_api::Client;
 use tui_do_core::models::ProjectId;
 use tui_do_core::store::{LabelFilter, LabelSort, ProjectFilter, ProjectSort, LAST_PROJECT};
+use tui_do_core::sync::Reach;
 use tui_do_core::{Config, Store, Sync};
 use tui_do_ui::model::landing_scope;
 use tui_do_ui::theme::{ColorDepth, Theme};
@@ -262,18 +263,18 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
                 // push rather than one each.
                 let _ = tx.send(Msg::Reload);
                 if let Some(sync) = sync {
-                    spawn_sync(sync, tx, Pass::Push);
+                    spawn_sync(sync, tx, Pass::Push, Trigger::Scheduled);
                 }
             });
         }
         Effect::SyncNow => {
             if let Some(sync) = sync {
-                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Delta);
+                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Delta, Trigger::Asked);
             }
         }
         Effect::SyncFull => {
             if let Some(sync) = sync {
-                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Full);
+                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Full, Trigger::Asked);
             }
         }
         // The loop notices `model.running` rather than being killed from here, so the
@@ -348,6 +349,19 @@ const DELTA_AGAIN: u8 = 2;
 /// does everything the one below it does.
 const FULL_AGAIN: u8 = 3;
 
+/// Who asked for a pass, which decides whether it waits out a failed entry's backoff.
+///
+/// Not folded into [`Pass`] because the two are independent: `R` and the timer both ask
+/// for a full pass and only one of them is a person saying "try now". Folding them would
+/// make five variants where the fifth is the one that matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trigger {
+    /// Startup, the timer, and the push that follows a write. Backoff stands.
+    Scheduled,
+    /// A keystroke. The user knows something the queue does not.
+    Asked,
+}
+
 const fn again_code(pass: Pass) -> u8 {
     match pass {
         Pass::Push => PUSH_AGAIN,
@@ -356,7 +370,7 @@ const fn again_code(pass: Pass) -> u8 {
     }
 }
 
-fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
+fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass, trigger: Trigger) {
     /// One pass at a time. Two overlapping passes would push the same queue twice, and
     /// the queue is ordered — an entry sent twice is a task created twice.
     static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -367,10 +381,19 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
     /// used to be dropped here outright, so `r` during a pass did nothing at all while
     /// the status line said "starting".
     static AGAIN: AtomicU8 = AtomicU8::new(NOTHING_AGAIN);
+    /// Whether any of what was asked for while a pass was running was asked for by a
+    /// person. Kept beside `AGAIN` rather than encoded into it because reach and trigger
+    /// are independent: `fetch_max` over a single code would let a scheduled *full* pass
+    /// outrank an asked-for *delta* and quietly drop the force, which is the bug this
+    /// whole change is about, reached one pass later.
+    static AGAIN_ASKED: AtomicBool = AtomicBool::new(false);
 
     if RUNNING.swap(true, Ordering::SeqCst) {
         // A full pass supersedes a queued push, because it does one anyway.
         AGAIN.fetch_max(again_code(pass), Ordering::SeqCst);
+        if trigger == Trigger::Asked {
+            AGAIN_ASKED.store(true, Ordering::SeqCst);
+        }
         return;
     }
     let handle = tokio::spawn(async move {
@@ -385,10 +408,14 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
         };
 
         let engine = (*sync).clone().with_events(events_tx);
-        let outcome = match pass {
-            Pass::Push => engine.push().await.map(|_| ()),
-            Pass::Delta => engine.delta().await.map(|_| ()),
-            Pass::Full => engine.once().await.map(|_| ()),
+        let outcome = match (pass, trigger) {
+            // A write's own push is not a person asking, so an entry that just failed is
+            // left to its schedule rather than retried on the back of an unrelated edit.
+            (Pass::Push, _) => engine.push().await.map(|_| ()),
+            (Pass::Delta, Trigger::Scheduled) => engine.delta().await.map(|_| ()),
+            (Pass::Full, Trigger::Scheduled) => engine.once().await.map(|_| ()),
+            (Pass::Delta, Trigger::Asked) => engine.asked(Reach::Incremental).await.map(|_| ()),
+            (Pass::Full, Trigger::Asked) => engine.asked(Reach::Full).await.map(|_| ()),
         };
         if let Err(error) = outcome {
             let _ = tx.send(Msg::Sync(tui_do_core::SyncEvent::Failed {
@@ -407,14 +434,19 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass) {
         let _ = forward.await;
         RUNNING.store(false, Ordering::SeqCst);
         // Whatever was asked for while this pass was running still has to happen.
+        let again_trigger = if AGAIN_ASKED.swap(false, Ordering::SeqCst) {
+            Trigger::Asked
+        } else {
+            Trigger::Scheduled
+        };
         match AGAIN.swap(NOTHING_AGAIN, Ordering::SeqCst) {
-            PUSH_AGAIN => spawn_sync(sync, tx, Pass::Push),
+            PUSH_AGAIN => spawn_sync(sync, tx, Pass::Push, again_trigger),
             // `r` during the startup pull landed here and was dropped: the model had
             // already been told a sync was starting, so the status line said "Syncing"
             // and the toast promised changed tasks, and then nothing ran until the
             // five-minute timer. Every code `again_code` can produce needs an arm.
-            DELTA_AGAIN => spawn_sync(sync, tx, Pass::Delta),
-            FULL_AGAIN => spawn_sync(sync, tx, Pass::Full),
+            DELTA_AGAIN => spawn_sync(sync, tx, Pass::Delta, again_trigger),
+            FULL_AGAIN => spawn_sync(sync, tx, Pass::Full, again_trigger),
             _ => {}
         }
     });
@@ -566,7 +598,12 @@ fn spawn_sync_timer(
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            spawn_sync(Arc::clone(&sync), tx.clone(), Pass::Full);
+            spawn_sync(
+                Arc::clone(&sync),
+                tx.clone(),
+                Pass::Full,
+                Trigger::Scheduled,
+            );
         }
     });
 }

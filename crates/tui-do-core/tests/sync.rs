@@ -20,7 +20,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tui_do_api::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_api::{Client, Credentials};
 use tui_do_core::store::{LabelFilter, LabelSort, Mutation, Store, Subject, LAST_PULL};
-use tui_do_core::sync::{Reach, Sync, SyncEvent};
+use tui_do_core::sync::{Backoff, Reach, Sync, SyncEvent};
 use wiremock::matchers::{body_partial_json, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -984,6 +984,70 @@ async fn a_failed_entry_waits_before_it_is_tried_again() {
     // A second pass right away must not touch the server again.
     assert_eq!(sync.push().await.unwrap().deferred, 1);
     assert_eq!(store.pending_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_pass_the_user_asked_for_does_not_wait_out_a_backoff() {
+    // Driving F7 on 2026-08-30: a create that failed while the address was unroutable
+    // came due fourteen seconds after the startup pass had already looked at it, so
+    // nothing tried again for five minutes -- with the status line saying `failing`, the
+    // network long since fixed, and no key that would do anything about it. The backoff
+    // is right for a server that is down and wrong for a user who has just fixed their
+    // end, and pressing `r` is the only way they have of saying which it is.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 1, "original").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/1")))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "restarting"})))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(1, "first")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(1, "first")),
+            after: Box::new(task(1, "edited")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().deferred, 1, "the first failure");
+
+    // The scheduled pass leaves it alone, which is the behaviour being kept.
+    let scheduled = sync.push().await.unwrap();
+    assert_eq!(scheduled.sent, 0);
+    assert_eq!(
+        scheduled.deferred, 1,
+        "a timer must not turn a backoff into a request every five minutes"
+    );
+
+    // The one the user asked for tries it anyway. It fails again -- the mock still 503s
+    // -- so what is being asserted is that the *attempt* happened: `attempts` moved.
+    let before = store.queue_health().await.unwrap();
+    let asked = sync.push_with(Backoff::Ignore).await.unwrap();
+    assert_eq!(
+        asked.deferred, 1,
+        "still refused, but on this pass's own answer"
+    );
+    let after = store.queue_health().await.unwrap();
+    assert!(
+        after.last_error.is_some() && before.queued == after.queued,
+        "the entry survives its retry"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == format!("{API}/tasks/1") && r.method.as_str() == "POST")
+            .count(),
+        2,
+        "two attempts: the first failure and the one the user asked for. The scheduled \
+         pass between them made no request"
+    );
 }
 
 #[tokio::test]

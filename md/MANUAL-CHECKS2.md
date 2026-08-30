@@ -425,6 +425,12 @@ last attempt, not the one it would use next. That reads exactly like a wedge and
 one. Count the wait before calling it a failure, and remember the queued count is one per
 *mutation*: a task made offline with a label on it is two, not one.
 
+**`r` is now the answer to that wait**, added the same day: a sync you ask for retries
+everything queued, where the timer still waits the backoff out. So the check has a second
+half now — restore the config, press `r`, and the queue must drain *then*, not five
+minutes later. Driving it without pressing anything still works and still takes as long as
+the timer takes.
+
 What this cannot reach by hand is the case the read-before-retry exists for — a create
 that reached the server whose *response* was lost. A retry finds its own label with
 `GET /labels?s=<title>` and adopts it instead of making a second. If you can arrange one

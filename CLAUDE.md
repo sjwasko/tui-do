@@ -78,6 +78,17 @@ and discarding a user's edit because a server was down for a day is not tui-do's
 to make. `Store::queue_health` reports how many are failing and why, and the status line
 says `3 queued (1 failing)`.
 
+**A sync the user asked for ignores that schedule.** `r` and `R` pass
+`Backoff::Ignore` and retry everything queued; startup, the timer, and the push that
+follows a write pass `Backoff::Respect` and do not. The backoff is right about a server
+that is down and wrong about a user who has just fixed their network, and a keystroke is
+the only way that news can reach the queue — found driving F7 on 2026-08-30, where a
+create came due fourteen seconds after the startup pass had looked at it and nothing
+retried for five minutes, with no key that would. In the runtime the trigger is tracked
+beside the pass rather than folded into it (`Trigger::Asked`), including through the
+coalescing an in-flight pass does: a `fetch_max` over one combined code would let a
+scheduled full pass outrank an asked-for delta and silently drop the force.
+
 **A queued mutation's subject is a `Subject`, not a task id.**
 `Subject { Task(TaskId), Label(LabelId) }`, stored as `subject_id` plus a
 `subject_kind` column (schema v5). Provisional ids count down from `-1` *per kind*, so an
