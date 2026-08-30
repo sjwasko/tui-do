@@ -514,6 +514,118 @@ async fn a_task_update_replaces_reminders_from_the_body() {
     );
 }
 
+/// Relations survive an update whose body carries none, unlike reminders.
+///
+/// The rule this settles. `reminders` cost a live bug: `POST /tasks/{id}` replaces it
+/// from the body exactly as it replaces `assignees`, so a task read out of a store with
+/// nowhere to keep reminders went back carrying `"reminders": []` and the server deleted
+/// them — renaming a task destroyed its reminders, silently, every time. `CLAUDE.md`
+/// generalised that to "any `Vec` on `Task` the spec does not mark read-only is replaced
+/// from the body", and named `attachments` and `related_tasks` as the two untested cases
+/// left. Both are exactly as unstored as reminders were.
+///
+/// Measured on dev 2026-08-30, and the generalisation is **wrong**: an update carrying
+/// `related_tasks: {}` and `attachments: []` left a relation and an attachment untouched.
+/// Only `reminders` and `assignees` are replaced from the body. There is no rule to
+/// derive one from — each collection has to be measured, which is what this is.
+///
+/// Attachments are not exercised here, only relations: uploading one needs a multipart
+/// request this client has no method for, and adding one to reach a test would be more
+/// untested code than the test is worth. The attachment half was measured by hand the
+/// same day, the same way, with the same answer.
+///
+/// The other half of the finding is in the assertions: the write's *response* comes back
+/// with `related_tasks` empty even though the relation is still there. Nothing may read a
+/// write's answer and conclude a task has no relations.
+#[tokio::test]
+async fn a_task_update_leaves_relations_alone() {
+    let Some(client) = connect("a_task_update_leaves_relations_alone").await else {
+        return;
+    };
+
+    let project = client
+        .create_project(&tui_do_api::models::Project {
+            title: FIXTURE_PROJECT_TITLE.into(),
+            description: "created by cargo test -p tui-do-api --test live".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("PUT /projects should create a project");
+
+    let make = |title: &'static str| {
+        let client = &client;
+        let project = project.id;
+        async move {
+            client
+                .create_task(
+                    project,
+                    &tui_do_api::models::Task {
+                        title: title.into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("PUT /projects/{id}/tasks should create a task")
+        }
+    };
+    let one = make("relation probe").await;
+    let other = make("the other end").await;
+
+    client
+        .relate_tasks(one.id, other.id, tui_do_api::models::RelationKind::Related)
+        .await
+        .expect("PUT /tasks/{id}/relations should relate them");
+
+    // As with the done-task and reminder tests: if the setup did not take, say so rather
+    // than passing quietly on an experiment that never ran.
+    let before = client.task(one.id).await.expect("GET /tasks/{id}");
+    if before.related_tasks.is_empty() {
+        println!(
+            "inconclusive: the server did not record the relation, so this cannot \
+             measure what an update does to one"
+        );
+        client.delete_project(project.id).await.ok();
+        return;
+    }
+
+    // The shape a task read back out of tui-do's store has: everything it keeps, and the
+    // collections it has nowhere to put coming back empty.
+    let mut renamed = before.clone();
+    renamed.title = "relation probe, renamed".into();
+    renamed.related_tasks.clear();
+    renamed.attachments.clear();
+    let answered = client
+        .update_task(&renamed)
+        .await
+        .expect("POST /tasks/{id} should update the task");
+
+    let after = client.task(one.id).await.expect("GET /tasks/{id}");
+    let survived = !after.related_tasks.is_empty();
+    let echoed = !answered.related_tasks.is_empty();
+    println!(
+        "relation before: {}, write answered with: {}, after: {}",
+        before.related_tasks.len(),
+        answered.related_tasks.len(),
+        after.related_tasks.len()
+    );
+
+    client.delete_project(project.id).await.ok();
+
+    assert!(
+        survived,
+        "an update carrying no relations deleted the task's relations. That is the \
+         reminders bug in a second field, and the store needs somewhere to keep them \
+         before anything writes a task that has any"
+    );
+    assert!(
+        !echoed,
+        "the write's answer now carries the relations it did not send. Good news, but \
+         `a_task_update_leaves_relations_alone` documents the opposite -- re-check what \
+         may safely be believed from a write's response"
+    );
+    assert_eq!(after.title, "relation probe, renamed", "the write did land");
+}
+
 /// A partial task body clears every field it omits, and a three-way merge survives it.
 ///
 /// Two facts in one test because the second only matters given the first. Vikunja's

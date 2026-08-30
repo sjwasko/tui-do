@@ -27,8 +27,9 @@ use crate::auth::{AuthKind, Credentials, Session};
 use crate::endpoints;
 use crate::error::{ApiError, ErrorBody, Result};
 use crate::models::{
-    CommentId, Label, LabelId, LabelTask, Login, Project, ProjectId, ProjectView, ServerInfo, Task,
-    TaskAssignee, TaskComment, TaskId, Token, User, UserId, ViewId, DEFAULT_MAX_ITEMS_PER_PAGE,
+    CommentId, Label, LabelId, LabelTask, Login, Project, ProjectId, ProjectView, RelationKind,
+    ServerInfo, Task, TaskAssignee, TaskComment, TaskId, TaskRelation, Token, User, UserId, ViewId,
+    DEFAULT_MAX_ITEMS_PER_PAGE,
 };
 use crate::pagination::Pager;
 use crate::query::TaskQuery;
@@ -777,6 +778,32 @@ impl Client {
             self.resolve(endpoints::TASK_LABELS, &[("task", &task.to_string())])?,
         )
         .with_json(&LabelTask { label_id: label })?;
+        self.send_ignoring_body(call).await.map(|_| ())
+    }
+
+    /// `PUT /tasks/{task}/relations` — relate two tasks.
+    ///
+    /// Written for the live test that measures whether a task update disturbs relations,
+    /// which needs a task that has one. Phase 5 is what will call it in anger.
+    ///
+    /// # Errors
+    /// Any transport or status failure.
+    pub async fn relate_tasks(
+        &self,
+        task: TaskId,
+        other: TaskId,
+        kind: RelationKind,
+    ) -> Result<()> {
+        self.require_auth("relating two tasks")?;
+        let call = Call::new(
+            Method::PUT,
+            self.resolve(endpoints::TASK_RELATIONS, &[("taskID", &task.to_string())])?,
+        )
+        .with_json(&TaskRelation {
+            task_id: task,
+            other_task_id: other,
+            relation_kind: kind,
+        })?;
         self.send_ignoring_body(call).await.map(|_| ())
     }
 
