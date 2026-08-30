@@ -25,9 +25,15 @@ of them.
 | **D1** | a task shown twice | still unreproduced; see the section itself |
 | **E1–E6** | short windows | **2026-08-28 — all pass** |
 | **F1, F2, F4** | the form, `C-n`, `C-e` | **2026-08-30 — all pass** |
+| **F5, F6** | asking first | **2026-08-30 — pass**, on the rewrite; the first draft could not be followed |
 | **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
-| **F3** | the adoption | never driven by hand; smoked in `crates/tui-do-smoke` |
-| **F5, F6** | asking first | **not yet driven** — rewritten 2026-08-30 after the first pass at them could not be followed |
+| **F3** | the adoption | the one nobody has driven; smoked in `crates/tui-do-smoke` instead |
+
+Section F was driven on 2026-08-30, the day after it was written, and cost three changes
+to the thing it was checking rather than to itself: `C-n` could not make a label with a
+space in it, the colour field wanted six hex digits from a person who thinks in words, and
+a queue inside its backoff had no key that meant "try now". F5 and F6 were rewritten
+mid-drive, having asked for something nobody could do.
 
 Part two was driven end to end for the first time on 2026-08-28, on the release binary.
 Two entries failed on the first pass and were fixed the same day — B9, which was
