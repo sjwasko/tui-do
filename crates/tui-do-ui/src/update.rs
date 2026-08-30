@@ -1851,16 +1851,31 @@ pub fn past_due_note(due: Option<DateTime<Utc>>, now: DateTime<FixedOffset>) -> 
 }
 
 /// Match label names against the ones that exist, and report the ones that do not.
+///
+/// `missing` is deduplicated the same way `known` is matched -- `eq_ignore_ascii_case` on
+/// the trimmed title -- so `*waiting *Waiting` is one unresolved name, not two. Without
+/// this, two spellings of one typo became two `CreateLabel`s: a title is not unique to
+/// Vikunja, so both answer `201` and the pool gets a permanent duplicate, which is exactly
+/// the pollution this whole confirmation exists to prevent. First spelling wins, since
+/// that is the one already on screen when the question is asked.
 fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String>) {
     let mut found = Vec::new();
-    let mut missing = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     for name in wanted {
+        let trimmed = name.trim();
         match known
             .iter()
-            .find(|label| label.title.eq_ignore_ascii_case(name.trim()))
+            .find(|label| label.title.eq_ignore_ascii_case(trimmed))
         {
             Some(label) => found.push(label.clone()),
-            None => missing.push(name.clone()),
+            None => {
+                let already_missing = missing
+                    .iter()
+                    .any(|seen: &String| seen.eq_ignore_ascii_case(trimmed));
+                if !already_missing {
+                    missing.push(name.clone());
+                }
+            }
         }
     }
     (found, missing)

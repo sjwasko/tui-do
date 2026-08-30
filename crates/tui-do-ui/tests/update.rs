@@ -3729,6 +3729,36 @@ fn two_unknown_labels_are_one_question_and_the_task_waits_for_both() {
 }
 
 #[test]
+fn a_label_named_twice_with_different_case_is_asked_about_and_created_once() {
+    // A title is not unique to Vikunja -- creating the same one twice answers `201`
+    // twice, per CLAUDE.md's replay table -- so two spellings of one typo must not become
+    // two creates. `resolve_labels` already folds ASCII case to *match* a known label;
+    // this is the same fold applied to what it reports as missing.
+    let mut model = loaded();
+    update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
+    press(&mut model, 'a');
+    for c in "Call the VA *waiting *Waiting *WAITING".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(
+        confirmation(&model).unknown,
+        vec!["waiting".to_string()],
+        "one name once, first spelling wins"
+    );
+
+    let effects = press(&mut model, 'y');
+    let titles: Vec<&str> = all_applied(&effects)
+        .iter()
+        .filter_map(|mutation| match mutation {
+            Mutation::CreateLabel { label } => Some(label.title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, vec!["waiting"], "one create, not three");
+}
+
+#[test]
 fn one_rejected_create_of_two_still_lands_the_task_with_the_other() {
     // The bounded answer, written down: the event names an id neither waiting modal ever
     // learned, so a rejection ends the wait for *all* the titles rather than the one that
