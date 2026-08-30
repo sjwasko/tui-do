@@ -5,14 +5,17 @@ Written 2026-08-30, resuming Phase 5. `PLAN.md` specifies descriptions rendered 
 glow | builtin | auto`, with `tui-do doctor` reporting which is active.
 
 **This document ends that plan and replaces it.** Everything below was measured on this
-workstation against the real store (487 non-empty descriptions) and against `glow` 3.0.0,
-and the measurements say `glow` is not the good path being degraded from — it is the
-degraded path. Three of the four items `PLAN.md` names stop existing: the subprocess, the
-config key, and `doctor`'s markdown line.
+workstation against the real store (487 non-empty descriptions), against `glow` 3.0.0, and
+against the candidate libraries themselves. Three of the four items `PLAN.md` names stop
+existing: the subprocess, the config key, and `doctor`'s markdown line.
 
-The one decision here that is expensive to take later is **what a soft line break means**,
-because it is the difference between a description that reads and one that has been run
-together. It is taken in "The five decisions", and it is deliberately not CommonMark.
+**Revised the same day, before any code.** The first version of this document routed
+HTML → markdown → spans, and named its own weak point: converting *to* markdown means the
+output is parsed again, so text that was inert as HTML becomes syntax on the second pass,
+and escaping that correctly is the part a hand-rolled walker does not do. The pipeline is
+now inverted — markdown → HTML → spans — which does not have that failure mode at all,
+because HTML never faces a second parse. The evidence against `glow` is unchanged and the
+sections recording it stand.
 
 ## What the data actually is
 
@@ -32,10 +35,11 @@ editor comes back as TipTap HTML. Both persist indefinitely, so any renderer mee
 **The 367 tag-free descriptions are mostly not markdown either.** Of them, 6 have a line
 starting with `#`, 2 have a fenced block, 3 have a `[]()` link, 7 have a pipe-table row
 and 2 have `**`. The rest — roughly 350 — are plain text whose structure is carried
-entirely by single newlines. That fact drives decision 1.
+entirely by single newlines. That fact drives the `hardbreaks` decision.
 
 Sizes bound the cost of everything below: median 118 bytes, tenth-largest 5,372, largest
-16,987.
+16,987. And the feature is smaller than it sounds: 487 of 3,876 tasks have a description
+at all, so this renders a field that is empty seven times out of eight.
 
 ## What `glow` does, measured
 
@@ -80,16 +84,20 @@ better viewer; it is doing both jobs in process.
 
 ```
 task.description
-  ├─ contains a known HTML block tag?  ──→  html → markdown
-  └─ otherwise, use as-is  ─────────────────────┐
-                                                ▼
-                                      pulldown-cmark events
-                                                ▼
-                          render(events, width, theme) → Vec<Line<'static>>
+  ├─ contains a known HTML block tag?  ──────────────────┐
+  └─ otherwise ─→ comrak ─→ HTML ────────────────────────┤
+                  hardbreaks: true                       │
+                  escape: true                           ▼
+                  extension.table: true          html2text + Deco
+                                                 (Annotation = Style)
+                                                         │
+                                          Vec<TaggedLine<Vec<Style>>>
+                                                         │
+                                                 Vec<Line<'static>>
 ```
 
-A new module, `crates/tui-do-ui/src/markdown.rs`, pure and synchronous, called from
-`view`. The HTML half grows out of the tag walker already in `rows.rs`.
+One styling layer, one wrap engine, two entry points. A new module,
+`crates/tui-do-ui/src/markdown.rs`, pure and synchronous, called from `view`.
 
 **Rule 1 is not merely respected here, it is unengaged.** No subprocess means no `Effect`,
 no `Msg`, no model state and no cache. `PLAN.md` specified a cache keyed per task and
@@ -99,13 +107,14 @@ a one-second `Tick` floor, so the idle cost is one parse per second of a string 
 than this paragraph.
 
 `a_pure_ui_names_no_io` keeps passing. It greps this crate's source for `Store`, `.await`,
-`spawn_blocking` and three crate names; `pulldown-cmark` is none of those and touches no
-I/O.
+`spawn_blocking` and three crate names; neither library is any of those and neither
+touches I/O.
 
-## The five decisions
+## The decisions
 
-**1. A soft break is a line break, not a space.** CommonMark joins consecutive lines into
-one paragraph. Against this data that is destructive: a real description reading
+**1. `render.hardbreaks` is on, so a soft line break is a line break.** CommonMark joins
+consecutive lines into one paragraph. Against this data that is destructive: a real
+description reading
 
 ```
 Manatee County:
@@ -118,131 +127,159 @@ Bradenton - old historic courthouse
 renders, through a conforming renderer, as `Bradenton - old historic courthouse 1115
 Manatee Ave West 830a-430p` — an address block collapsed into one run. Measured through
 `tui-markdown` 0.3.9, which does exactly this, and which also collapsed a Clerk of Court
-address and a letter checklist in the same description.
+address and a letter checklist in the same description. With `hardbreaks` the same
+description renders with every line intact, verified.
 
-So `Event::SoftBreak` emits a line break. This is a deliberate departure from the spec and
-must carry a comment saying so, or someone will later fix it back and quietly ruin 350
-descriptions.
+This was a hand-rolled deviation from CommonMark in the first draft of this design,
+needing a defensive comment so nobody "fixed" it back. It is now a supported library
+option, which is the single best argument for the inverted pipeline.
 
 It also removes a decision the design would otherwise have to take. **Nothing has to guess
 whether a tag-free description is markdown or plain text**, because with this rule both
 render the same way: every line stays a line, and the handful of descriptions carrying a
-real `#` or fence get that construct rendered as a bonus. The only branch in the pipeline
-is the HTML one, which is a different and answerable question.
+real `#` or fence get that construct rendered as a bonus.
 
-The residual risk is incidental markdown in plain text — the 6 descriptions with a `#`
-line, the 2 with `**`. Rendering `# to call: 941-749-1800` as a styled heading is odd
-rather than destructive, and is accepted.
+**2. `render.escape` is on, and it is load-bearing.** Without it, comrak reads `<String>`
+in `Use Vec<String> here` as raw inline HTML and — with `unsafe_` off — emits
+`<!-- raw HTML omitted -->`, which html2text then drops entirely. Measured: the line came
+out as `Use Vec here`. That is exactly the regression `rows.rs:1149` guards against.
 
-**2. Wrapping uses `rows::wrap` and `rows::display_width`.** Not a new implementation.
-The workspace pins `unicode-width` to the version ratatui measures with, precisely so a
-width this crate computes and a width ratatui draws cannot disagree; a second wrapper
-would reintroduce that gap. It also means the render reflows on resize, which no external
-binary's output can.
+With `escape` on, all six of the existing not-a-tag assertions survive the full round
+trip, verified:
 
-**3. Styling resolves through `theme.rs`.** Headings, emphasis, code, links and
-blockquotes take their colour from the existing theme, not a second palette.
+| input | after the pipeline |
+|---|---|
+| `Use Vec<String> here` | `Use Vec<String> here` |
+| `a < b and b > c` | `a < b and b > c` |
+| `Tom &amp; Jerry &lt;3` | `Tom & Jerry <3` |
+| `# - CAM_<CAMERA_MAC>_NAME=fr` | `# - CAM_<CAMERA_MAC>_NAME=fr` |
+| `<pre-release plan>` | `<pre-release plan>` |
+| `a <b` | `a <b` |
 
-**4. Tables render as aligned rows, not box-drawn.** 10 of 487 descriptions contain a
-table and the preview pane is about 40 columns; a box-drawn table does not fit in it. This
-gives up `tui-markdown`'s 1,011-line table renderer knowingly.
+and `**bold**`, `*em*`, `` `code` `` and `[link](url)` still produce `<strong>`, `<em>`,
+`<code>` and `<a>`. `escape` only ever applies on the markdown branch; genuine HTML does
+not pass through comrak at all.
 
-**5. No cache.** From the sizes above.
+**3. The router is the one place this can still go wrong, and it is where `rows.rs`'s tag
+knowledge lives on.** Something must choose "HTML straight in" against "markdown through
+comrak", and misrouting is what broke `Vec<String>` above: sent down the HTML branch,
+`<String>` is an unknown element and html2text drops it. A bare `contains('<')` is
+therefore *wrong*, and it is what the crude SQL in the table above used — which is why
+`Use Vec<String> here` counts in the 120 rather than the 367.
 
-## Why not `tui-markdown`
+The test is **a recognised HTML block tag** — `<p`, `<h1`…`<h6`, `<ul`, `<ol`, `<pre`,
+`<table`, `<div`, `<blockquote`. TipTap always wraps content in at least one; prose
+mentioning `Vec<String>` contains none. `rows.rs` already has this list as `BLOCK`, and
+its tests already encode the hazards. **`plain_text` is not extended into a converter, as
+the first draft proposed — it is deleted, and its knowledge becomes the router**, with
+those six assertions carried across as router tests.
 
-It was evaluated rather than dismissed, and it is better than expected: a configurable
-`StyleSheet` (`heading(level)`, `code()`, `link()`, `blockquote()`), a real table
-renderer, and inline-HTML handling that shows unknown tags dim instead of swallowing them.
-With `default-features = false` it sheds `syntect` and `ansi-to-tui` and costs little. Its
-`ratatui-core 0.1` matches tui-do's ratatui 0.30.
+**4. Wrapping is html2text's, and the widths cannot disagree with ratatui's.**
+`lines_from_read(html, width)` returns lines already wrapped. `CLAUDE.md` is emphatic that
+a second width implementation is a bug waiting to happen, so this was checked rather than
+assumed: `html2text` measures with `unicode-width`, and in this workspace it **unifies at
+0.2.2** — the same crate version `ratatui-core` measures with. There is one wrap engine
+and one width table. Re-render on resize, no cache to invalidate.
 
-It is rejected on two counts, both verified in its source:
+**5. Styling arrives through the decorator, and headings through a stylesheet.**
+`TextDecorator::Annotation` is arbitrary, so it is `ratatui::style::Style`; each method
+returns `(prefix, Style)`, annotations nest outer-first, and folding them with
+`Style::patch` gives one `Span` per styled run. Verified: `bold`→BOLD, `em`→ITALIC,
+`code`→yellow, `link`→cyan+underlined, with tight spans rather than `glow`'s
+one-per-token.
 
-- **It does not wrap.** `from_str` takes no width. Rendering a real description "at width
-  40" produced a 700-character line for a URL and a 67-column line for a paragraph.
-- **Its soft break is not configurable.** `renderer/mod.rs:382` is
-  `fn soft_break(&mut self) { … self.push_span(Span::raw(" ")) }`, and `Options` exposes
-  only `image_fallback` and `code_theme`.
+Headings are the exception. `RichAnnotation` has no heading variant and the trait offers
+`header_prefix(level) -> String` but no annotation, so a heading can be prefixed and not
+styled. `push_colour(&mut self, Colour) -> Option<Self::Annotation>` *is* on the trait,
+and html2text's optional `css` feature applies a user-agent stylesheet — so `theme.rs`
+emits a few rules (`h1`…`h6`, `blockquote`) and heading colour arrives as our own `Style`.
+This costs the `css` feature and `nom`. If it proves awkward the fallback is a `#` prefix
+with no colour, which is honest and is what most terminal renderers do.
 
-Two of the three things this design needs are unavailable without forking it, and the
-third — theming — is the cheapest to do directly.
+**6. Tables are html2text's, with `extension.table` on.** comrak does not parse GFM tables
+by default and the pipes came through literally until it was enabled. 10 of 487
+descriptions have a table and the pane is about 40 columns, so this may still not fit; the
+first version renders what html2text gives and does not fight it.
 
-## Why not `htmd` for the HTML half
+**7. No cache**, from the sizes above.
 
-`htmd` is a turndown-inspired HTML→markdown converter over `html5ever`, and on the sample
-above it did well: `<pre><code>` became a fence and `&amp;` decoded correctly. It costs 32
-crates — `html5ever`, `markup5ever`, `xml5ever`, `string_cache`, `phf` and its codegen,
-`tendril`, `parking_lot`, `serde` — against `pulldown-cmark`'s 7, several of which the
-workspace already has. That weighs against GA bar item 2, a single static binary.
+## What it costs, measured
 
-The decisive argument is the other way round, though. The source is TipTap, a constrained
-generator with a small predictable tag set, not the open web — and `rows.rs`'s walker is
-already tested against this column's real hazards:
+Against this workspace rather than an empty project:
 
-```rust
-assert_eq!(plain_text("Use Vec<String> here"), "Use Vec<String> here");
-assert_eq!(plain_text("a < b and b > c"), "a < b and b > c");
-assert_eq!(plain_text("a <b"), "a <b");
-assert_eq!(plain_text("<pre-release plan>"), "<pre-release plan>");
-```
+| | today | after | change |
+|---|---|---|---|
+| crates compiled | 239 | 264 | **+25** |
+| release binary | 11.9 MB | 13.5 MB | **+1.6 MB, +13.4%** |
 
-That is knowledge about *this* data — that a description is sometimes prose containing a
-less-than sign — and an HTML5 parser would not preserve it. The walker keeps it.
+Third-party source taken on, excluding each library's bundled test suite: comrak ~35,600
+lines, html2text ~9,600, html5ever ~7,700 — about 53,000, against tui-do's own 36,800.
+That is more code than this project contains, and it was accepted deliberately: it is
+Servo's HTML parser and a reference-grade CommonMark implementation, and the alternative
+is not writing 53,000 lines but writing 300 that handle the common cases and quietly
+mangle the rest — which is what `plain_text`'s own doc comment admits it does today.
 
-If a shape shows up that the walker gets wrong, the conversion is one function with tests
-written from the real descriptions, and swapping `htmd` in is a one-function change.
+## Alternatives rejected, and why
 
-### The hazard the walker inherits
+**`glow`** — the whole of "What `glow` does" above.
 
-Converting to markdown means the output is parsed *again*, so text that was inert as HTML
-can become syntax on the second pass. The existing tests already name the shapes this
-happens to:
+**`tui-markdown` 0.3.9** — better than expected: a configurable `StyleSheet`, a real table
+renderer, inline HTML shown dim rather than swallowed, and `default-features = false`
+sheds `syntect`. Rejected on two counts verified in its source: `from_str` takes **no
+width**, so it does not wrap (a real description "at width 40" produced a 700-character
+line); and `renderer/mod.rs:382` is `fn soft_break(&mut self) { … push_span(Span::raw(" "))
+}` with `Options` exposing only `image_fallback` and `code_theme`, so decision 1 is
+unreachable without forking it.
 
-```rust
-assert_eq!(plain_text("Tom &amp; Jerry &lt;3"), "Tom & Jerry <3");
-```
+**Walker → markdown → `pulldown-cmark` → spans** — this document's own first draft. It
+needed hand-rolled markdown escaping (decision 2's hazard, in the direction where it is
+hard), a hand-rolled wrap engine, and the soft-break deviation. It cost zero new crates,
+which is its only advantage.
 
-`&lt;3` decodes to `<3`, which the markdown parser may then read as the start of a tag;
-decoded text carrying `*`, `_`, `#`, `` ` `` or `[` has the same problem, and so does a
-line of prose that happens to begin `1. `. **Text content lifted out of HTML must be
-escaped for markdown as it is emitted** — this is the part of the job `htmd` does
-carefully and a naive walker does not do at all, and it is the most likely reason for the
-one-function swap above.
+**`htmd`** — HTML → markdown over html5ever. Moot once the pipeline inverted; nothing
+converts to markdown any more.
 
-Two consequences for the tests: the not-a-tag assertions move to the new function
-unchanged in *input* but with markdown-escaped expectations where the round trip demands
-it, and the escaping gets a test of its own driven by decoded entities rather than by tags.
+**`pulldown-cmark` is now unused and should be removed.** It was declared in
+`crates/tui-do-ui/Cargo.toml` by the first scaffold commit, `d63357f`, when the project was
+still `criax`, in anticipation of exactly this feature, and no source file has ever
+imported it. comrak replaces it.
 
 ## What changes
 
 | file | change |
 |---|---|
-| `crates/tui-do-ui/src/markdown.rs` | new: events → `Vec<Line<'static>>`, themed and wrapped |
-| `crates/tui-do-ui/src/rows.rs` | `plain_text` becomes `to_markdown`; its tag knowledge and its tests stay |
-| `crates/tui-do-ui/src/view.rs` | `preview` renders lines instead of stripping tags; the `MAX_PARAGRAPH_LINES` budget survives |
-| `crates/tui-do-ui/Cargo.toml` | `pulldown-cmark` |
+| `crates/tui-do-ui/src/markdown.rs` | new: the router, the `Deco` decorator, HTML → `Vec<Line<'static>>` |
+| `crates/tui-do-ui/src/rows.rs` | `plain_text` deleted; its `BLOCK` list and its six not-a-tag tests become the router's |
+| `crates/tui-do-ui/src/view.rs` | `preview` renders lines; the `preview_scroll` + `inner.height` budget survives |
+| `crates/tui-do-ui/Cargo.toml` | `comrak`, `html2text`; `pulldown-cmark` removed |
+| `Cargo.toml` | the same, in `[workspace.dependencies]` |
 | `PLAN.md` | Phase 5's markdown bullet rewritten; `markdown_renderer` and `doctor`'s markdown line removed |
-| `CLAUDE.md` | a wire-format entry: a description is HTML *or* text, and which is not knowable from the spec |
+| `CLAUDE.md` | a wire-format entry: a description is HTML *or* text, which the spec does not say and which nothing but the block-tag test can tell apart |
 
 ## What this is not
 
 Comments, relations and URL opening are Phase 5 and are not this. `tui-do doctor` may
 still be worth building for other reasons — it has nothing to report about markdown once
-there is no external binary to choose between.
+there is no external binary to choose between. The `MarkdownRenderer` trait `PLAN.md`
+specifies is not built: URL opening, later in this phase, is the genuine first user of the
+platform trait the macOS port depends on, and is a better home for that seam.
 
 ## Testing
 
 `tui-do-ui` is pure, so all of this is unit-testable in place and none of it belongs in
 `tui-do-smoke` — there is no seam here, no store call and no message.
 
-- One test per construct: heading, emphasis, code span, fence, list, blockquote, link,
-  table.
-- **A named regression test for decision 1**, using the Manatee County description,
-  asserting the address lines do not collapse. If someone later "fixes" the soft break to
-  be CommonMark-conforming, this is what tells them.
-- HTML→markdown tests built from the shapes actually in the store, including the
-  `<pre><code>` one and the `<p><a target="_blank" rel="noopener">` one.
-- The four `plain_text` not-a-tag assertions, carried across unchanged.
+- **The router**, with the six not-a-tag assertions carried across from `plain_text`, plus
+  one per block tag it must recognise.
+- **A named regression test for `hardbreaks`**, using the Manatee County description,
+  asserting the address lines do not collapse.
+- **A named regression test for `escape`**, asserting `Use Vec<String> here` survives —
+  because turning `escape` off is a plausible future "cleanup" and it fails silently by
+  deleting text.
+- One test per construct — emphasis, strong, code, link, list, blockquote, heading,
+  preformatted — asserting the `Style` on the span, not just the text.
+- Real HTML shapes from the store: the `<pre><code>` one and the
+  `<p><a target="_blank" rel="noopener">` one.
 - Wrapping at a narrow width, because the preview pane is narrow and it is the case the
   old code never had to handle.
+- An empty description, and a description that is only whitespace.
