@@ -45,7 +45,26 @@ run "test -f $ROOT/seed.sql" || {
   echo "now, debris and all." >&2
   exit 1; }
 
+# API tokens are carried across the restore, because a baseline is a snapshot of task
+# data and a token is a credential -- restoring one should not revoke the other. The
+# baseline here was dumped nine hours before the token this workstation authenticates
+# with was created, so the first honest reset would have answered every later request
+# 401 from a server that was otherwise reachable and healthy: the worst kind of failure
+# to diagnose, because nothing looks broken.
+#
+# Saved, restored, and then the table is *replaced* rather than merged -- the token set
+# after a reset is exactly the token set before it. Merging would need conflict handling
+# for the rows the seed also carries, and swallowing duplicate-key errors to get it is
+# how a script starts hiding real ones.
 run "docker stop tui-do-vikunja >/dev/null
+     docker exec tui-do-vikunja-db pg_dump -U vikunja -d vikunja --data-only --column-inserts \
+       --table=api_tokens > /tmp/tui-do-tokens.sql
      docker exec -i tui-do-vikunja-db psql -U vikunja -d vikunja -q >/dev/null < $ROOT/seed.sql
+     {
+       echo 'TRUNCATE public.api_tokens;'
+       grep '^INSERT INTO public.api_tokens' /tmp/tui-do-tokens.sql
+       echo \"SELECT setval('api_tokens_id_seq', COALESCE((SELECT max(id) FROM api_tokens), 1));\"
+     } | docker exec -i tui-do-vikunja-db psql -U vikunja -d vikunja -q -v ON_ERROR_STOP=1 >/dev/null
+     rm -f /tmp/tui-do-tokens.sql
      docker start tui-do-vikunja >/dev/null"
 printf 'dev database restored to baseline\n'
