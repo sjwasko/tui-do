@@ -1205,7 +1205,8 @@ fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
 /// stops firing, and every held submission wedges on a rejection.
 const CREATE_LABEL: &str = "create_label";
 
-/// End every wait for a label the server has just refused to make.
+/// End every wait for a label the server has just refused to make, and take the label
+/// itself off the form that is holding it.
 ///
 /// Two modals wait on a create, and both wedge if the wait is never ended.
 ///
@@ -1226,20 +1227,37 @@ const CREATE_LABEL: &str = "create_label";
 /// create is outstanding, precisely so a second one is not queued. So it gives up and the
 /// submission runs without the label, which is the same thing declining would have done.
 ///
-/// *All* of them, not the one that was rejected: the event names `Subject::Label(id)`, and
-/// neither modal ever learned any id -- that is the whole reason both hold titles. With
-/// two creates in flight and one rejected, the survivor loses its automatic tick and the
-/// held task goes without it, which is the cost of a bounded answer. It is the smaller
-/// failure: the reload the caller queues still brings the survivor into
-/// `model.data.labels`, so it is on screen and can be attached in a second keystroke,
-/// where a dead key and a task nobody can release are neither visible nor recoverable.
+/// *All* of the waits, not only the one that was rejected: a wait is a *title*, the event
+/// names an id, and neither modal ever learned the id of anything it is still waiting for
+/// -- that is the whole reason both hold titles. With two creates in flight and one
+/// rejected, the survivor loses its automatic tick and the held task goes without it,
+/// which is the cost of a bounded answer. It is the smaller failure: the reload the caller
+/// queues still brings the survivor into `model.data.labels`, so it is on screen and can
+/// be attached in a second keystroke, where a dead key and a task nobody can release are
+/// neither visible nor recoverable.
+///
+/// The *forgetting* below is the opposite and is exact, because a label the form already
+/// holds is one it has learned the id of. Only the rejected id goes.
 fn release_held_labels(model: &mut Model, subject: Subject, kind: &str) -> Vec<Effect> {
-    if !matches!(subject, Subject::Label(_)) || kind != CREATE_LABEL {
+    let Subject::Label(rejected) = subject else {
+        return Vec::new();
+    };
+    if kind != CREATE_LABEL {
         return Vec::new();
     }
     for modal in &mut model.modals {
         match modal {
-            Modal::Labels(state) => state.awaiting.clear(),
+            Modal::Labels(state) => {
+                state.awaiting.clear();
+                // The id *is* usable here, unlike the wait above: this form learned it
+                // from the reload that named the create, and ticked it. The caller's
+                // `Effect::LoadLabels` takes the phantom out of `model.data.labels` and
+                // cannot take it out of here -- `LabelsState::refresh` rewrites what the
+                // form holds and removes nothing -- so it would sit on the list, still
+                // ticked, and the next Enter would queue an `AttachLabel` for an id the
+                // server has never had.
+                state.forget(rejected);
+            }
             Modal::ConfirmLabels(state) => state.give_up(),
             // Nothing else waits on a create. Listed rather than wildcarded so a modal
             // that learns to has to come back here and say what a refusal does to it.

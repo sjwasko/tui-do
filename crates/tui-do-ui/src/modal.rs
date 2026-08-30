@@ -990,6 +990,26 @@ impl LabelsState {
         }
     }
 
+    /// Drop a label the store has taken back, ticked or not.
+    ///
+    /// The third shape, and the one neither of the two above can be: a rejected
+    /// `CreateLabel` is rolled back in the store, and this form is holding the
+    /// provisional it ticked the moment it asked for it. [`Self::refresh`] removes
+    /// nothing, and widening it to drop whatever the pool does not name would be reading
+    /// absence as deletion -- which is also what an early reload says about a label that
+    /// is merely still being written. So the removal is driven by the rejection instead,
+    /// which names the id and is final.
+    ///
+    /// Left on the list it is worse than clutter: it is still ticked, so the user's next
+    /// Enter queues an `AttachLabel` for an id no server has ever issued, which the
+    /// server refuses in turn -- and a refused attach takes the rest of that task's queue
+    /// with it.
+    pub fn forget(&mut self, label: LabelId) {
+        self.labels.retain(|held| held.id != label);
+        self.chosen.retain(|held| *held != label);
+        self.refilter();
+    }
+
     /// The label under the cursor.
     #[must_use]
     pub fn current(&self) -> Option<&Label> {

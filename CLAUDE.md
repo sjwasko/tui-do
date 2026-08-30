@@ -57,6 +57,17 @@ relationship. The drain used to stop dead at the first failure, so one unreachab
 held back every other change the user had made. It now blocks that task's subject and
 carries on.
 
+**One dependency crosses subjects, and blocking by subject cannot see it.** An
+`AttachLabel` built on a `CreateLabel` has the *task* as its subject and carries the
+provisional label id by value. The rejection path was widened for that with
+`sync::references`; the *blocking* path was not, so a create that took a 500 or a timeout
+still let its attach go out naming an id no server had issued — answered `404`/`403`,
+which is a 4xx, which discarded the attach **and every other entry for that task**,
+including unrelated edits, while the create went on to succeed and leave a label attached
+to nothing. Both paths ask `references` now, and an entry still inside its backoff blocks
+what depends on it exactly as a freshly deferred one does — otherwise the same failure
+simply arrives on the next pass, five seconds later.
+
 **A failed entry waits before it is retried.** `attempts` was recorded from the first
 commit and never read by anything; `store::outbox::backoff` now schedules
 `next_attempt_at`, exponential from 5s to a 15-minute ceiling, and the server's

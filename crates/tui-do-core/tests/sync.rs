@@ -1425,6 +1425,180 @@ async fn a_refused_label_create_takes_the_attaches_that_named_it() {
 }
 
 #[tokio::test]
+async fn a_deferred_label_create_holds_back_the_attach_that_named_it() {
+    // The other half of the case above, and the one that survived twelve reviews: a
+    // create the server *deferred* -- a 500, a 429, a timeout -- must hold its attach
+    // back just as a refused one discards it. Blocking is by subject, and the attach's
+    // subject is the *task*, so nothing stopped it going out on the same pass naming
+    // label `-1`. The server answers 404 or 403, which is a 4xx, which rejects the attach
+    // permanently and takes every other entry for that task with it -- an unrelated edit
+    // the user made in the meantime included -- while the create then succeeds and leaves
+    // a label attached to nothing.
+    //
+    // Asserted as "the request was never made", not "a guard was consulted": the guard
+    // could be right and the wire still wrong.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/7/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": -1})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(7, "errand")]).await.unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(7),
+            label: Box::new(label(-1, "next")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 0);
+    assert_eq!(report.rejected, 0, "nothing was refused, only deferred");
+    assert_eq!(
+        report.deferred, 2,
+        "both the create and the attach behind it are still waiting"
+    );
+    assert_eq!(
+        store.pending(None).await.unwrap().len(),
+        2,
+        "the attach was sent or discarded instead of waiting for its label to exist"
+    );
+    assert_eq!(
+        store.task(TaskId(7)).await.unwrap().unwrap().labels.len(),
+        1,
+        "the user's optimistic attach was rolled back off the task"
+    );
+}
+
+#[tokio::test]
+async fn a_label_create_inside_its_backoff_still_holds_its_attach_back() {
+    // The same failure one pass later, and the one blocking-on-deferral alone does not
+    // reach. A deferred create is given a `next_attempt_at` five seconds out; the attach
+    // behind it was only blocked, so it keeps its own null one. On the next pass -- and
+    // any edit asks for one -- the create is skipped as not due and never reaches the
+    // arm that blocks it, while the attach is due and unblocked. So a not-due entry has
+    // to block what depends on it exactly as a deferred one does.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/7/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": -1})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(7, "errand")]).await.unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(7),
+            label: Box::new(label(-1, "next")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    sync.push().await.unwrap();
+    // Straight into the next pass, well inside the five-second floor.
+    let second = sync.push().await.unwrap();
+
+    assert_eq!(second.sent, 0, "something went out while the create waits");
+    assert_eq!(second.rejected, 0);
+    assert_eq!(second.deferred, 2, "both are still queued");
+}
+
+#[tokio::test]
+async fn a_deferred_label_create_does_not_hold_back_an_unrelated_task() {
+    // The repair above must not undo what per-subject blocking exists to provide. Only
+    // entries that would *send* the phantom id are held; a task that has nothing to do
+    // with the label drains on the same pass.
+    let server = MockServer::start().await;
+    mount_task_read(&server, 2, "original").await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/7/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": -1})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/tasks/2")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_json(2, "second edited")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .upsert_tasks(vec![task(7, "errand"), task(2, "second")])
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(7),
+            label: Box::new(label(-1, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(2, "second")),
+            after: Box::new(task(2, "second edited")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(
+        report.sent, 1,
+        "the unrelated task's edit was held back by a label it never mentions"
+    );
+    assert_eq!(
+        report.deferred, 2,
+        "the create and its attach, and nothing else"
+    );
+}
+
+#[tokio::test]
 async fn a_rejected_task_does_not_widen_into_entries_that_merely_mention_it() {
     // The widening exists only for a rejected *label* create -- a rejected task must keep
     // the narrow, same-subject blast radius it always had. An `AttachLabel` for a
