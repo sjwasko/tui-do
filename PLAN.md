@@ -243,7 +243,7 @@ optimistic-write mechanism, project/label/filter pickers with fuzzy match.
 above says *create a label*, so nothing did: the pickers could only choose from labels the server already
 had, and four places in the interface apologised for it in words ("tui-do cannot create labels yet"). It
 was found after Phase 4 was signed off and built before Phase 5, at the user's direction — designed in
-`md/2026-08-28-label-creation-design.md` and shipped in eleven commits. What landed: a queued mutation's
+`md/2026-08-28-label-creation-design.md` and shipped in eleven tasks. What landed: a queued mutation's
 subject became a typed `Subject` with a `subject_kind` column (schema v5); `Mutation::CreateLabel` and
 `UpdateLabel`, with `Label::merge_onto` and a read-before-retry for a create whose response may have been
 lost; `Ctrl-N` in the `l` form to create, `Ctrl-E` there and in the `g l` picker to rename or recolour, a
