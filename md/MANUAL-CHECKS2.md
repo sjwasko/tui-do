@@ -24,7 +24,8 @@ of them.
 | **C1** | `tui-do add` syntax | **2026-08-28 — pass** |
 | **D1** | a task shown twice | still unreproduced; see the section itself |
 | **E1–E6** | short windows | **2026-08-28 — all pass** |
-| **F1–F7** | making a label | **never driven** — written 2026-08-29, the day the feature landed |
+| **F2** | `C-n` creates | **2026-08-30 — pass**, with one finding: no spaces, recorded below |
+| **F1, F3–F7** | making a label | **never driven** — written 2026-08-29, the day the feature landed |
 
 Part two was driven end to end for the first time on 2026-08-28, on the release binary.
 Two entries failed on the first pass and were fixed the same day — B9, which was
@@ -281,8 +282,14 @@ is what made it unreachable.
 **F2 — `C-n` makes a label the pool has not got.** Press `l` on a task. The box at the
 top of the form does two jobs, and this check is about the second: it fuzzy-filters the
 list below it, *and* it is where the name of a new label is typed. Type something no
-label is called — `tui-do probe alpha` — and the footer offers
-`C-n creates "tui-do probe alpha"`.
+label is called — `probe-alpha` — and the footer offers `C-n creates "probe-alpha"`.
+
+**One word only, and that is the Space key, not a rule about labels.** Space toggles the
+tick on the highlighted row, so it never reaches the box: nothing typed here can hold a
+space, and `C-n` therefore only ever makes a single-word label. Vikunja is perfectly happy
+with `in progress` — the two ways to make one are `C-n` then `C-e`, which is the rename
+form and does take spaces, or quick-add's bracket forms, `*"in progress"` and
+`*[in progress]`. Driven 2026-08-30; see the end of this section.
 
 **When the offer appears is the part to get right, because it is not "the filter found
 nothing".** It is "no label has this title" — an exact match, ignoring ASCII case, and
@@ -407,6 +414,13 @@ them bites, it will look like a bug in the checks above.
   The trade is deliberate: a duplicate you can see is worse than a colour you can re-pick.
 - **Two boxes creating the same title at the same moment still make two labels.** Nothing
   can prevent that without a unique constraint Vikunja does not have.
+- **`C-n` cannot make a label with a space in it.** Space is the tick key in the `l` form,
+  so it never reaches the name box, and a title typed there is one word by construction.
+  Found by driving F2 on 2026-08-30. Not a data limit — the rename form (`C-e`) and
+  quick-add's `*"in progress"` both make multi-word labels — so the honest description is
+  that one of three creation routes is narrower than the other two, silently. Fixing it
+  means either moving the tick off Space or making `C-n` open the rename form pre-filled,
+  and both are design changes rather than corrections.
 - **Cosmetic, unfixed:** the undo toast writes label titles unquoted where a task's title
   is quoted (`Undone — errands`), and the `l` form's footer reserves a separator's width
   even when it is showing only one hint, costing about one character of title.
