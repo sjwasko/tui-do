@@ -723,12 +723,20 @@ pub async fn add(
         println!("Created label {}.", queued.created_labels.join(", "));
     }
     if !queued.unknown_labels.is_empty() {
-        // Scoped to next time, deliberately: the task above is already queued, so
-        // re-running this same command with the flag now would add a second task
-        // rather than fixing this one.
+        // Scoped to next time in the *text*, not only in the comment: the natural reading
+        // of a CLI hint is "re-run me with this flag", and the task above is already
+        // queued, so doing that would add a second task rather than fixing this one. The
+        // hint used to say neither, and it said "create it" however many names it had
+        // just listed.
+        let (names, pronoun, object) = if queued.unknown_labels.len() == 1 {
+            ("No label called", "it was", "it")
+        } else {
+            ("No labels called", "they were", "them")
+        };
         println!(
-            "No label called {} — it was left off. Pass --create-labels to have tui-do \
-             create it.",
+            "{names} {} — {pronoun} left off. Pass --create-labels next time to have \
+             tui-do create {object}; this task is already queued, so re-running now would \
+             add a second one.",
             queued.unknown_labels.join(", ")
         );
     }
