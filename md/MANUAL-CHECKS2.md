@@ -24,9 +24,10 @@ of them.
 | **C1** | `tui-do add` syntax | **2026-08-28 — pass** |
 | **D1** | a task shown twice | still unreproduced; see the section itself |
 | **E1–E6** | short windows | **2026-08-28 — all pass** |
-| **F2** | `C-n` creates | **2026-08-30 — pass**, with one finding: no spaces, recorded below |
+| **F1, F2, F4** | the form, `C-n`, `C-e` | **2026-08-30 — all pass** |
 | **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
-| **F1, F3–F6** | making a label | **never driven** — written 2026-08-29, the day the feature landed |
+| **F3** | the adoption | never driven by hand; smoked in `crates/tui-do-smoke` |
+| **F5, F6** | asking first | **not yet driven** — rewritten 2026-08-30 after the first pass at them could not be followed |
 
 Part two was driven end to end for the first time on 2026-08-28, on the release binary.
 Two entries failed on the first pass and were fixed the same day — B9, which was
@@ -384,29 +385,62 @@ omits (measured on dev 2026-08-29 — a body carrying only `title` cleared `hex_
 would mean deleting a label, and the label would return with a new id detached from
 everything it was on.
 
-**F5 — an unknown `*label` in quick-add asks first, and takes no for an answer.** `a`,
-then `Call the VA *waiting` with no such label. A box appears titled `No such label — y
-creates, n leaves it off`, naming what is missing and saying why it is worth asking: the
-pool is shared by every project, so a typo follows you into all of them forever. Press
-`n`, and the task is added with a warning-coloured `no label called waiting`. Nothing is
-queued but the task.
+**F5 — an unknown `*label` asks before it makes one, and takes no for an answer.** Four
+surfaces ask the same question through the same code. Drive them in this order; each is a
+few keystrokes and the fourth is a shell command.
 
-`Esc` and `Enter` answer the same safe way, which is the answer a key pressed without
-reading should get. `Esc` is the odd one: everywhere else it means "back out, changing
-nothing", and here the prompt holding the typed text has already closed, so there is
-nothing to go back *to*. Every key that closes this box keeps the task; only the label is
-in question. The edit form's Labels field asks the same question through the same code —
-try it there too, and the fourth surface as well:
-`tui-do add 'Call the VA *waiting'` must say the label was left off and name
-`--create-labels` as the way to have it made, because a command that may run unattended
-has no box to confirm in.
+1. **Quick-add.** Press `a`, type `Call the VA *waiting`, Enter. No label is called
+   `waiting`, so instead of the task being added a box appears, titled
+   `No such label  —  y creates, n leaves it off`, listing `waiting` under it and saying
+   `Labels are shared by every project; typos are forever.`
+2. **Say no.** Press `n`. The task is added without the label and a **warning-coloured**
+   toast reads `Added "Call the VA" — no label called waiting`. Check the status line: it
+   should show one queued change, the task. Nothing else was queued, and the web UI has no
+   label called `waiting`.
+3. **The three keys that mean no.** Repeat step 1 twice more and answer `Esc`, then
+   `Enter`. Both must do exactly what `n` did — task kept, label left off. `Esc` is the
+   one worth being deliberate about: everywhere else in tui-do it means "back out,
+   changing nothing", and here backing out would throw away the line you typed, because
+   the prompt that held it has already closed. Every key that closes this box keeps the
+   task; only the label is in question. Any *other* key — `q`, `j`, a digit — must do
+   nothing at all, leaving the box up.
+4. **The edit form asks it too.** Open a task with `e`, put `waiting` in the Labels field,
+   `Ctrl-S`. The same box, the same three answers.
+5. **The command line cannot ask, so it tells.** Run
+   `tui-do add 'Call the VA *waiting'`. It must print, after queueing the task:
+   `No label called waiting — it was left off. Pass --create-labels next time to have
+   tui-do create it; this task is already queued, so re-running now would add a second
+   one.` The "next time" matters and is not padding: re-running the command to get the
+   label would add a second task.
 
-**F6 — repeat, and say yes.** The same line, `y` this time. The box stays up saying
-`Creating…` until the label comes back — it has to, because the interface never learns the
-provisional id any other way and the task must carry it — and then the task is added with
-the label on it. A second `y` while it says `Creating…` must do nothing at all: a title is
-not unique, so a second yes would be a second label with nothing in either response to
-tell them apart. Web UI: one label called `waiting`, on that task.
+**F6 — say yes, and the box holds still until the label is real.** The same line as F5,
+`y` this time. `y` and only `y`: Enter is the key that *submitted* the quick-add a frame
+ago, so this box opens under a finger already resting on it, and a second press must not
+be able to add to a pool every project shares.
+
+The box stays up and its bottom line changes from the typos warning to `Creating…`. It has
+to wait: the interface never learns the new label's id any other way, and the task has to
+carry it. Against dev this is usually too fast to read — that is fine, and step 2 below is
+how you see it properly. Then the box closes, the task is added carrying `waiting`, and
+the web UI shows **one** label called `waiting`, on that task.
+
+Two things to drive deliberately, because both are silent when they break:
+
+1. **A second `y` while it says `Creating…` must do nothing.** A label title is not unique
+   — creating `waiting` twice answers `201` twice with two different ids and nothing in
+   either response to tell them apart — so a second yes would leave a duplicate nobody can
+   sort out afterwards.
+2. **`n` still works while it says `Creating…`**, and does *not* recall the create. The
+   label gets made and the task simply does not carry it. That is deliberate: this is the
+   key that guarantees the box can always be closed, and a version of it that waited on a
+   server would not be.
+
+**Both need the create held open, which `test-scripts/go-offline.sh` does** — the address
+is unroutable, so the connect hangs rather than failing. Run it, restart tui-do, then drive
+F6 again: the box will sit on `Creating…` for as long as you like. Hammer `y`; the web UI
+must show no second `waiting` when the queue finally drains. Then repeat and press `n`
+instead, and confirm afterwards that `waiting` exists but is not on the task.
+`test-scripts/restore-config.sh` when done, and `r` to drain (see F7).
 
 **F7 — offline, then back: one label, not two.** `test-scripts/go-offline.sh`, create a
 label from the `l` form, and watch the status line settle on `1 queued (1 failing)` — the
