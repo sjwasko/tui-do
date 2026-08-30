@@ -620,6 +620,7 @@ pub async fn add(
     config_path: &std::path::Path,
     text: &str,
     offline: bool,
+    create_labels: bool,
 ) -> anyhow::Result<()> {
     let store_path = Store::default_path().context("could not decide where to keep the store")?;
     let store = Store::open(&store_path)
@@ -698,38 +699,33 @@ pub async fn add(
         ),
     })?;
 
-    let title = built.task.title.clone();
     let project_id = built.task.project_id;
-    // Read before the task is moved into the mutation. Same rule as the interface: a date
-    // already gone by is allowed, never confirmed quietly.
-    let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), now());
     let project = projects
         .iter()
         .find(|project| project.id == project_id)
         .map_or_else(|| project_id.to_string(), |project| project.title.clone());
-    store
-        .queue(tui_do_core::store::Mutation::CreateTask {
-            task: Box::new(built.task),
-        })
-        .await
-        .context("could not queue the task")?;
+    let queued = queue_add(&store, built, create_labels).await?;
 
     // Named with its id when the name is ambiguous, because a task added to the wrong
     // Inbox is a task the user will not find.
-    if built.ambiguous_project {
+    if queued.ambiguous_project {
         println!(
-            "Added \"{title}\" to {project} (#{project_id}) — more than one project has that name"
+            "Added \"{}\" to {project} (#{project_id}) — more than one project has that name",
+            queued.title
         );
     } else {
-        println!("Added \"{title}\" to {project}");
+        println!("Added \"{}\" to {project}", queued.title);
     }
-    if let Some(note) = backdated {
+    if let Some(note) = queued.backdated {
         println!("Note: {note}.");
     }
-    if !built.unknown_labels.is_empty() {
+    if !queued.created_labels.is_empty() {
+        println!("Created label {}.", queued.created_labels.join(", "));
+    }
+    if !queued.unknown_labels.is_empty() {
         println!(
-            "No label called {} — tui-do cannot create labels yet, so it was left off.",
-            built.unknown_labels.join(", ")
+            "No label called {} — pass --create-labels to make it, or it is left off.",
+            queued.unknown_labels.join(", ")
         );
     }
 
@@ -754,6 +750,88 @@ pub async fn add(
         Err(error) => println!("Queued — could not reach the server: {error}"),
     }
     Ok(())
+}
+
+/// What [`queue_add`] queued, for the caller to report.
+struct Queued {
+    /// The task's title, read before it moved into the mutation.
+    title: String,
+    /// Whether more than one project answers to the name that was used.
+    ambiguous_project: bool,
+    /// A note if the due date has already passed, or `None`.
+    backdated: Option<String>,
+    /// Labels that were created because `--create-labels` said to.
+    created_labels: Vec<String>,
+    /// Labels that were named and do not exist, and were left off because
+    /// `--create-labels` was not passed.
+    unknown_labels: Vec<String>,
+}
+
+/// Queue a task built by quick-add — and, if `create_labels` says to, a label for every
+/// name it used that does not exist yet.
+///
+/// Pulled out of [`add`] so a test can assert the queue's contents without also
+/// exercising the printing and the push: `run_add`'s job is to talk to a terminal and a
+/// server, and neither belongs in a test.
+///
+/// Each `CreateLabel` is queued **before** the `CreateTask` that names it, and the
+/// server-bound id it will get is threaded onto the task first. This is the one thing
+/// the CLI can do that the interface cannot: `Store::queue` allocates a label's
+/// provisional id inside its own transaction and returns the [`OutboxEntry`] it wrote,
+/// so the id is available here immediately rather than needing a reload to see it. Once
+/// the label is on `built.task.labels`, `Mutation::decompose` puts an `AttachLabel`
+/// behind the `CreateTask` for it, and adoption retargets that entry when the server
+/// answers with the label's real id.
+///
+/// # Errors
+/// [`tui_do_core::CoreError`] wrapped by `anyhow`, from either `Store::queue` call.
+async fn queue_add(
+    store: &Store,
+    mut built: tui_do_ui::QuickAdd,
+    create_labels: bool,
+) -> anyhow::Result<Queued> {
+    let mut created_labels = Vec::new();
+    if create_labels {
+        for title in &built.unknown_labels {
+            let entry = store
+                .queue(tui_do_core::store::Mutation::CreateLabel {
+                    label: Box::new(tui_do_api::models::Label {
+                        title: title.clone(),
+                        ..tui_do_api::models::Label::default()
+                    }),
+                })
+                .await
+                .context("could not queue the label")?;
+            let tui_do_core::store::Mutation::CreateLabel { label } = entry.mutation else {
+                anyhow::bail!("queuing a label returned a {} entry", entry.mutation.kind());
+            };
+            built.task.labels.push(*label);
+            created_labels.push(title.clone());
+        }
+        built.unknown_labels.clear();
+    }
+
+    let title = built.task.title.clone();
+    let ambiguous_project = built.ambiguous_project;
+    let unknown_labels = std::mem::take(&mut built.unknown_labels);
+    // Read before the task is moved into the mutation. Same rule as the interface: a date
+    // already gone by is allowed, never confirmed quietly.
+    let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), now());
+
+    store
+        .queue(tui_do_core::store::Mutation::CreateTask {
+            task: Box::new(built.task),
+        })
+        .await
+        .context("could not queue the task")?;
+
+    Ok(Queued {
+        title,
+        ambiguous_project,
+        backdated,
+        created_labels,
+        unknown_labels,
+    })
 }
 
 #[cfg(test)]
@@ -874,5 +952,53 @@ mod tests {
                 "{pass:?} encodes to {code}, which the re-dispatch drops on the floor"
             );
         }
+    }
+
+    /// A store with nothing in it, for a test to queue against without touching
+    /// `~/.local/share/tui-do`.
+    async fn scratch_store() -> Store {
+        Store::in_memory().expect("an in-memory store opens")
+    }
+
+    /// Build a task the way `tui-do add` does, against a default project so a bare
+    /// `+project` is never required just to exercise quick-add syntax.
+    fn build_task(
+        text: &str,
+        extra_projects: &[tui_do_core::models::Project],
+        extra_labels: &[tui_do_api::models::Label],
+    ) -> tui_do_ui::QuickAdd {
+        let mut projects = vec![a_project(1, "Inbox")];
+        projects.extend_from_slice(extra_projects);
+        let parsed = tui_do_core::quickadd::parse(text, &now());
+        tui_do_ui::quickadd_task(&parsed, &projects, extra_labels, None, None)
+            .expect("the default project resolves")
+    }
+
+    #[tokio::test]
+    async fn an_unknown_label_is_left_off_unless_the_flag_says_otherwise() {
+        let store = scratch_store().await;
+        let built = build_task("Call the VA *waiting", &[], &[]);
+        assert_eq!(built.unknown_labels, vec!["waiting".to_string()]);
+
+        queue_add(&store, built.clone(), false).await.unwrap();
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(
+            queued.iter().map(|e| e.mutation.kind()).collect::<Vec<_>>(),
+            vec!["create_task"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flag_queues_the_label_before_the_task_that_carries_it() {
+        // Order is the contract: the create is queued first so the attach `decompose`
+        // puts behind the task can be retargeted when the server names the label.
+        let store = scratch_store().await;
+        let built = build_task("Call the VA *waiting", &[], &[]);
+        queue_add(&store, built, true).await.unwrap();
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(
+            queued.iter().map(|e| e.mutation.kind()).collect::<Vec<_>>(),
+            vec!["create_label", "create_task", "attach_label"]
+        );
     }
 }

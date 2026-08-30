@@ -141,6 +141,15 @@ struct AddArgs {
     /// Queue the task without trying to send it.
     #[arg(long)]
     offline: bool,
+
+    /// Create any label the task names that does not exist yet.
+    ///
+    /// Off by default: labels are one global pool shared by every project, so a typo in
+    /// a task line otherwise becomes a permanent entry that pollutes completion
+    /// everywhere. The interface asks; a command that may be running unattended cannot,
+    /// so it takes an instruction instead.
+    #[arg(long)]
+    create_labels: bool,
 }
 
 /// Options for `tui-do completions`.
@@ -289,6 +298,7 @@ fn run_add(
             &path,
             &args.text.join(" "),
             args.offline,
+            args.create_labels,
         ))
 }
 
