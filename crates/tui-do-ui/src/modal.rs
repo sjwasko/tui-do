@@ -360,6 +360,8 @@ pub enum Modal {
     Labels(LabelsState),
     /// Renaming or recolouring one label.
     LabelEdit(LabelEditState),
+    /// Asking whether to make the labels a task line named and the server has not got.
+    ConfirmLabels(ConfirmLabelsState),
     /// Waiting for a configured quick-action key.
     QuickActions(QuickActionsState),
 }
@@ -427,6 +429,22 @@ pub enum Submission {
     },
     /// Run the configured quick action at this index.
     QuickAction(usize),
+    /// Make these labels, and hold the submission that named them until the server has.
+    ///
+    /// Always an [`Outcome::Update`]: the box that asked stays open, because the
+    /// interface never learns the provisional id any other way — `Store::queue` allocates
+    /// it inside its own transaction — and the task the user is adding has to carry it.
+    ///
+    /// Plural where [`Self::CreateLabel`] is singular, and a separate variant rather than
+    /// a list: that one is one keystroke in a form the user is still filling in, this one
+    /// is every name a single task line asked for, made in one go so the answer is one
+    /// question and not one per typo.
+    CreateLabels(Vec<String>),
+    /// Carry on without the labels that do not exist.
+    ///
+    /// Carries the held submission because [`Outcome::Submit`] pops the modal before
+    /// `update` sees this, so by then there is nowhere left to read it from.
+    WithoutLabels(Box<Pending>),
 }
 
 /// Which field of the edit form has the keyboard.
@@ -1253,6 +1271,179 @@ impl ModalView for LabelEditState {
     }
 }
 
+/// A submission held open while the user answers a question about labels.
+///
+/// The text and the draft rather than the mutations they become, because the answer is
+/// resumed by running the *same* function again — `add_task` for one, `apply_edit` for
+/// the other — with the labels now in the pool. Two paths that built the write twice, one
+/// asking and one not, would be two chances to write them differently: exactly the shape
+/// this codebase avoids by making `+Legal` in quick-add and `Legal` in the edit form
+/// resolve through one helper.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pending {
+    /// Quick-add text, exactly as it was typed.
+    Add(String),
+    /// A filled-in edit form.
+    Edit(Box<EditDraft>),
+}
+
+/// How far the question has got.
+///
+/// An enum and not a `created: bool` beside a `Vec<String>`, for the reason rule 2 gives:
+/// "answered yes, waiting for nothing" and "not answered at all" would otherwise be the
+/// same two field values, and only one of them may resume the submission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Waiting {
+    /// Nobody has answered yet.
+    Asking,
+    /// The user said yes. These titles have been queued and have not come back.
+    ///
+    /// Empty means every one of them has, which is when the held submission runs.
+    Creating(Vec<String>),
+}
+
+/// Waiting for an answer about labels a submission asked for and the server has not got.
+///
+/// Everywhere else in the interface the user is looking at a list of labels and asking
+/// for a new one. Here they typed a *task*, and Vikunja's label pool is global across
+/// every project — so a typo in a task line becomes a permanent entry that pollutes
+/// completion everywhere, forever, with nothing in the response to tell it from a label
+/// somebody meant. The web UI creates it silently; this asks first, which is the whole
+/// point of the modal.
+///
+/// It holds the submission because the answer has to resume *that* submission and not a
+/// re-typed approximation of it, and because the interface has nowhere else to keep it:
+/// a field on the model would be the `show_x_modal` shape rule 2 exists to refuse.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfirmLabelsState {
+    /// The names that do not exist yet, in the order they were typed.
+    pub unknown: Vec<String>,
+    /// The submission the answer resumes.
+    pub pending: Pending,
+    /// How far the question has got.
+    pub waiting: Waiting,
+}
+
+impl ConfirmLabelsState {
+    /// A question about `unknown`, holding `pending` until it is answered.
+    #[must_use]
+    pub const fn new(unknown: Vec<String>, pending: Pending) -> Self {
+        Self {
+            unknown,
+            pending,
+            waiting: Waiting::Asking,
+        }
+    }
+
+    /// Whether every label this is waiting for has come back.
+    ///
+    /// False while the question is still being asked, which is the distinction
+    /// [`Waiting`] exists to make: an unanswered question has nothing outstanding either.
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        matches!(&self.waiting, Waiting::Creating(titles) if titles.is_empty())
+    }
+
+    /// Take a fresh label snapshot, striking off the titles that have arrived.
+    ///
+    /// By title, because the id is precisely what the interface never learns —
+    /// `Store::queue` allocates the provisional one inside its own transaction — and by
+    /// the same **ASCII-only** fold as `resolve_labels`, `LabelsState::absorb_created`
+    /// and `Client::labels_named`. All four would have to move together; an interface
+    /// that disagreed with the retry path about what counts as the same title would be
+    /// worse than one that folds narrowly everywhere.
+    ///
+    /// A same-title label another box created can satisfy the wait instead of this box's
+    /// own. That is the accepted class: the resumed submission then names *a* real label
+    /// with the right title, which is what the user asked for, and nothing without a
+    /// server-side unique constraint can do better.
+    pub fn absorb_created(&mut self, known: &[Label]) {
+        let Waiting::Creating(titles) = &mut self.waiting else {
+            return;
+        };
+        titles.retain(|title| {
+            !known
+                .iter()
+                .any(|label| label.title.eq_ignore_ascii_case(title))
+        });
+    }
+
+    /// Stop waiting for labels that are never coming.
+    ///
+    /// A rejected create is final — `sync::is_permanent` has already rolled it back — so
+    /// a title left outstanding holds the user's task on screen for the life of the
+    /// session with no key that would release it. The submission runs without the label
+    /// instead, and says so.
+    pub fn give_up(&mut self) {
+        if let Waiting::Creating(titles) = &mut self.waiting {
+            titles.clear();
+        }
+    }
+
+    /// What the box says it is doing, under the names.
+    #[must_use]
+    pub fn note(&self) -> &'static str {
+        match self.waiting {
+            Waiting::Asking => "Labels are shared by every project; typos are forever.",
+            Waiting::Creating(_) => "Creating…",
+        }
+    }
+}
+
+impl ModalView for ConfirmLabelsState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            // `y` alone creates, and deliberately not Enter. Enter is the key that
+            // *submitted* the quick-add a frame ago, so this box appears directly under
+            // a finger that is already on it -- and a second press creating a label in a
+            // pool shared by every project is precisely the reflex this whole feature
+            // exists to interrupt. It is the same rule the `l` form's `C-n` follows, for
+            // the same reason: adding to the global pool never shares a key with
+            // anything a fast typist presses without looking.
+            KeyCode::Char('y' | 'Y') => match &self.waiting {
+                // A label title is not unique, so a second yes would be a second label
+                // and nothing in either response could tell them apart afterwards.
+                Waiting::Creating(_) => Outcome::Consumed,
+                Waiting::Asking => {
+                    self.waiting = Waiting::Creating(self.unknown.clone());
+                    // An `Update`, not a `Submit`: the box stays up until the reload
+                    // names the labels, because the interface never learns the
+                    // provisional id any other way and the task has to carry it.
+                    Outcome::Update(Submission::CreateLabels(self.unknown.clone()))
+                }
+            },
+            // `n`, Esc and Enter all answer the safe way, which is the answer a key
+            // pressed without reading gets. Esc is the odd one: everywhere else it means
+            // "back out, changing nothing", and here backing out would throw away the
+            // task the user typed -- the prompt that held the text has already closed, so
+            // there is nothing to go back *to*. Every key that closes this box therefore
+            // keeps their work; only the label is in question.
+            //
+            // Answerable at any point, including while a create is in flight. That
+            // create is already queued and is not recalled -- the label gets made, and
+            // the task simply does not carry it -- which is deliberately the *only*
+            // outcome available: this is the key that guarantees the box can always be
+            // closed, and a version of it that could hang waiting for a server would not
+            // be that.
+            KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter => {
+                Outcome::Submit(Submission::WithoutLabels(Box::new(self.pending.clone())))
+            }
+            // Every other key is refused rather than passed anywhere. There is no field
+            // here to type into, and no third answer to give.
+            _ => Outcome::Consumed,
+        }
+    }
+
+    fn title(&self) -> String {
+        let (noun, them) = if self.unknown.len() == 1 {
+            ("No such label", "it")
+        } else {
+            ("No such labels", "them")
+        };
+        format!("{noun}  —  y creates, n leaves {them} off")
+    }
+}
+
 /// The configured quick actions, waiting for one of their keys.
 ///
 /// Holds `(key, description)` pairs rather than the config type, so the modal cannot
@@ -1437,6 +1628,7 @@ impl Modal {
             Self::Due(state) => state,
             Self::Labels(state) => state,
             Self::LabelEdit(state) => state,
+            Self::ConfirmLabels(state) => state,
             Self::QuickActions(state) => state,
         }
     }
@@ -1459,6 +1651,7 @@ impl Modal {
             Self::Due(state) => state.title(),
             Self::Labels(state) => state.title(),
             Self::LabelEdit(state) => state.title(),
+            Self::ConfirmLabels(state) => state.title(),
             Self::QuickActions(state) => state.title(),
         }
     }

@@ -13,8 +13,8 @@ use ratatui::Frame;
 
 use crate::keymap::{help_rows, HelpRow};
 use crate::modal::{
-    DueState, EditField, EditState, LabelEditState, LabelField, LabelsState, Modal, PickerState,
-    PriorityState, QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
+    ConfirmLabelsState, DueState, EditField, EditState, LabelEditState, LabelField, LabelsState,
+    Modal, PickerState, PriorityState, QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
 };
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
@@ -597,6 +597,16 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         // border. The third row is always drawn: it holds the hint when there is no
         // refusal, so the box does not resize under the user as they type.
         Modal::LabelEdit(_) => (60, 5),
+        // One row per name the user typed and cannot have, plus the border, a blank line
+        // and the row that says what is happening. That row is always drawn -- it holds
+        // the reason before the answer and "Creating…" after it -- so the box does not
+        // resize under a user who has just pressed a key.
+        Modal::ConfirmLabels(state) => (
+            60,
+            u16::try_from(state.unknown.len())
+                .unwrap_or(u16::MAX)
+                .saturating_add(4),
+        ),
         // One row per priority plus the field and the border: the whole range is on
         // screen at once, which is the point of a fixed scale.
         Modal::Priority(_) => (44, MAX_PRIORITY as u16 + 4),
@@ -636,6 +646,7 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         Modal::Priority(state) => priority_body(state, frame, inner, theme),
         Modal::Labels(state) => labels_body(state, frame, inner, theme),
         Modal::LabelEdit(state) => label_edit_body(state, frame, inner, theme),
+        Modal::ConfirmLabels(state) => confirm_labels_body(state, frame, inner, theme),
         Modal::QuickActions(state) => quick_actions_body(state, frame, inner, theme),
     }
 }
@@ -1050,6 +1061,37 @@ fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme)
     lines.extend(offer);
     frame.render_widget(Paragraph::new(lines), area);
     place_cursor(frame, area, &state.input, 2);
+}
+
+/// The question: the names that do not exist, and why it is worth asking.
+///
+/// The reason is on screen rather than left to the user to remember, because the answer
+/// only looks obvious from one side. `y` is the reflex, and what makes it the wrong
+/// reflex -- that the pool is shared by every project, so the typo would follow them into
+/// all of them -- is not something the task line they just typed says anywhere.
+fn confirm_labels_body(state: &ConfirmLabelsState, frame: &mut Frame, area: Rect, theme: Theme) {
+    let mut lines: Vec<Line<'static>> = state
+        .unknown
+        .iter()
+        .map(|title| {
+            Line::from(Span::styled(
+                format!(" {}", rows::truncate(title, area.width.saturating_sub(1))),
+                theme.text().add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+    // Never below one: on a box clipped by a short terminal, the note that says what is
+    // happening outranks the last of a long list of names.
+    lines.truncate(usize::from(area.height).saturating_sub(2).max(1));
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        format!(
+            " {}",
+            rows::truncate(state.note(), area.width.saturating_sub(1))
+        ),
+        theme.muted(),
+    )));
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// The label form: a title, a colour, and the colour worn as the user types it.

@@ -245,6 +245,36 @@ fn the_help_modal_folds_rather_than_scrolling_where_there_is_room() {
 }
 
 #[test]
+fn the_question_before_a_new_label() {
+    // The reason is on screen, not just the choice: `y` is the reflex, and what makes it
+    // the wrong one -- a pool shared by every project -- is nowhere in the task line the
+    // user just typed.
+    let mut model = fixture((120, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+    );
+    for c in "Ship it *nosuchlabel".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(drawn.contains("nosuchlabel"), "{drawn}");
+    assert!(drawn.contains("y creates"), "{drawn}");
+    assert!(
+        drawn.contains("every project"),
+        "the reason to say no:\n{drawn}"
+    );
+    golden("120x40-confirm-labels.txt", &drawn);
+}
+
+#[test]
 fn the_project_picker() {
     let mut model = fixture((120, 40));
     for key in ['g', 'p'] {
