@@ -67,6 +67,33 @@ and discarding a user's edit because a server was down for a day is not tui-do's
 to make. `Store::queue_health` reports how many are failing and why, and the status line
 says `3 queued (1 failing)`.
 
+**A queued mutation's subject is a `Subject`, not a task id.**
+`Subject { Task(TaskId), Label(LabelId) }`, stored as `subject_id` plus a
+`subject_kind` column (schema v5). Provisional ids count down from `-1` *per kind*, so an
+untyped `subject_id` makes provisional task `-1` and provisional label `-1` the same value
+in the same column — and nothing about that fails loudly. `retain_tasks`'s delete guard
+would spare a task because a *label* was queued; `settle_create`, adopting task `-1`,
+would rewrite the payload of a `CreateLabel` whose subject is label `-1`. Seven SQL sites
+read that column and all seven filter on the kind; the plan that added it named five, and
+the sixth (`upsert_tasks_from_server`'s pending check) and seventh (`retain_projects`'s
+task cascade) came out of review.
+
+**A `CreateLabel` that has already failed reads before it writes.** `is_already_done` has
+arms for a replayed attach, detach and label delete, and deliberately **no arm for a
+create**: a label title is not unique and `PUT /labels` ignores the body's `id`, so a
+replay answers `201` and a second label with nothing in the response to tell it from the
+first (measured 2026-08-29, above). So a retry — gated on `entry.is_failing()`, because a
+first attempt has no earlier attempt of its own to find — asks `GET /labels?s=<title>`
+first and adopts an exact match instead of creating. It protects this box's own replay and
+not two boxes creating the same title at once, which nothing can without a unique
+constraint the server does not have.
+
+**There is no `DeleteLabel`, and a create is not on the undo stack.** `Mutation::inverse`
+answers `None` for `CreateLabel` and `u` reaches past it, because undoing a create means
+deleting a label — the one label operation `u` cannot honestly reverse, since the label
+would come back with a new id detached from every task it was on. If delete is ever built
+it needs a confirmation and an honest "this cannot be undone", not a broken undo.
+
 ## Wire-format facts the spec does not tell you
 
 The OpenAPI document describes what the server *means*, not what it *emits*. Each of these

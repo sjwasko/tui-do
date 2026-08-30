@@ -24,6 +24,7 @@ of them.
 | **C1** | `tui-do add` syntax | **2026-08-28 — pass** |
 | **D1** | a task shown twice | still unreproduced; see the section itself |
 | **E1–E6** | short windows | **2026-08-28 — all pass** |
+| **F1–F7** | making a label | **never driven** — written 2026-08-29, the day the feature landed |
 
 Part two was driven end to end for the first time on 2026-08-28, on the release binary.
 Two entries failed on the first pass and were fixed the same day — B9, which was
@@ -256,3 +257,132 @@ Then narrow the terminal to eighty columns. Two columns no longer fit, so it mus
 to one, scroll, and say `j/k scrolls` in the title — not draw two columns of truncated
 descriptions. The fold is only ever at a heading, so no section is split across the
 gutter; the empty space under the shorter column is that rule's cost and is deliberate.
+
+---
+
+## F. Making a label, which the interface used to apologise for
+
+Labels can be created, renamed and recoloured as of 2026-08-29 — designed in
+`md/2026-08-28-label-creation-design.md`, built out of sequence between Phase 4 and Phase
+5. Before that, four places in the interface said in words that tui-do could not do it.
+
+Every one of these is a **write into a pool Vikunja shares across every project**, so each
+check ends the way section A's do: look at the web UI and confirm the server agrees. There
+is deliberately no delete — see "What is known to be wrong" at the end, and clear up after
+yourself with `deploy/reset-dev.sh`.
+
+**F1 — `l` opens on an empty pool.** Press `l` on a task with no labels. The form opens,
+and where the list would be it says ` no labels yet — type a name`. *This was broken:* the
+form refused to open and toasted "No labels exist yet" — an apology, delivered on the one
+screen from which a label can now be made. If dev's pool is not empty, delete its labels
+in the web UI first: this is the only check that needs the empty case, and the old toast
+is what made it unreachable.
+
+**F2 — `C-n` creates what the filter cannot find.** Type a name nothing matches. The
+footer offers `C-n creates "…"` — and offers it only then: type the name of a label that
+already exists and the offer must be gone. Press `C-n`. The label joins the list already
+**ticked**, a toast says `Created label …`, and the status line shows one queued change.
+Enter then applies the ticks in the ordinary way.
+
+Note what does *not* create: Enter, which applies ticks and nothing else. Adding to a pool
+every project shares never shares a key with a reflex — the same rule `y` follows in F5.
+
+**F3 — the adoption reaches the form that is still open. The one that matters.** Do F2 and
+then, *without closing the form*, press `r`. (A write starts a push by itself, so this may
+already have happened; watch the queue count reach zero.) The label must keep its name and
+its tick **in the form you are looking at**, and Enter must still attach it — check the
+web UI shows it on the task.
+
+A created label carries a provisional negative id until the server names it, and every
+holder of that id has to move at the same moment: the store rows, the queued attach,
+`model.data.labels`, the labels inside every task, the undo and redo stacks, the filter
+scope, the `g l` picker's candidates, the edit form's `before` task, and the open `l`
+form's own cloned list. That last one is the holder every implementer of this feature came
+closest to missing, and its failure is **silence** — the form resolves its ticks against a
+renumbered list, matches nothing, queues no mutation and says "Nothing changed". So a pass
+here is not "no error appeared". It is the label reaching the task.
+
+**F4 — `C-e` renames and recolours, from both lists.** Highlight a label in the `l` form
+and press `C-e`; then do the same from `g l`, where the key is advertised in the title
+rather than a footer. Tab moves between Title and Colour, Enter saves, Esc abandons. A
+colour is six hex digits, with or without a leading `#`, and anything else is refused *in
+the form* rather than queued — a server rejection rolls the whole write back, taking the
+rename with it. An empty title is refused the same way.
+
+Then `Esc` back to the list and press `u`. The label must come back with **both** its old
+title and its old colour, even if you only changed one: a partial body clears what it
+omits (measured on dev 2026-08-29 — a body carrying only `title` cleared `hex_color` to
+`""`), so the write always carries both and so does the undo.
+
+`u` straight after a **create** is different, and deliberately: it undoes whatever you did
+*before* the create. Nothing about a create is on the undo stack, because taking one back
+would mean deleting a label, and the label would return with a new id detached from
+everything it was on.
+
+**F5 — an unknown `*label` in quick-add asks first, and takes no for an answer.** `a`,
+then `Call the VA *waiting` with no such label. A box appears titled `No such label — y
+creates, n leaves it off`, naming what is missing and saying why it is worth asking: the
+pool is shared by every project, so a typo follows you into all of them forever. Press
+`n`, and the task is added with a warning-coloured `no label called waiting`. Nothing is
+queued but the task.
+
+`Esc` and `Enter` answer the same safe way, which is the answer a key pressed without
+reading should get. `Esc` is the odd one: everywhere else it means "back out, changing
+nothing", and here the prompt holding the typed text has already closed, so there is
+nothing to go back *to*. Every key that closes this box keeps the task; only the label is
+in question. The edit form's Labels field asks the same question through the same code —
+try it there too, and the fourth surface as well:
+`tui-do add 'Call the VA *waiting'` must say the label was left off and name
+`--create-labels` as the way to have it made, because a command that may run unattended
+has no box to confirm in.
+
+**F6 — repeat, and say yes.** The same line, `y` this time. The box stays up saying
+`Creating…` until the label comes back — it has to, because the interface never learns the
+provisional id any other way and the task must carry it — and then the task is added with
+the label on it. A second `y` while it says `Creating…` must do nothing at all: a title is
+not unique, so a second yes would be a second label with nothing in either response to
+tell them apart. Web UI: one label called `waiting`, on that task.
+
+**F7 — offline, then back: one label, not two.** `test-scripts/go-offline.sh`, create a
+label from the `l` form, and watch the status line settle on `1 queued (1 failing)` — the
+address is unroutable, so the first attempt hangs before it fails. Then
+`test-scripts/restore-config.sh` and let it drain: **one** label on the server, with the
+colour you gave it.
+
+What this cannot reach by hand is the case the read-before-retry exists for — a create
+that reached the server whose *response* was lost. A retry finds its own label with
+`GET /labels?s=<title>` and adopts it instead of making a second. If you can arrange one
+(cut the network between the request and the answer), do: it is the one path here with no
+way to fail loudly.
+
+### What is known to be wrong, and is not being fixed yet
+
+Recorded here rather than left in a plan that gets deleted. None of these are regressions;
+each was found during the build on 2026-08-29, judged, and deliberately left. If one of
+them bites, it will look like a bug in the checks above.
+
+- **No route back from a typo.** A user who types `*waitng` in quick-add can only create
+  it or drop it, then re-edit the task; the box has no "let me fix the line" answer,
+  because the prompt that held the text is already closed. Editing the line back into
+  existence is a bigger change than the sharpness justified at the time.
+- **`Esc` then `l` inside the reload window can queue a duplicate create.** The guard that
+  stops a second `C-n` on the same name lives in the form's own state, so closing the form
+  and reopening it before the label comes back reopens the window. One keystroke, one
+  round trip wide, one duplicate the user can see. Closing it properly needs model-level
+  state.
+- **A rolled-back `DeleteTask` can resurrect a provisional label row.** If a create is
+  rejected and a delete of a task carrying that label is rolled back afterwards, the
+  restore re-writes the task with the label the rejection had removed. Pre-existing shape,
+  documented in the code, not reachable by the checks above.
+- **Case is folded ASCII-only, everywhere.** `café` and `CAFÉ` are two labels; `cafe` and
+  `CAFE` are one. Four places fold this way and they were left agreeing with each other
+  rather than made half-right.
+- **A retry can adopt somebody else's label.** The read-before-retry cannot tell a retry
+  whose response was lost from one that never reached the server, so it may adopt a
+  same-titled label another box made and quietly drop the colour you queued with yours.
+  The trade is deliberate: a duplicate you can see is worse than a colour you can re-pick.
+- **Two boxes creating the same title at the same moment still make two labels.** Nothing
+  can prevent that without a unique constraint Vikunja does not have.
+- **Cosmetic, unfixed:** the undo toast writes label titles unquoted where a task's title
+  is quoted (`Undone — errands`), and the `l` form's footer reserves a separator's width
+  even when it is showing only one hint, costing about one character of title.
