@@ -723,8 +723,12 @@ pub async fn add(
         println!("Created label {}.", queued.created_labels.join(", "));
     }
     if !queued.unknown_labels.is_empty() {
+        // Scoped to next time, deliberately: the task above is already queued, so
+        // re-running this same command with the flag now would add a second task
+        // rather than fixing this one.
         println!(
-            "No label called {} — pass --create-labels to make it, or it is left off.",
+            "No label called {} — it was left off. Pass --create-labels to have tui-do \
+             create it.",
             queued.unknown_labels.join(", ")
         );
     }
@@ -835,7 +839,7 @@ async fn queue_add(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use tokio::sync::mpsc;
     use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
@@ -956,28 +960,23 @@ mod tests {
 
     /// A store with nothing in it, for a test to queue against without touching
     /// `~/.local/share/tui-do`.
-    async fn scratch_store() -> Store {
+    fn scratch_store() -> Store {
         Store::in_memory().expect("an in-memory store opens")
     }
 
     /// Build a task the way `tui-do add` does, against a default project so a bare
     /// `+project` is never required just to exercise quick-add syntax.
-    fn build_task(
-        text: &str,
-        extra_projects: &[tui_do_core::models::Project],
-        extra_labels: &[tui_do_api::models::Label],
-    ) -> tui_do_ui::QuickAdd {
-        let mut projects = vec![a_project(1, "Inbox")];
-        projects.extend_from_slice(extra_projects);
+    fn build_task(text: &str) -> tui_do_ui::QuickAdd {
+        let projects = [a_project(1, "Inbox")];
         let parsed = tui_do_core::quickadd::parse(text, &now());
-        tui_do_ui::quickadd_task(&parsed, &projects, extra_labels, None, None)
+        tui_do_ui::quickadd_task(&parsed, &projects, &[], None, None)
             .expect("the default project resolves")
     }
 
     #[tokio::test]
     async fn an_unknown_label_is_left_off_unless_the_flag_says_otherwise() {
-        let store = scratch_store().await;
-        let built = build_task("Call the VA *waiting", &[], &[]);
+        let store = scratch_store();
+        let built = build_task("Call the VA *waiting");
         assert_eq!(built.unknown_labels, vec!["waiting".to_string()]);
 
         queue_add(&store, built.clone(), false).await.unwrap();
@@ -992,13 +991,62 @@ mod tests {
     async fn the_flag_queues_the_label_before_the_task_that_carries_it() {
         // Order is the contract: the create is queued first so the attach `decompose`
         // puts behind the task can be retargeted when the server names the label.
-        let store = scratch_store().await;
-        let built = build_task("Call the VA *waiting", &[], &[]);
+        let store = scratch_store();
+        let built = build_task("Call the VA *waiting");
         queue_add(&store, built, true).await.unwrap();
         let queued = store.pending(None).await.unwrap();
         assert_eq!(
             queued.iter().map(|e| e.mutation.kind()).collect::<Vec<_>>(),
             vec!["create_label", "create_task", "attach_label"]
+        );
+
+        // Kinds alone would pass a version that attached a fresh `Label::default()`
+        // (id 0) instead of the one `Store::queue` actually allocated -- `decompose`
+        // emits an `AttachLabel` for any non-empty `task.labels` regardless of what id
+        // is on it. What this task exists to establish is that the attach names the
+        // *same* label the create did, and that the id is provisional (negative) until
+        // the server answers.
+        let tui_do_core::store::Mutation::CreateLabel { label: created } = &queued[0].mutation
+        else {
+            panic!("expected a create_label first: {:?}", queued[0].mutation);
+        };
+        assert!(
+            created.id.get() < 0,
+            "a label not yet sent should carry a provisional (negative) id: {:?}",
+            created.id
+        );
+        let tui_do_core::store::Mutation::AttachLabel {
+            label: attached, ..
+        } = &queued[2].mutation
+        else {
+            panic!("expected an attach_label third: {:?}", queued[2].mutation);
+        };
+        assert_eq!(
+            attached.id, created.id,
+            "the attach must name the label the create allocated"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repeated_unknown_label_queues_one_create_not_two() {
+        // A title is not unique to Vikunja -- two `CreateLabel`s for two spellings of
+        // one typo both answer `201`, per CLAUDE.md's replay table, and the pool gets a
+        // permanent duplicate. `resolve_labels` (the shared root `quickadd_task` calls
+        // into) dedupes case-insensitively, so this is really a test that `queue_add`
+        // trusts what it is handed rather than re-splitting it.
+        let store = scratch_store();
+        let built = build_task("Call the VA *waiting *Waiting *WAITING");
+        assert_eq!(built.unknown_labels, vec!["waiting".to_string()]);
+
+        queue_add(&store, built, true).await.unwrap();
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(
+            queued
+                .iter()
+                .filter(|e| e.mutation.kind() == "create_label")
+                .count(),
+            1,
+            "one name, one label: {queued:?}"
         );
     }
 }
