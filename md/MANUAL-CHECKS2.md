@@ -340,6 +340,18 @@ colour is six hex digits, with or without a leading `#`, and anything else is re
 the form* rather than queued — a server rejection rolls the whole write back, taking the
 rename with it. An empty title is refused the same way.
 
+Colours to type, and why these. The hex is the chip's *background* and `Theme::label`
+picks the text from its luminance — black above 0.55, white below — so the pair that
+proves the flip is `e67e22` (0.555, must draw dark on light) and `27ae60` (0.548, must
+draw light on dark), which sit either side of the line by half a percent. `f7e463` is the
+pale yellow the code comment names, white-on-white if the foreground were ever fixed.
+Otherwise: `e05454` red, `f1c40f` yellow, `3498db` blue, `2c5aa0` deep blue.
+
+Three refusals and one acceptance to try in the same visit: `#3498db` is taken and the
+hash trimmed; `f00` is refused, because six digits means six and not a shorthand;
+`gggggg` is refused for not being hex; and an **empty** colour box is legal and means
+"the interface picks one" — that label draws in the accent style, not in black.
+
 Then `Esc` back to the list and press `u`. The label must come back with **both** its old
 title and its old colour, even if you only changed one: a partial body clears what it
 omits (measured on dev 2026-08-29 — a body carrying only `title` cleared `hex_color` to
