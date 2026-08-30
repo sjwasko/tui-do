@@ -76,8 +76,23 @@ Publication prep, decided 2026-08-30:
 - `md/` keeps design documents and the manual checks; the ten session continuity notes
   were deleted on 2026-08-30. Do not start writing them again — a handoff like this one,
   when a session ends mid-phase, is the replacement.
-- The dev host still answers to its pre-rename name; `deploy/README.md` carries the
-  commands, which need `sudo` there. Until that is done every script in `deploy/` fails.
+- The dev host was renamed from `criax-dev` to `tui-do-dev` on 2026-08-30, three days
+  after the repository was. Every `deploy/` script works again. `reset-dev.sh` now carries
+  `api_tokens` across the restore — the baseline predates the token this workstation
+  authenticates with, so a plain restore answered 401 from a server that was otherwise
+  perfectly healthy.
+
+## The state dev is in
+
+Reset to the baseline on 2026-08-30 after section F was driven: 3,876 tasks, one label
+(`test`), both API tokens intact. The baseline itself is a `pg_dump` from 24 August, so it
+predates the label feature entirely — fine for task data, and it will never contain
+anything from the week the labels were built. `snapshot-dev.sh` takes a newer one, but
+only run it on a state worth returning to.
+
+`md/MANUAL-CHECKS2.md` F1 needs an **empty** label pool and the baseline has one label in
+it, so F1 is not reachable without deleting `test` in the web UI first. That is the only
+check in section F that has never been driven apart from F3.
 
 ## What is not covered by anything automated
 
