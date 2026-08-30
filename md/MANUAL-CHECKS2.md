@@ -278,11 +278,35 @@ screen from which a label can now be made. If dev's pool is not empty, delete it
 in the web UI first: this is the only check that needs the empty case, and the old toast
 is what made it unreachable.
 
-**F2 — `C-n` creates what the filter cannot find.** Type a name nothing matches. The
-footer offers `C-n creates "…"` — and offers it only then: type the name of a label that
-already exists and the offer must be gone. Press `C-n`. The label joins the list already
-**ticked**, a toast says `Created label …`, and the status line shows one queued change.
-Enter then applies the ticks in the ordinary way.
+**F2 — `C-n` makes a label the pool has not got.** Press `l` on a task. The box at the
+top of the form does two jobs, and this check is about the second: it fuzzy-filters the
+list below it, *and* it is where the name of a new label is typed. Type something no
+label is called — `tui-do probe alpha` — and the footer offers
+`C-n creates "tui-do probe alpha"`.
+
+**When the offer appears is the part to get right, because it is not "the filter found
+nothing".** It is "no label has this title" — an exact match, ignoring ASCII case, and
+nothing to do with what the fuzzy filter turned up. Drive both halves:
+
+- With `work` in the pool, type `wor`. The list still shows `work`, because the filter is
+  fuzzy — and the footer must *still* offer `C-n creates "wor"`, because no label is
+  called `wor`. A filter that found something is not evidence the name is taken.
+- Type `work`, then `WORK`. Both times the offer must be gone. Case folds; leading and
+  trailing spaces are trimmed before the comparison, so ` work ` is also taken.
+
+Now press `C-n` on a name that is free. A toast says `Created label …` and the status
+line gains one queued change immediately. The label itself appears in the list a beat
+later, already **ticked** — the tick rides in on the reload that follows the local write,
+not on the server's answer, so it is quick but need not be the same frame. The name stays
+in the box, so what you watch is the offer you just used being replaced by the row it
+made: `wor` is now a label called `wor`, and `C-n` no longer offers anything.
+
+Press `C-n` a second time on that same name while the queue count is still up. Nothing
+must happen, and the offer must stay gone — the form remembers the titles it has asked
+for, so a create still in flight cannot be queued twice by an impatient second press.
+
+Then Enter, which applies the ticks in the ordinary way and closes the form. Check the web
+UI: the label is in the shared pool, and it is on the task.
 
 Note what does *not* create: Enter, which applies ticks and nothing else. Adding to a pool
 every project shares never shares a key with a reflex — the same rule `y` follows in F5.
