@@ -18,9 +18,9 @@ Projects               │ !!! Ship the release    Work                Tomorrow 
                        │      ┌Edit label  —  Tab moves, Enter saves, Esc cancels────────┐
                        │      │ Title    urgent                                          │
                        │      │ Colour   e05454   urgent                                 │
-                       │      │ six hex digits, or empty for the interface's own         │
+                       │      │ a name or six hex digits, or empty to let tui-do pick    │
+                       │      │ red orange yellow green blue purple pink grey            │
                        │      └──────────────────────────────────────────────────────────┘
-                       │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
