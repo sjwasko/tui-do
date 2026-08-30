@@ -16,3 +16,9 @@
 # Local state
 /spec/*.tmp.json
 .direnv/
+
+# Personal Claude Code config for this checkout: plugin choices, extra permissions.
+# `.claude/settings.json` is the project's own -- the rust-check hook and the cargo
+# permissions everyone needs -- and belongs in the repo. This one does not, and was
+# ignored only by never being added until a `git add -A` swept it into a commit.
+.claude/settings.local.json
