@@ -193,10 +193,32 @@ schema v3 — so the body carries them back, and
 `a_task_update_replaces_reminders_from_the_body` asserts both halves: carrying them
 preserves them, and sending `[]` still clears them.
 
-The general rule this is the second instance of: **any `Vec` on `Task` that the spec
-does not mark read-only is replaced from the body**, so it must survive a store round
-trip or a write will erase it. `attachments` and `related_tasks` are the remaining
-untested ones; check them before Phase 5 sends either.
+**There is no general rule here, and the one this used to state was wrong.** It read
+"any `Vec` on `Task` that the spec does not mark read-only is replaced from the body",
+which is both unfounded and false. Unfounded: the OpenAPI document sets `readOnly` on
+*none* of them — what `attachments` and `labels` have is a sentence of English prose,
+one of which contains a typo (`This property is read-onlym`). And false: measured on dev
+2026-08-30, a `POST /tasks/{id}` carrying `related_tasks: {}` and `attachments: []` left
+a relation and an attachment **untouched**, where the same shape deletes reminders.
+
+| collection | replaced from the body? |
+|---|---|
+| `reminders` | **yes** — measured, cost a live bug |
+| `assignees` | **yes** — measured |
+| `related_tasks` | no — measured 2026-08-30 |
+| `attachments` | no — measured 2026-08-30 |
+| `labels` | no; attached and detached through their own endpoints |
+
+So each collection is its own question and the answer only comes from asking the server.
+`a_task_update_leaves_relations_alone` in `tests/live.rs` pins the relations half; the
+attachment half was measured by hand, because uploading one needs a multipart request the
+client has no method for.
+
+**A write's response is not evidence about them either.** That same update answered with
+`related_tasks` empty while the relation was still on the server — the request had sent
+none and the response echoed none. Nothing may read a write's answer and conclude a task
+has no relations, which is the same shape as `sync::with_labels`'s caution one paragraph
+up, arrived at from the other direction.
 
 **`GET /projects` omits archived projects unless asked.** `is_archived=true` reads like
 a filter and is the opposite — the spec words it "if true, *also* returns all archived

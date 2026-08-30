@@ -340,6 +340,23 @@ impl From<RepeatMode> for i64 {
     }
 }
 
+/// The body `PUT /tasks/{taskID}/relations` takes.
+///
+/// `task_id` duplicates the path parameter on purpose: Vikunja binds the path first and
+/// the JSON body second, so a body that omits it sends `0` and the server looks up task
+/// zero. The same binding order that makes `PUT /projects/31/tasks` answer `404` about a
+/// project that exists, and that makes `POST /labels/12` carrying `"id": 13` write to
+/// label 13. Every body that shadows a path parameter writes the path value into itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRelation {
+    /// The task the relation is being added to. Must match the path.
+    pub task_id: TaskId,
+    /// The task on the other end.
+    pub other_task_id: TaskId,
+    /// How they relate.
+    pub relation_kind: RelationKind,
+}
+
 /// How two tasks relate.
 ///
 /// Used as a map key in [`Task::related_tasks`], so it must be a string enum.
