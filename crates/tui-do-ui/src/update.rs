@@ -201,14 +201,26 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             kind,
             message,
         } => {
-            // Before the toast below, deliberately. A submission held open waiting for a
-            // label whose create has just been rejected has to be released, and releasing
-            // it toasts too -- so it goes first and the rejection, which is the news the
-            // user must see, is the message left standing.
-            let released = release_held_labels(model, subject);
+            // Cleared before the release below, which toasts. `Model::toast` is a single
+            // slot, so what is standing afterwards can only be the release's own note --
+            // where without this an unrelated toast left over from a moment ago would be
+            // folded into the rejection as though it were about it. Nothing is lost: the
+            // message below is set unconditionally.
+            model.status.toast = None;
+            let released = release_held_labels(model, subject, &kind);
+            let aside = model.status.toast.take().map(|toast| toast.text);
             // The one event the user must see: their edit has just vanished from the
             // screen and they are owed an explanation.
-            model.toast(Toast::error(format!("{kind} rejected: {message}")));
+            //
+            // Combined rather than sequential, because the slot is one deep and the two
+            // messages are about one event. The rejection has to win -- it is the half
+            // the user cannot work out by looking -- but a released submission that went
+            // out without its label would then be written and overwritten inside the same
+            // update, leaving the task row itself as the only signal it happened.
+            model.toast(Toast::error(match aside {
+                Some(note) => format!("{kind} rejected: {message} — {note}"),
+                None => format!("{kind} rejected: {message}"),
+            }));
             // An inverse of a change that never happened is not an undo of anything. The
             // store has rolled the row back, so replaying the inverse would queue a write
             // derived from a state the server never held -- `u` after a rejected create
@@ -234,11 +246,20 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             // queues an `AttachLabel` for an id the server has never had, which fails in
             // turn. A rejected `UpdateLabel` is the same story with a rename: the store
             // has the old title and both snapshots show the new one.
-            let mut effects = reload_tasks(model);
+            //
+            // The released work leads, and the reload follows it. A resumed `CreateTask`
+            // and the task reload are two effects the runtime spawns on two tasks of its
+            // own, so a reload that read the store first would answer without the row the
+            // user has just watched appear and blank it until something reloaded again.
+            // Spawn order is a head start rather than a guarantee -- `Effect::Apply`
+            // sends `Msg::Reload` once its write lands, which is what actually closes the
+            // window -- but the wrong order here loses that race every time and this one
+            // wins it nearly always.
+            let mut effects = released;
+            effects.extend(reload_tasks(model));
             effects.push(Effect::LoadCounts);
             effects.push(Effect::LoadLabels);
             effects.push(Effect::LoadPending);
-            effects.extend(released);
             effects
         }
         SyncEvent::Adopted {
@@ -1171,9 +1192,28 @@ fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
     effects
 }
 
+/// The [`Mutation::kind`] a queued `CreateLabel` reports.
+///
+/// A short stable name is what that field is for -- it exists so a policy can select by
+/// kind without parsing every row -- and it is the only thing in `SyncEvent::Rejected`
+/// that says *which* label operation failed. `Subject::Label(id)` names an id neither
+/// waiting modal ever learned, so it cannot answer the question.
+///
+/// A literal, because the event carries a `String` and this crate has no `Mutation` to
+/// ask -- so the coupling is asserted instead, by the test named for it in
+/// `tests/update.rs`. Rename the kind in the store without it and the release silently
+/// stops firing, and every held submission wedges on a rejection.
+const CREATE_LABEL: &str = "create_label";
+
 /// End every wait for a label the server has just refused to make.
 ///
 /// Two modals wait on a create, and both wedge if the wait is never ended.
+///
+/// Gated on the *kind* and not merely on the subject being a label. A rejected rename or
+/// delete of some other label is not evidence about a create that is still in flight: it
+/// would abandon a wait the server has said nothing about, leaving the user with a label
+/// that did get made and a task that does not carry it -- and, because the combined toast
+/// above only names what was actually released, no word of it either.
 ///
 /// The `l` form's *key* dies: `awaiting` is what stops a second `C-n` queueing a
 /// duplicate while the first create is in flight, so a title left in there makes
@@ -1193,8 +1233,8 @@ fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
 /// failure: the reload the caller queues still brings the survivor into
 /// `model.data.labels`, so it is on screen and can be attached in a second keystroke,
 /// where a dead key and a task nobody can release are neither visible nor recoverable.
-fn release_held_labels(model: &mut Model, subject: Subject) -> Vec<Effect> {
-    if !matches!(subject, Subject::Label(_)) {
+fn release_held_labels(model: &mut Model, subject: Subject, kind: &str) -> Vec<Effect> {
+    if !matches!(subject, Subject::Label(_)) || kind != CREATE_LABEL {
         return Vec::new();
     }
     for modal in &mut model.modals {
@@ -1550,6 +1590,12 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
         }
     }
 
+    // The second call over the same `wanted`, and deliberately not a different question:
+    // it is the same resolution the check at the top of this function ran, re-run because
+    // the answer is needed *here*, after the priority, date and project fields have been
+    // parsed, while the question had to be asked *before* any of that so a refused
+    // submission does not report three unrelated complaints alongside it. Both calls are
+    // pure and read the same pool, so they cannot disagree.
     let (resolved, missing) = resolve_labels(&model.data.labels, &wanted);
     // Reachable only on the resumed run: the first one stopped and asked. What is left
     // here is a label the user declined, or one whose create the server rejected -- in

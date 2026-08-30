@@ -275,6 +275,36 @@ fn the_question_before_a_new_label() {
 }
 
 #[test]
+fn the_question_grows_a_row_per_name_it_cannot_have() {
+    // The box is sized from the list, so a second name must not push the note that says
+    // why it is asking off the bottom -- which is the one thing on screen the user cannot
+    // work out from the task line they just typed.
+    let mut model = fixture((120, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+    );
+    for c in "Ship it *nope *alsonope".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    let drawn = draw(&model);
+    assert!(drawn.contains("nope"), "{drawn}");
+    assert!(drawn.contains("alsonope"), "{drawn}");
+    assert!(drawn.contains("No such labels"), "plural:\n{drawn}");
+    assert!(
+        drawn.contains("every project"),
+        "the reason survives:\n{drawn}"
+    );
+}
+
+#[test]
 fn the_project_picker() {
     let mut model = fixture((120, 40));
     for key in ['g', 'p'] {
