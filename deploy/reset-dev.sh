@@ -19,8 +19,31 @@ run() {
   fi
 }
 
+# Two different failures, because they call for opposite actions and this script once
+# reported them as one. On 2026-08-30 the dev host was still carrying its pre-rename name
+# -- criax-dev -- so $ROOT did not exist, and the message sent a reader towards
+# snapshot-dev.sh, which would have captured a dirty test database as the permanent
+# baseline. A missing directory is a misconfiguration; a missing dump inside a directory
+# that exists is a step not yet run.
+run "test -d $ROOT" || {
+  cat >&2 <<MSG
+$ROOT does not exist on $HOST.
+
+That is a configuration problem, not a missing baseline -- do NOT run snapshot-dev.sh to
+"fix" it: it captures whatever is in the database right now and makes that the state
+every future reset restores to.
+
+Look for where the deployment actually lives (ls /opt/stacks /opt/appdata on $HOST) and
+either point TUI_DO_DEV_ROOT at it or move it to the documented name. deploy/README.md
+carries the rename commands.
+MSG
+  exit 1; }
+
 run "test -f $ROOT/seed.sql" || {
-  echo "no baseline at $ROOT/seed.sql on $HOST -- run snapshot-dev.sh first" >&2; exit 1; }
+  echo "no baseline at $ROOT/seed.sql on $HOST -- run snapshot-dev.sh first, but only" >&2
+  echo "while the database holds a state worth returning to: it captures what is there" >&2
+  echo "now, debris and all." >&2
+  exit 1; }
 
 run "docker stop tui-do-vikunja >/dev/null
      docker exec -i tui-do-vikunja-db psql -U vikunja -d vikunja -q >/dev/null < $ROOT/seed.sql

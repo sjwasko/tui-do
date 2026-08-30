@@ -16,6 +16,11 @@ run() {
   fi
 }
 
+# Whatever is in the database right now becomes what every future reset-dev.sh restores
+# to. Run it on a freshly seeded instance, never after a test session -- a snapshot taken
+# to make a failing reset-dev.sh "work" bakes that session's debris in permanently.
+run "test -d $ROOT" || { echo "$ROOT does not exist on $HOST -- see deploy/README.md" >&2; exit 1; }
+
 run "docker exec tui-do-vikunja-db pg_dump -U vikunja --clean --if-exists vikunja > $ROOT/seed.sql"
 size=$(run "du -h $ROOT/seed.sql | cut -f1")
 printf 'baseline written on %s: %s (%s)\n' "$HOST" "$ROOT/seed.sql" "$size"
