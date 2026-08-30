@@ -3116,6 +3116,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tui-do-smoke"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "serde_json",
+ "tokio",
+ "tui-do-api",
+ "tui-do-core",
+ "tui-do-ui",
+ "wiremock",
+]
+
+[[package]]
 name = "tui-do-ui"
 version = "0.1.0"
 dependencies = [

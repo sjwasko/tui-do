@@ -329,6 +329,22 @@ Still write portably where it is free: paths via `dirs`, never cwd-relative writ
 clipboard, `$EDITOR`) goes behind a small trait with a Linux impl — that trait is the seam
 the macOS port uses later.
 
+## Where a test that spans layers goes
+
+Rule 1 buys purity at a price: `tui-do-ui` cannot see a store and `tui-do-core` cannot see
+a keystroke, so the assertions that matter most have nowhere to live. The UI tests fake the
+store's answers and the store tests fake the user, and *between* them is a seam where a
+message can be produced with arguments nobody agreed on while every test stays green.
+
+`crates/tui-do-smoke` is that seam's home — `publish = false`, no binary, depends on both.
+`Harness` reimplements the effect runtime faithfully but small: same store calls, same
+messages back, and a push deferred until the reload it races has landed, because the real
+runtime's reload is a local read and its push is a round trip. Getting that order wrong is
+not cosmetic — with the push run inline, the label form picked the server's id up through
+`absorb_created` and the F3 smoke passed with the engine's adoption event *deleted*.
+
+What it cannot see is the runtime's own wiring, which is why the manual checks stay.
+
 ## Commands
 
 ```sh
