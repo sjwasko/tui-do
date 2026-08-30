@@ -25,7 +25,8 @@ of them.
 | **D1** | a task shown twice | still unreproduced; see the section itself |
 | **E1–E6** | short windows | **2026-08-28 — all pass** |
 | **F2** | `C-n` creates | **2026-08-30 — pass**, with one finding: no spaces, recorded below |
-| **F1, F3–F7** | making a label | **never driven** — written 2026-08-29, the day the feature landed |
+| **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
+| **F1, F3–F6** | making a label | **never driven** — written 2026-08-29, the day the feature landed |
 
 Part two was driven end to end for the first time on 2026-08-28, on the release binary.
 Two entries failed on the first pass and were fixed the same day — B9, which was
@@ -412,6 +413,17 @@ label from the `l` form, and watch the status line settle on `1 queued (1 failin
 address is unroutable, so the first attempt hangs before it fails. Then
 `test-scripts/restore-config.sh` and let it drain: **one** label on the server, with the
 colour you gave it.
+
+**"Let it drain" can mean waiting five minutes, and the check used to leave that out.**
+A failed entry carries a `next_attempt_at`, and *every* pass skips it until then — the
+timer's, the startup one, and the `r` you press yourself. Restoring the URL does not reach
+the queue, and neither does restarting: driven on 2026-08-30 the entry came due fourteen
+seconds *after* the startup pass had already looked at it, so nothing tried again until
+the five-minute timer came round. For those five minutes the status line said
+`2 queued (1 failing)` and `last_error` still named `10.255.255.1` — the address from the
+last attempt, not the one it would use next. That reads exactly like a wedge and is not
+one. Count the wait before calling it a failure, and remember the queued count is one per
+*mutation*: a task made offline with a label on it is two, not one.
 
 What this cannot reach by hand is the case the read-before-retry exists for — a create
 that reached the server whose *response* was lost. A retry finds its own label with
