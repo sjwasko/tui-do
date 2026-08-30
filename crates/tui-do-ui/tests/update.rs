@@ -1962,6 +1962,30 @@ fn a_rejected_label_create_is_taken_off_the_screen_it_is_still_ticked_on() {
         effects.contains(&Effect::LoadLabels),
         "the label the store rolled back is still in both snapshots: {effects:?}"
     );
+    // And the reload has to actually take it away. Asserting only that the effect was
+    // queued asserts that the right message was sent, not that the wrong state cannot
+    // arise -- and the wrong state is the whole point: a phantom left ticked is queued as
+    // an `AttachLabel` by the user's next Enter, for an id the server has never had.
+    // `LabelsState::refresh` rewrites the labels the form holds and removes none, so the
+    // store's answer is delivered here and the form is asked what it now holds.
+    update(&mut model, Msg::LabelsLoaded(Vec::new()));
+
+    assert!(
+        model.data.labels.is_empty(),
+        "the pool still holds a label the store rolled back"
+    );
+    assert!(
+        label_form(&model).chosen.is_empty(),
+        "the phantom is still ticked, so the next Enter attaches an id no server issued: {:?}",
+        label_form(&model).chosen
+    );
+    assert!(
+        label_form(&model)
+            .labels
+            .iter()
+            .all(|held| held.id != LabelId(-1)),
+        "the phantom is still listed, so the user can tick it again"
+    );
 }
 
 #[test]

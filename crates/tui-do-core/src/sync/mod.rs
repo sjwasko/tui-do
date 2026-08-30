@@ -11,13 +11,20 @@
 //! the one thing this architecture is trying to avoid is code that decides for itself
 //! when to block.
 //!
-//! # A failed push stops the queue rather than skipping past it
+//! # A failed push blocks one subject rather than the whole queue
 //!
 //! Entries are ordered, and later ones assume earlier ones landed -- an edit to a task
-//! the server has not been told about yet cannot be sent. So a transient failure ends
-//! the pass and leaves the rest queued. Only a *rejection* removes an entry, and it
-//! takes everything queued behind it for the same task with it: those changes were built
-//! on a state the server has refused to have.
+//! the server has not been told about yet cannot be sent. That is a contract *within* a
+//! subject, though, and not between subjects, which have no causal relationship. So a
+//! transient failure blocks its own subject and the drain carries on; only a *rejection*
+//! removes an entry, and it takes everything queued behind it for the same subject with
+//! it, because those changes were built on a state the server has refused to have.
+//!
+//! One dependency crosses subjects and both paths have to know it: an `AttachLabel` built
+//! on a `CreateLabel` has the *task* as its subject and carries the provisional label id
+//! by value. A subject filter cannot see it, so [`references`] answers for it -- on the
+//! rejection path, which discards it, and on the blocking path, which holds it back until
+//! the label exists.
 //!
 //! # One entry is one request
 //!
@@ -339,6 +346,19 @@ impl Sync {
         // carry a long backlog, that is the difference between one stuck task and a box
         // that has stopped syncing.
         let mut blocked: std::collections::HashSet<Subject> = std::collections::HashSet::new();
+        // Blocking by subject is not enough for a deferred `CreateLabel`, for exactly the
+        // reason a *rejected* one is not: an `AttachLabel` built on it has the **task** as
+        // its subject, so a same-subject filter cannot see it, it is still due, and it
+        // goes out on this same pass naming a label id no server has ever issued -- which
+        // the server answers 404 or 403, which is a 4xx, which discards the attach *and
+        // every other entry sharing that task's subject*, including an unrelated edit the
+        // user made in the meantime. The create then succeeds, leaving a label attached to
+        // nothing and a task edit that reverted on screen with no message of its own. The
+        // design note this outgrew said "the queue is strictly ordered and a failure stops
+        // it, so the attach cannot outrun the create" -- true until the drain moved to
+        // per-subject blocking.
+        let mut blocked_labels: std::collections::HashSet<LabelId> =
+            std::collections::HashSet::new();
         // Guards against an entry that survives its own successful send, which would
         // otherwise spin this loop against the server forever.
         let mut attempted: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -346,15 +366,35 @@ impl Sync {
 
         loop {
             let pending = self.store.pending(None).await?;
-            let Some(entry) = pending
-                .iter()
-                .find(|queued| {
-                    !attempted.contains(&queued.id)
-                        && !blocked.contains(&queued.mutation.subject())
-                        && queued.is_due(now)
-                })
-                .cloned()
-            else {
+            let mut candidate = None;
+            for queued in &pending {
+                let subject = queued.mutation.subject();
+                if attempted.contains(&queued.id)
+                    || blocked.contains(&subject)
+                    || blocked_labels
+                        .iter()
+                        .any(|label| references(&queued.mutation, *label))
+                {
+                    continue;
+                }
+                if !queued.is_due(now) {
+                    // Not attempted on this pass, and just as much in the way as one that
+                    // was: an entry inside its backoff is an entry the server has not been
+                    // told about, so everything that depends on it waits with it. Without
+                    // this, the very next pass after a `CreateLabel` was deferred -- any
+                    // edit triggers one, and the floor is five seconds -- would skip the
+                    // create as not due and send the attach behind it, which is the whole
+                    // failure the two sets above exist to prevent, reached a pass later.
+                    blocked.insert(subject);
+                    if let Subject::Label(id) = subject {
+                        blocked_labels.insert(id);
+                    }
+                    continue;
+                }
+                candidate = Some(queued.clone());
+                break;
+            }
+            let Some(entry) = candidate else {
                 break;
             };
             attempted.insert(entry.id);
@@ -406,6 +446,13 @@ impl Sync {
                         .defer(entry.id, message.clone(), error.retry_after())
                         .await?;
                     blocked.insert(subject);
+                    // And, for a label, everything that would *send* the id this entry
+                    // was going to define -- which is not the same set as everything
+                    // sharing its subject. See the note where `blocked_labels` is
+                    // declared.
+                    if let Subject::Label(id) = subject {
+                        blocked_labels.insert(id);
+                    }
                     tracing::debug!(%subject, error = %message, "deferring this task's queue");
                     self.emit(SyncEvent::Failed {
                         phase: Phase::Push,
@@ -815,15 +862,23 @@ fn is_permanent(error: &ApiError) -> bool {
     )
 }
 
-/// Whether this mutation would send an id that a rejected `CreateLabel` was going to
-/// define.
+/// Whether this mutation would send an id that a `CreateLabel` was going to define.
 ///
-/// A rejected `CreateLabel` is the one case where "everything queued for the same
-/// subject" is not enough: an `AttachLabel` built on it has the *task* as its subject and
-/// carries the label by value, so a subject filter cannot see it -- and sending it means
-/// asking the server to attach a label id it has never issued. Exhaustive over
-/// [`Mutation`] rather than a wildcard arm, so a new variant fails to compile here rather
-/// than silently answering "does not reference this label".
+/// A `CreateLabel` that did not land is the one case where "everything queued for the
+/// same subject" is not enough: an `AttachLabel` built on it has the *task* as its
+/// subject and carries the label by value, so a subject filter cannot see it -- and
+/// sending it means asking the server to attach a label id it has never issued.
+/// Exhaustive over [`Mutation`] rather than a wildcard arm, so a new variant fails to
+/// compile here rather than silently answering "does not reference this label".
+///
+/// **Both halves of [`Sync::push`] ask this, and for one reason.** A *rejected* create
+/// discards those entries; a *deferred* one blocks them until the create has been retried.
+/// Only the rejection path was wired up at first, so a create that took a 500, a 429 or a
+/// timeout still let its attach go out on the same pass: the attach was a different
+/// subject, was still due, and named a phantom id. The server's 404 or 403 is a 4xx, so
+/// the attach was then rejected *permanently* -- taking every other entry for that task
+/// with it, including edits that had nothing to do with the label -- while the create
+/// eventually succeeded, leaving a label attached to nothing.
 ///
 /// Answers `false` for `CreateTask` and `UpdateTask` even though both carry a `labels`
 /// field that can genuinely hold the rejected id -- `UpdateTask.after.labels` reliably
