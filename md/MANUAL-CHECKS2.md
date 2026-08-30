@@ -336,21 +336,29 @@ here is not "no error appeared". It is the label reaching the task.
 **F4 — `C-e` renames and recolours, from both lists.** Highlight a label in the `l` form
 and press `C-e`; then do the same from `g l`, where the key is advertised in the title
 rather than a footer. Tab moves between Title and Colour, Enter saves, Esc abandons. A
-colour is six hex digits, with or without a leading `#`, and anything else is refused *in
-the form* rather than queued — a server rejection rolls the whole write back, taking the
-rename with it. An empty title is refused the same way.
+colour is a **name** or six hex digits, and anything else is refused *in the form* rather
+than queued — a server rejection rolls the whole write back, taking the rename with it.
+An empty title is refused the same way.
 
-Colours to type, and why these. The hex is the chip's *background* and `Theme::label`
-picks the text from its luminance — black above 0.55, white below — so the pair that
-proves the flip is `e67e22` (0.555, must draw dark on light) and `27ae60` (0.548, must
-draw light on dark), which sit either side of the line by half a percent. `f7e463` is the
-pale yellow the code comment names, white-on-white if the foreground were ever fixed.
-Otherwise: `e05454` red, `f1c40f` yellow, `3498db` blue, `2c5aa0` deep blue.
+**The names, added 2026-08-30 because hex is a bad thing to ask a person for.** The form
+lists all eight on its own bottom row — `red orange yellow green blue purple pink grey` —
+and takes two it does not list: `gray`, which is `grey`, and `none`, which is empty.
+Type `blue` and the chip beside the field turns blue *as you type*, before Enter: the
+name resolves where the drawing can see it, so the preview is the colour that will be
+saved. What goes on the wire is always the hex, because Vikunja stores nothing else —
+check the web UI and you will see `3498db`, not the word.
 
-Three refusals and one acceptance to try in the same visit: `#3498db` is taken and the
-hash trimmed; `f00` is refused, because six digits means six and not a shorthand;
-`gggggg` is refused for not being hex; and an **empty** colour box is legal and means
-"the interface picks one" — that label draws in the accent style, not in black.
+Hex still works, and is the only way to anything outside the eight. Worth typing in the
+same visit: `#3498db`, taken with the hash trimmed; `f00`, refused, because six digits
+means six and not a shorthand; `navy`, refused rather than guessed at, and left in the box
+as typed so the message can be about it; and an **empty** box, which is legal and means
+"let tui-do pick" — that label draws in the accent style, not in black.
+
+One pair is worth typing as hex on purpose. The colour is the chip's *background* and
+`Theme::label` picks the text from its luminance — black above 0.55, white below — so
+`e67e22` (0.555, must draw dark on light) and `27ae60` (0.548, must draw light on dark)
+sit either side of the line by half a percent and are what proves the flip still works.
+They are also `orange` and `green`, so the names reach the same two colours.
 
 Then `Esc` back to the list and press `u`. The label must come back with **both** its old
 title and its old colour, even if you only changed one: a partial body clears what it

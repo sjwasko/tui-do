@@ -20,7 +20,7 @@ use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
 use crate::rows::{self, MeasuredColumn, RowContext};
 use crate::sidebar::{self, SidebarRow};
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 
 /// Draw everything.
 pub fn view(model: &Model, frame: &mut Frame) {
@@ -593,10 +593,13 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         // adding a modal is a compile error until it has been given a size.
         Modal::Search(_) | Modal::Add(_) | Modal::Due(_) => (60, 3),
         Modal::Picker(_) | Modal::Labels(_) => (60, 16),
-        // Two fields and the line that says why the last Enter was refused, plus the
-        // border. The third row is always drawn: it holds the hint when there is no
-        // refusal, so the box does not resize under the user as they type.
-        Modal::LabelEdit(_) => (60, 5),
+        // Two fields, the line that says why the last Enter was refused, the names that
+        // line cannot fit, and the border. Both hint rows are always drawn: one holds the
+        // refusal when there is one, so the box does not resize under the user as they
+        // type, and the other is the palette, which is only useful before a mistake. A
+        // terminal too short for the last row loses the names and keeps the reason,
+        // because `centered` clips from the bottom.
+        Modal::LabelEdit(_) => (60, 6),
         // One row per name the user typed and cannot have, plus the border, a blank line
         // and the row that says what is happening. That row is always drawn -- it holds
         // the reason before the answer and "Creating…" after it -- so the box does not
@@ -1100,6 +1103,22 @@ fn confirm_labels_body(state: &ConfirmLabelsState, frame: &mut Frame, area: Rect
 /// not a colour anybody can read, and the label is about to be worn by every task that
 /// carries it -- so it is shown in the colour it would have, in the same chip style the
 /// list rows use.
+/// The colour names, listed whole or not at all.
+///
+/// A list is only useful if it is the whole list: `red, blue, …` tells a reader there are
+/// others without saying what they are, which is worse than not offering names at all. So
+/// a terminal too narrow for every name gets the sentence instead, and the row above it
+/// carries the rule either way. Measured against the very string that gets rendered, so a
+/// name added to [`theme::COLOUR_NAMES`] cannot leave the choice sized for the old list.
+fn colour_names(width: u16) -> String {
+    let names: Vec<&str> = theme::COLOUR_NAMES.iter().map(|(name, _)| *name).collect();
+    let listed = format!(" {}", names.join(" "));
+    if rows::display_width(&listed) <= width {
+        return listed;
+    }
+    " any of eight colour names".to_string()
+}
+
 fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme: Theme) {
     /// Room for the wider of the two field names plus its gap.
     const GUTTER: u16 = 10;
@@ -1153,10 +1172,14 @@ fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme:
     lines.push(match &state.error {
         Some(why) => Line::from(Span::styled(format!(" {why}"), theme.error())),
         None => Line::from(Span::styled(
-            " six hex digits, or empty for the interface's own".to_string(),
+            " a name or six hex digits, or empty to let tui-do pick".to_string(),
             theme.muted(),
         )),
     });
+    lines.push(Line::from(Span::styled(
+        colour_names(area.width),
+        theme.muted(),
+    )));
     frame.render_widget(Paragraph::new(lines), area);
     // After the widget, so the cursor is not painted over by it.
     if let Some((x, y)) = caret {

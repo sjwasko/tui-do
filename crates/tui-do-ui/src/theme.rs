@@ -249,6 +249,60 @@ impl Theme {
     }
 }
 
+/// The colour names the label form takes, and the six digits each one is on the wire.
+///
+/// Vikunja stores hex and nothing else, so these are a *typing* convenience and never a
+/// storage format: a name is resolved before the value leaves the form, and what reaches
+/// the server, the store and the undo stack is the code on the right. Nothing downstream
+/// knows a name was involved, which is what keeps a label made here and one made in the
+/// web UI the same object.
+///
+/// Eight, deliberately. The point is to be shorter than the list of colours a person can
+/// hold in their head, not to be a palette: a ninth entry is another name to remember and
+/// another row the hint cannot fit. Anything outside them is still typeable as hex.
+///
+/// The codes are the flat-UI set, picked to be distinguishable at a glance in a terminal
+/// and to straddle [`Theme::label`]'s black-on-light threshold sensibly -- `yellow` and
+/// `orange` take dark text, the rest light.
+pub const COLOUR_NAMES: [(&str, &str); 8] = [
+    ("red", "e05454"),
+    ("orange", "e67e22"),
+    ("yellow", "f1c40f"),
+    ("green", "27ae60"),
+    ("blue", "3498db"),
+    ("purple", "9b59b6"),
+    ("pink", "e84393"),
+    ("grey", "95a5a6"),
+];
+
+/// The hex `name` stands for, if it stands for one.
+///
+/// Case-insensitive and ASCII-only, the same fold the rest of the codebase uses for label
+/// titles -- one rule about what counts as the same word, not two.
+///
+/// Two names are not in [`COLOUR_NAMES`] on purpose. `gray` is the same colour as `grey`
+/// and a spelling nobody should have to guess, and `none` answers the empty string, which
+/// is how "let the interface pick" is already spelled everywhere else. Neither is listed
+/// in the hint, because a list is for choosing from and these are for forgiving.
+#[must_use]
+pub fn named_colour(name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    if name.eq_ignore_ascii_case("none") {
+        return Some("");
+    }
+    // Resolved *through* `grey` rather than carrying a second copy of the code, so the
+    // two spellings cannot be edited apart.
+    let name = if name.eq_ignore_ascii_case("gray") {
+        "grey"
+    } else {
+        name
+    };
+    COLOUR_NAMES
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(name))
+        .map(|(_, hex)| *hex)
+}
+
 /// Six hex digits, with or without the leading `#`. Vikunja omits it.
 #[must_use]
 pub fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {

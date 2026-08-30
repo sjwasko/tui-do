@@ -409,7 +409,37 @@ fn the_label_edit_form_shows_the_colour_it_is_about_to_save() {
         Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
     );
     let drawn = draw(&model);
-    assert!(drawn.contains("A colour is six hex digits"), "{drawn}");
+    assert!(
+        drawn.contains("A colour is a name like blue"),
+        "the refusal names both routes out of it:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("red orange yellow"),
+        "and the names stay on screen through the refusal, which is when they are most \
+         wanted:\n{drawn}"
+    );
+
+    // Typing one of them clears it, and the chip beside the field goes blue before the
+    // form is saved -- the resolution happens where the drawing can see it.
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+    );
+    for c in "blue".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    assert!(
+        !draw(&model).contains("A colour is"),
+        "a name is not a refusal:\n{}",
+        draw(&model)
+    );
 }
 
 #[test]

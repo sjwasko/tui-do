@@ -684,6 +684,15 @@ impl ModalView for EditState {
 /// The highest priority Vikunja has.
 pub const MAX_PRIORITY: i64 = 5;
 
+/// Six hex digits, which is the only colour Vikunja stores.
+///
+/// Asked through [`crate::theme::parse_hex`] rather than re-spelled here, so the form's
+/// idea of a colour and the renderer's cannot come apart -- a colour the form accepted
+/// and the chip then drew in the accent fallback would be a lie told in two places.
+fn is_hex(text: &str) -> bool {
+    crate::theme::parse_hex(text).is_some()
+}
+
 /// Whether a priority field may hold `text` — empty, `0`–`5`, or `00`–`05`.
 ///
 /// The field is checked *before* the keystroke lands rather than after, so an invalid
@@ -1186,15 +1195,32 @@ impl LabelEditState {
         }
     }
 
-    /// The colour as it would go on the wire: trimmed, and without the leading `#`.
+    /// The colour as it would go on the wire: a name resolved, or trimmed and without the
+    /// leading `#`.
     ///
     /// Vikunja stores six bare hex digits, but `#4287f5` is what a colour picker puts on
     /// the clipboard and [`crate::theme::parse_hex`] already tolerates it -- so the form
     /// takes the hash and drops it rather than refusing a paste for a character the rest
     /// of the codebase ignores.
+    ///
+    /// A name is resolved *here*, at the one point the field's text becomes a value, so
+    /// there is exactly one of them. Everything else in this form asks this question and
+    /// gets hex back: the validity check, the live chip beside the field, and the
+    /// submission. Resolving it in the submission instead would have left the chip
+    /// showing the accent fallback while the user typed a colour that was going to work,
+    /// and the validity check calling `blue` a refusal.
+    ///
+    /// Hex still wins where the two could disagree, which they cannot today -- no colour
+    /// name is six hex digits -- but `beaded` and `decade` are the shape of word that
+    /// could join the list one day, and they are already valid colours.
     #[must_use]
     pub fn colour(&self) -> &str {
-        self.hex.value().trim().trim_start_matches('#')
+        let typed = self.hex.value().trim();
+        let bare = typed.trim_start_matches('#');
+        if is_hex(bare) {
+            return bare;
+        }
+        crate::theme::named_colour(typed).unwrap_or(bare)
     }
 
     /// The title as it would go on the wire.
@@ -1205,10 +1231,14 @@ impl LabelEditState {
 
     /// Whether the colour is something Vikunja will take: six hex digits, or empty for
     /// "the interface picks one".
+    ///
+    /// Asked of [`Self::colour`] and not of the field, so a name that resolved is valid
+    /// by the same rule as the hex it resolved to, and an unknown word fails as the word
+    /// it is.
     #[must_use]
     pub fn colour_is_valid(&self) -> bool {
         let hex = self.colour();
-        hex.is_empty() || (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+        hex.is_empty() || is_hex(hex)
     }
 
     /// Why this form cannot be sent as it stands, if it cannot.
@@ -1225,7 +1255,7 @@ impl LabelEditState {
             return Some("A label needs a title".to_string());
         }
         if !self.colour_is_valid() {
-            return Some("A colour is six hex digits, like 4287f5 — or empty".to_string());
+            return Some("A colour is a name like blue, six hex digits, or empty".to_string());
         }
         None
     }
@@ -1979,6 +2009,64 @@ mod tests {
         let mut abandoned = LabelEditState::new(a_coloured_label(41, "next", "4287f5"));
         abandoned.handle(key('x'));
         assert_eq!(abandoned.handle(code(KeyCode::Esc)), Outcome::Dismiss);
+    }
+
+    #[test]
+    fn a_colour_name_resolves_before_anything_downstream_sees_it() {
+        // Vikunja stores hex and nothing else, so a name is a way of typing and never a
+        // way of storing. What leaves the form is the code, or the field would put the
+        // word `blue` in `hex_color` and every chip drawn from it would fall back to the
+        // accent -- the label would come out the same colour as an uncoloured one.
+        let mut form = LabelEditState::new(a_coloured_label(41, "next", ""));
+        form.handle(code(KeyCode::Tab));
+        for c in "blue".chars() {
+            form.handle(key(c));
+        }
+        assert_eq!(form.colour(), "3498db");
+        assert!(form.colour_is_valid(), "a name is not a refusal");
+        assert_eq!(
+            form.handle(code(KeyCode::Enter)),
+            Outcome::Submit(Submission::EditedLabel {
+                before: Box::new(a_coloured_label(41, "next", "")),
+                title: "next".to_string(),
+                hex_color: "3498db".to_string(),
+            }),
+            "the wire carries the code, not the word"
+        );
+    }
+
+    #[test]
+    fn a_colour_name_is_forgiving_about_case_spelling_and_nothing_else() {
+        let named = |typed: &str| {
+            let mut form = LabelEditState::new(a_coloured_label(41, "next", ""));
+            form.handle(code(KeyCode::Tab));
+            for c in typed.chars() {
+                form.handle(key(c));
+            }
+            (form.colour().to_string(), form.colour_is_valid())
+        };
+
+        assert_eq!(named("BLUE").0, "3498db", "case folds, as titles do");
+        assert_eq!(
+            named("gray").0,
+            named("grey").0,
+            "one colour, two spellings"
+        );
+        assert_eq!(named("none").0, "", "the word for what empty already means");
+        assert_eq!(
+            named("#3498db").0,
+            "3498db",
+            "hex still wins where it is hex"
+        );
+
+        // And a word that is not one of them is a refusal rather than a silent fallback
+        // to some nearby colour: guessing at `navy` would write a colour nobody chose.
+        let (colour, valid) = named("navy");
+        assert_eq!(
+            colour, "navy",
+            "kept as typed, so the message can be about it"
+        );
+        assert!(!valid);
     }
 
     #[test]
