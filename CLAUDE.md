@@ -79,7 +79,7 @@ the sixth (`upsert_tasks_from_server`'s pending check) and seventh (`retain_proj
 task cascade) came out of review.
 
 **A `CreateLabel` that has already failed reads before it writes.** `is_already_done` has
-arms for a replayed attach, detach and label delete, and deliberately **no arm for a
+arms for a replayed attach, detach and label rename, and deliberately **no arm for a
 create**: a label title is not unique and `PUT /labels` ignores the body's `id`, so a
 replay answers `201` and a second label with nothing in the response to tell it from the
 first (measured 2026-08-29, above). So a retry — gated on `entry.is_failing()`, because a
