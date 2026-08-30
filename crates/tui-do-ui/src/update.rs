@@ -17,9 +17,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, DueState, EditDraft, EditState, HelpState, LabelEditState, LabelsState, Modal,
-    Outcome, Pick, PickerKind, PickerState, PriorityState, QuickActionsState, SearchState,
-    Submission, TextInput,
+    Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
+    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, PriorityState,
+    QuickActionsState, SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast};
 use crate::msg::Msg;
@@ -107,6 +107,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                             }
                         }
                     }
+                    // The other half of the same gap, from the other surface that
+                    // creates a label: this one is holding a whole submission until the
+                    // labels it named exist, and this snapshot is where it finds out
+                    // they do. `resume_confirmed` below is what then runs it.
+                    Modal::ConfirmLabels(state) => state.absorb_created(&model.data.labels),
                     // Two that hold a label and are deliberately left as they are:
                     // `LabelEdit`'s copy is the `before` half of a three-way merge and
                     // its fields are what the user is part-way through typing, so a
@@ -124,7 +129,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                     | Modal::QuickActions(_) => {}
                 }
             }
-            Vec::new()
+            resume_confirmed(model)
         }
         Msg::CountsLoaded(counts) => {
             model.data.counts = counts;
@@ -196,6 +201,11 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             kind,
             message,
         } => {
+            // Before the toast below, deliberately. A submission held open waiting for a
+            // label whose create has just been rejected has to be released, and releasing
+            // it toasts too -- so it goes first and the rejection, which is the news the
+            // user must see, is the message left standing.
+            let released = release_held_labels(model, subject);
             // The one event the user must see: their edit has just vanished from the
             // screen and they are owed an explanation.
             model.toast(Toast::error(format!("{kind} rejected: {message}")));
@@ -228,27 +238,7 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             effects.push(Effect::LoadCounts);
             effects.push(Effect::LoadLabels);
             effects.push(Effect::LoadPending);
-            // And the form's *wait* has to end, or the key dies. `awaiting` is what stops
-            // a second `C-n` queueing a duplicate while the first create is in flight; a
-            // rejection means that create is never coming back, so a title left in there
-            // makes `creatable` answer `None` for the rest of the form's life and `C-n`
-            // silently does nothing. A user whose account cannot create labels would see
-            // the key work once and then die with no explanation.
-            //
-            // All of it, not the one that was rejected: the event names
-            // `Subject::Label(id)`, and the form never learned any id -- that is the whole
-            // reason `awaiting` holds titles. With two creates in flight and one rejected,
-            // the survivor loses its automatic tick, which is the cost of a bounded
-            // answer. It is the smaller failure: the reload above still brings it into
-            // `model.data.labels`, so it is on screen and `creatable` is right about it,
-            // where a dead key is neither visible nor recoverable.
-            if matches!(subject, Subject::Label(_)) {
-                for modal in &mut model.modals {
-                    if let Modal::Labels(state) = modal {
-                        state.awaiting.clear();
-                    }
-                }
-            }
+            effects.extend(released);
             effects
         }
         SyncEvent::Adopted {
@@ -328,12 +318,14 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             model.query.search = (!text.trim().is_empty()).then(|| text.trim().to_string());
             reload_tasks(model)
         }
-        Submission::Add(text) => add_task(model, &text),
-        Submission::Edited(draft) => apply_edit(model, *draft),
+        Submission::Add(text) => add_task(model, &text, Unknown::Ask),
+        Submission::Edited(draft) => apply_edit(model, *draft, Unknown::Ask),
         Submission::Priority(value) => set_priority(model, value),
         Submission::Due(text) => set_due(model, &text),
         Submission::Labels(chosen) => set_labels(model, &chosen),
         Submission::CreateLabel(title) => create_label(model, title),
+        Submission::CreateLabels(titles) => create_labels(model, titles),
+        Submission::WithoutLabels(pending) => resume(model, *pending),
         Submission::EditLabel(id) => open_label_form(model, id),
         Submission::EditedLabel {
             before,
@@ -912,8 +904,11 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
 pub struct QuickAdd {
     /// The task itself.
     pub task: Task,
-    /// Labels named that do not exist. Creating one is its own mutation kind, which
-    /// Phase 4 does not have, so they are reported rather than silently dropped.
+    /// Labels named that do not exist.
+    ///
+    /// Reported rather than created, because the caller decides what that means: the
+    /// interface stops and asks (see [`ConfirmLabelsState`]), since the pool is global to
+    /// every project and a typo in a task line would pollute completion everywhere.
     pub unknown_labels: Vec<String>,
     /// More than one project answers to the name that was used.
     ///
@@ -984,17 +979,6 @@ fn build_task(parsed: &quickadd::Parsed, project: ProjectId, labels: Vec<Label>)
     task
 }
 
-/// Turn a filled-in edit form into mutations.
-///
-/// The form hands over text and nothing else. What a project name, a label list or a date
-/// means depends on what the model knows, so it is decided here -- against the same
-/// helpers the quick-add prompt uses, so `+Legal` in a new task and `Legal` in this form
-/// cannot come to different conclusions.
-///
-/// The task write and the label changes are separate mutations because the server treats
-/// them separately: labels are attached and detached through their own endpoints and a
-/// task write ignores the body's `labels`. That means a form that changed both is two or
-/// three entries in the undo stack rather than one, which is honest about what was sent.
 /// Change the selected task through `change`, and toast `told` when it changed anything.
 ///
 /// Every quick key ends here rather than building its own mutation: the `before`/`after`
@@ -1187,6 +1171,131 @@ fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
     effects
 }
 
+/// End every wait for a label the server has just refused to make.
+///
+/// Two modals wait on a create, and both wedge if the wait is never ended.
+///
+/// The `l` form's *key* dies: `awaiting` is what stops a second `C-n` queueing a
+/// duplicate while the first create is in flight, so a title left in there makes
+/// `creatable` answer `None` for the rest of the form's life and `C-n` silently does
+/// nothing. A user whose account cannot create labels would see the key work once and
+/// then die with no explanation.
+///
+/// The question is worse: it is holding a whole task or edit the user has already
+/// submitted, and there is no key at all that would release it -- `y` is refused while a
+/// create is outstanding, precisely so a second one is not queued. So it gives up and the
+/// submission runs without the label, which is the same thing declining would have done.
+///
+/// *All* of them, not the one that was rejected: the event names `Subject::Label(id)`, and
+/// neither modal ever learned any id -- that is the whole reason both hold titles. With
+/// two creates in flight and one rejected, the survivor loses its automatic tick and the
+/// held task goes without it, which is the cost of a bounded answer. It is the smaller
+/// failure: the reload the caller queues still brings the survivor into
+/// `model.data.labels`, so it is on screen and can be attached in a second keystroke,
+/// where a dead key and a task nobody can release are neither visible nor recoverable.
+fn release_held_labels(model: &mut Model, subject: Subject) -> Vec<Effect> {
+    if !matches!(subject, Subject::Label(_)) {
+        return Vec::new();
+    }
+    for modal in &mut model.modals {
+        match modal {
+            Modal::Labels(state) => state.awaiting.clear(),
+            Modal::ConfirmLabels(state) => state.give_up(),
+            // Nothing else waits on a create. Listed rather than wildcarded so a modal
+            // that learns to has to come back here and say what a refusal does to it.
+            Modal::Help(_)
+            | Modal::Search(_)
+            | Modal::Add(_)
+            | Modal::Picker(_)
+            | Modal::Edit(_)
+            | Modal::Priority(_)
+            | Modal::Due(_)
+            | Modal::LabelEdit(_)
+            | Modal::QuickActions(_) => {}
+        }
+    }
+    resume_confirmed(model)
+}
+
+/// Queue every label a task line asked for and does not have.
+///
+/// One `CreateLabel` each, and they go in *before* the submission that names them: the
+/// held task or edit is queued only once [`Msg::LabelsLoaded`] has named them all, so
+/// the write that carries a label id can never outrun the write that makes the label.
+/// That ordering is what lets `adopt_label` retarget what is queued behind it when the
+/// server assigns the real id.
+///
+/// No ids here, for the reason [`create_label`] gives at length: `Store::queue` allocates
+/// the provisional one inside its own transaction, so the reload is the only route back.
+fn create_labels(model: &mut Model, titles: Vec<String>) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    for title in &titles {
+        effects.extend(edit(
+            model,
+            Mutation::CreateLabel {
+                label: Box::new(Label {
+                    title: title.clone(),
+                    ..Label::default()
+                }),
+            },
+        ));
+    }
+    model.toast(Toast::info(format!(
+        "Creating label{} {}",
+        plural(titles.len()),
+        truncated(&titles.join(", "))
+    )));
+    effects.push(Effect::LoadLabels);
+    effects
+}
+
+/// Run a submission that was waiting on an answer about its labels.
+///
+/// [`Unknown::Report`] on both arms: the question has been asked, and asking it a second
+/// time over a label the user declined -- or one the server has just rejected -- would be
+/// a loop with no way out of it.
+fn resume(model: &mut Model, pending: Pending) -> Vec<Effect> {
+    match pending {
+        Pending::Add(text) => add_task(model, &text, Unknown::Report),
+        Pending::Edit(draft) => apply_edit(model, *draft, Unknown::Report),
+    }
+}
+
+/// Run a held submission whose labels have all arrived, if one has.
+///
+/// Called from the two places that can end a wait: the reload that names a created label,
+/// and the rejection that says one is never coming. By position rather than off the top of
+/// the stack, because nothing stops another modal being opened over the question -- and
+/// the answer belongs to the submission that asked it, not to whatever is in front.
+fn resume_confirmed(model: &mut Model) -> Vec<Effect> {
+    let Some(at) = model
+        .modals
+        .iter()
+        .position(|modal| matches!(modal, Modal::ConfirmLabels(state) if state.ready()))
+    else {
+        return Vec::new();
+    };
+    let Modal::ConfirmLabels(state) = model.modals.remove(at) else {
+        // Unreachable: `position` matched on the variant. Answered rather than
+        // `unwrap`ped because the workspace lints refuse one in production code.
+        return Vec::new();
+    };
+    resume(model, state.pending)
+}
+
+/// The label names an edit form's Labels field asks for.
+///
+/// Comma-separated and trimmed, and empty entries dropped so a trailing comma is not a
+/// label called "". Shared by the resolution and the question so the two cannot disagree
+/// about what was typed.
+fn label_names(field: &str) -> Vec<String> {
+    field
+        .split(',')
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 /// Open the label form over `id`, from whichever list asked.
 ///
 /// Both surfaces that list labels send this, so the form they open is one form: a label
@@ -1363,16 +1472,47 @@ fn run_quick_action(model: &mut Model, index: usize) -> Vec<Effect> {
     }
 }
 
-fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
+/// Turn a filled-in edit form into mutations.
+///
+/// The form hands over text and nothing else. What a project name, a label list or a date
+/// means depends on what the model knows, so it is decided here -- against the same
+/// helpers the quick-add prompt uses, so `+Legal` in a new task and `Legal` in this form
+/// cannot come to different conclusions.
+///
+/// The task write and the label changes are separate mutations because the server treats
+/// them separately: labels are attached and detached through their own endpoints and a
+/// task write ignores the body's `labels`. That means a form that changed both is two or
+/// three entries in the undo stack rather than one, which is honest about what was sent.
+///
+/// The Labels field resolves `*name`s the same way quick-add does, so it asks the same
+/// question about one that does not exist: the pool it would be added to is the same
+/// global pool, and a typo in this field is as permanent as a typo in a task line.
+///
+/// Asked *after* the title check and before anything is queued, so an empty title is
+/// still refused first — a question about a label the user cannot save anyway is a
+/// question that wastes their answer.
+fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effect> {
+    if draft.title.trim().is_empty() {
+        model.toast(Toast::error("A task needs a title"));
+        return Vec::new();
+    }
+    let wanted = label_names(&draft.labels);
+    let (_, missing) = resolve_labels(&model.data.labels, &wanted);
+    if unknown == Unknown::Ask && !missing.is_empty() {
+        model
+            .modals
+            .push(Modal::ConfirmLabels(ConfirmLabelsState::new(
+                missing,
+                Pending::Edit(Box::new(draft)),
+            )));
+        return Vec::new();
+    }
+
     let mut notes: Vec<String> = Vec::new();
     let before = *draft.before;
     let mut after = before.clone();
 
     after.title = draft.title.trim().to_string();
-    if after.title.is_empty() {
-        model.toast(Toast::error("A task needs a title"));
-        return Vec::new();
-    }
     after.description = draft.description;
 
     match draft.priority.as_str() {
@@ -1410,18 +1550,12 @@ fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
         }
     }
 
-    let wanted: Vec<String> = draft
-        .labels
-        .split(',')
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .collect();
-    let (resolved, unknown) = resolve_labels(&model.data.labels, &wanted);
-    if !unknown.is_empty() {
-        notes.push(format!(
-            "No label called {} -- tui-do cannot create labels yet",
-            unknown.join(", ")
-        ));
+    let (resolved, missing) = resolve_labels(&model.data.labels, &wanted);
+    // Reachable only on the resumed run: the first one stopped and asked. What is left
+    // here is a label the user declined, or one whose create the server rejected -- in
+    // both cases they have already been told, and this says what it cost them.
+    if !missing.is_empty() {
+        notes.push(format!("No label called {}", missing.join(", ")));
     }
 
     let mut effects = Vec::new();
@@ -1494,11 +1628,33 @@ fn apply_edit(model: &mut Model, draft: EditDraft) -> Vec<Effect> {
     effects
 }
 
+/// What an unknown `*label` means at this point in the flow.
+///
+/// The same submission is run twice — once when it arrives, and again when the question
+/// it raised has been answered — and the difference between the two runs is only this.
+/// A second code path that built the write without asking would be a second chance to
+/// build it differently from the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unknown {
+    /// Stop and ask whether to create it. What a submission does when it first arrives.
+    Ask,
+    /// Leave it off and say so in the toast. What resuming does, so a question that has
+    /// been answered is never asked twice — including when the answer was yes and the
+    /// create was then rejected, which is the loop this exists to close.
+    Report,
+}
+
 /// Turn quick-add text into a task, and queue it.
 ///
 /// The parser is `tui-do-core`'s, the same one `tui-do add` uses, so the syntax cannot mean
 /// two things depending on where it was typed.
-fn add_task(model: &mut Model, text: &str) -> Vec<Effect> {
+///
+/// An unknown `*label` stops here rather than being dropped with a note. Vikunja's label
+/// pool is global across every project, so a typo in a task line becomes a permanent
+/// entry that pollutes completion everywhere — see [`ConfirmLabelsState`]. Nothing is
+/// queued and nothing is put on screen until the question is answered, because a task
+/// created first and labelled second would be half done if the answer were no.
+fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
     let parsed = quickadd::parse(text, &model.now);
     if parsed.title.trim().is_empty() {
         model.toast(Toast::info("Nothing to add"));
@@ -1522,6 +1678,16 @@ fn add_task(model: &mut Model, text: &str) -> Vec<Effect> {
         }));
         return Vec::new();
     };
+
+    if unknown == Unknown::Ask && !built.unknown_labels.is_empty() {
+        model
+            .modals
+            .push(Modal::ConfirmLabels(ConfirmLabelsState::new(
+                built.unknown_labels,
+                Pending::Add(text.to_string()),
+            )));
+        return Vec::new();
+    }
 
     let title = built.task.title.clone();
     let project = model
@@ -1837,6 +2003,24 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
             // and the id it is holding is what its `EditedLabel` names. Left at the
             // provisional, the rename would queue against `/labels/-1`.
             Modal::LabelEdit(state) => swap(&mut state.label.id),
+            // The question itself holds titles and never an id -- that is the whole
+            // reason it holds titles -- and the names it is waiting on are re-resolved
+            // against `model.data.labels`, renumbered above, at the moment it resumes.
+            //
+            // What it is *sitting on* is another matter, and the one this arm exists for.
+            // A held `EditDraft` carries the task whole as `before`, exactly as
+            // `Modal::Edit` does above and for the same reason -- it is what `apply_edit`
+            // computes its attach and detach sets against. Left at the provisional, the
+            // resumed save detaches the label the server has just named and attaches it
+            // again under an id that no longer exists. Held quick-add text carries no id
+            // at all.
+            Modal::ConfirmLabels(state) => {
+                if let Pending::Edit(draft) = &mut state.pending {
+                    for label in &mut draft.before.labels {
+                        swap(&mut label.id);
+                    }
+                }
+            }
             // Nothing else holds a label id: help and the quick-action menu are drawn
             // from the keymap and the config, search and add are text, and the priority
             // and due fields carry one value each. Listed rather than wildcarded so a
@@ -1988,9 +2172,15 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                     //   surfaces that open one are reached from the task screen, which
                     //   `Edit` covers. Its own `labels` field is *names* the user typed
                     //   anyway, resolved against `model.data.labels` -- rewritten above.
+                    // * `ConfirmLabels` is the same story once more removed: the titles
+                    //   it is waiting on are matched against the pool, rewritten above,
+                    //   and a held `EditDraft` carries a task whose labels `apply_edit`
+                    //   reads by *id*, never by title. Its ids do move, which is why
+                    //   `adopt_label` has an arm for it and this does not.
                     //
                     // The rest hold no label at all.
-                    Modal::LabelEdit(_)
+                    Modal::ConfirmLabels(_)
+                    | Modal::LabelEdit(_)
                     | Modal::Help(_)
                     | Modal::Search(_)
                     | Modal::Add(_)

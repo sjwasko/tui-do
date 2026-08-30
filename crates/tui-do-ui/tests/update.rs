@@ -714,12 +714,16 @@ fn a_task_with_no_project_named_lands_where_you_are_looking() {
 
 #[test]
 fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
+    // It is asked about first now — see `an_unknown_label_in_quick_add_asks_before_it_
+    // creates` — but the answer "no" still has to land the task and still has to say what
+    // was left off it, which is what this test has always been about.
     let mut model = loaded();
     press(&mut model, 'a');
     for c in "Thing *nosuchlabel".chars() {
         press(&mut model, c);
     }
-    let effects = press_code(&mut model, KeyCode::Enter);
+    press_code(&mut model, KeyCode::Enter);
+    let effects = press(&mut model, 'n');
     match applied(&effects).expect("the task was still created") {
         Mutation::CreateTask { task } => assert!(task.labels.is_empty()),
         other => panic!("wrong mutation: {other:?}"),
@@ -3325,4 +3329,284 @@ fn undoing_a_label_rename_renames_both_copies_of_the_label() {
     // wording this arm used to have, and it reads as a fragment beside its neighbours.
     let toast = model.status.toast.as_ref().expect("the user is told");
     assert_eq!(toast.text, "Undone — reverted label next");
+}
+
+/// The question a quick-add asks about a label nobody has made yet, or a panic naming
+/// what is on the stack instead.
+fn confirmation(model: &Model) -> &tui_do_ui::modal::ConfirmLabelsState {
+    match model.modals.last() {
+        Some(Modal::ConfirmLabels(state)) => state,
+        other => panic!("nothing is being asked: {other:?}"),
+    }
+}
+
+/// A model holding one label, with `a` typed into the quick-add prompt and submitted.
+fn asked_about_waiting() -> (Model, Vec<Effect>) {
+    let mut model = loaded();
+    update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
+    press(&mut model, 'a');
+    for c in "Call the VA *urgent *waiting".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    (model, effects)
+}
+
+#[test]
+fn an_unknown_label_in_quick_add_asks_before_it_creates() {
+    // The whole point of the modal: the label pool is global to every project, so a typo
+    // in a task line would pollute completion everywhere, forever. The web UI creates it
+    // silently and that is deliberately not what happens here.
+    let (model, effects) = asked_about_waiting();
+    assert!(
+        all_applied(&effects).is_empty(),
+        "the task waits behind the answer -- creating it and then attaching a label the \
+         user rejected would leave it half done: {effects:?}"
+    );
+    assert_eq!(confirmation(&model).unknown, vec!["waiting".to_string()]);
+    assert!(
+        model
+            .data
+            .tasks
+            .iter()
+            .all(|task| task.title != "Call the VA"),
+        "nothing optimistic either, or Esc would leave a row nobody queued"
+    );
+}
+
+#[test]
+fn declining_adds_the_task_without_the_label() {
+    let (mut model, _) = asked_about_waiting();
+    let effects = press(&mut model, 'n');
+
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => {
+            assert_eq!(task.title, "Call the VA");
+            assert_eq!(
+                task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+                vec![LabelId(4)],
+                "the label that does exist still lands"
+            );
+        }
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty(), "the question is answered");
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("waiting"), "{}", toast.text);
+}
+
+#[test]
+fn accepting_creates_the_label_first_and_the_task_behind_it() {
+    // Order is the contract: the create is queued first so the task naming the label
+    // cannot outrun it, and so adoption can retarget what is queued behind it.
+    let (mut model, _) = asked_about_waiting();
+    let effects = press(&mut model, 'y');
+
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateLabel { label }] => {
+            assert_eq!(label.title, "waiting");
+            assert_eq!(
+                label.id,
+                LabelId(0),
+                "the store allocates the provisional id, not the interface"
+            );
+        }
+        other => panic!("the create is queued alone, and first: {other:?}"),
+    }
+    assert!(
+        effects.contains(&Effect::LoadLabels),
+        "without the reload the task never learns the id: {effects:?}"
+    );
+    assert!(
+        matches!(model.modals.last(), Some(Modal::ConfirmLabels(_))),
+        "the box stays up while the label is being made"
+    );
+
+    // The store applied the create as it queued it, so the reload names the provisional.
+    let effects = update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(-1, "waiting")]),
+    );
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => assert_eq!(
+            task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![LabelId(4), LabelId(-1)],
+            "the task carries the label the user just agreed to"
+        ),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty(), "and the box is gone");
+}
+
+#[test]
+fn the_task_waits_for_the_label_it_asked_for_rather_than_a_stale_snapshot() {
+    // The runtime spawns every effect on its own task, so the reload the create asked for
+    // races the write and can answer from before it. Resuming on that answer would queue
+    // the task without the label the user had just said yes to.
+    let (mut model, _) = asked_about_waiting();
+    press(&mut model, 'y');
+    let effects = update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
+    assert!(
+        all_applied(&effects).is_empty(),
+        "nothing to resume on yet: {effects:?}"
+    );
+    assert!(matches!(model.modals.last(), Some(Modal::ConfirmLabels(_))));
+}
+
+#[test]
+fn a_second_yes_does_not_queue_the_label_twice() {
+    // A label title is not unique, so two creates are two labels and nothing in the
+    // response can tell them apart afterwards.
+    let (mut model, _) = asked_about_waiting();
+    press(&mut model, 'y');
+    let effects = press(&mut model, 'y');
+    assert!(all_applied(&effects).is_empty(), "{effects:?}");
+}
+
+#[test]
+fn a_rejected_label_create_does_not_wedge_the_task_that_asked_for_it() {
+    // `awaiting` is what stops a second yes queueing a duplicate. A rejection means the
+    // label is never coming back, so a title left in there holds the task the user was
+    // adding on screen forever, with no key that would ever release it.
+    let (mut model, _) = asked_about_waiting();
+    press(&mut model, 'y');
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(-1)),
+            kind: "create label".to_string(),
+            message: "nope".to_string(),
+        }),
+    );
+
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => assert_eq!(
+            task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![LabelId(4)],
+            "the label that failed is left off; the rest of the task is not lost"
+        ),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty(), "and nothing is left waiting");
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(
+        toast.text.contains("rejected"),
+        "the rejection is the news, not the note about the label being left off: {}",
+        toast.text
+    );
+}
+
+#[test]
+fn escaping_the_question_still_adds_the_task() {
+    // Esc means "back out" everywhere else, and here there is nothing to back out to:
+    // the prompt that held the text has already closed. So it answers the question the
+    // safe way rather than throwing away what the user typed.
+    let (mut model, _) = asked_about_waiting();
+    let effects = press_code(&mut model, KeyCode::Esc);
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA"),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty());
+}
+
+#[test]
+fn the_edit_form_asks_about_a_new_label_too() {
+    // The same question from the other surface that resolves `*label` names, because a
+    // typo in the Labels field pollutes the same global pool.
+    let mut model = with_labels(vec![label(4, "urgent")], Vec::new());
+    press(&mut model, 'e');
+    for _ in 0..5 {
+        press_code(&mut model, KeyCode::Tab);
+    }
+    for c in "waiting".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_ctrl(&mut model, 's');
+    assert!(all_applied(&effects).is_empty(), "{effects:?}");
+    assert_eq!(confirmation(&model).unknown, vec!["waiting".to_string()]);
+
+    press(&mut model, 'y');
+    let effects = update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(-1, "waiting")]),
+    );
+    // The task write carries the label only so the row on screen looks right; the attach
+    // behind it is what actually puts the label on, because labels do not travel in the
+    // task body.
+    match all_applied(&effects).as_slice() {
+        [Mutation::UpdateTask { .. }, Mutation::AttachLabel { task, label }] => {
+            assert_eq!(*task, TaskId(1));
+            assert_eq!(
+                label.id,
+                LabelId(-1),
+                "the id the store gave the label it just made"
+            );
+        }
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty());
+}
+
+#[test]
+fn an_adoption_reaches_the_edit_the_question_is_holding() {
+    // The question is sitting on an `EditDraft`, and a draft carries the task whole as
+    // `before` -- which is what `apply_edit` computes its attach and detach sets against.
+    // A label id left at the provisional in there makes the resumed save detach the label
+    // the server has just named and attach it again under the id it no longer has.
+    let mut model = with_labels(vec![label(-1, "next")], vec![label(-1, "next")]);
+    press(&mut model, 'e');
+    for _ in 0..5 {
+        press_code(&mut model, KeyCode::Tab);
+    }
+    for c in ", waiting".chars() {
+        press(&mut model, c);
+    }
+    press_ctrl(&mut model, 's');
+    assert_eq!(confirmation(&model).unknown, vec!["waiting".to_string()]);
+
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Label(LabelId(-1)),
+            assigned: Subject::Label(LabelId(41)),
+        }),
+    );
+    press(&mut model, 'y');
+    let effects = update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(41, "next"), label(-2, "waiting")]),
+    );
+
+    let queued: Vec<&Mutation> = all_applied(&effects);
+    assert!(
+        !queued
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::DetachLabel { .. })),
+        "the label the task already carries is not being taken off it: {queued:?}"
+    );
+    match queued.as_slice() {
+        [Mutation::UpdateTask { .. }, Mutation::AttachLabel { label, .. }] => {
+            assert_eq!(label.id, LabelId(-2), "only the new one is attached");
+        }
+        other => panic!("wrong mutations: {other:?}"),
+    }
+}
+
+#[test]
+fn enter_does_not_create_a_label_by_reflex() {
+    // Enter is the key that submitted the quick-add a frame ago, so this box appears
+    // under a finger already on it. A second press must not add to a pool shared by every
+    // project -- the same rule the `l` form's `C-n` follows.
+    let (mut model, _) = asked_about_waiting();
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match all_applied(&effects).as_slice() {
+        [Mutation::CreateTask { task }] => assert_eq!(
+            task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![LabelId(4)],
+            "the safe answer, not the irreversible one"
+        ),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    assert!(model.modals.is_empty());
 }
