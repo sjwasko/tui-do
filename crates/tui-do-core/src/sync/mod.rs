@@ -91,6 +91,28 @@ pub enum Reach {
     Incremental,
 }
 
+/// Whether a pass waits out a failed entry's backoff.
+///
+/// A failed entry is retried on a schedule that retreats from five seconds to fifteen
+/// minutes, which is right for a server that is down and wrong for a user who has just
+/// fixed their network. Pressing `r` is information the program has no other way to
+/// receive — they know something changed, and the queue does not — so a pass the user
+/// asked for tries everything, and one that merely came round on a timer does not.
+///
+/// Measured on 2026-08-30 driving `md/MANUAL-CHECKS2.md` F7: a create that failed while
+/// the address was unroutable came due fourteen seconds after the startup pass had looked
+/// at it, so nothing tried again for five minutes, with the status line saying `failing`
+/// and no key that would do anything about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backoff {
+    /// Skip an entry until its `next_attempt_at`. The timer, startup, and the push that
+    /// follows a write of its own.
+    #[default]
+    Respect,
+    /// Try every entry, however recently it failed. What `r` and `R` mean.
+    Ignore,
+}
+
 /// Which collection a pull is working through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -306,7 +328,7 @@ impl Sync {
     /// Whatever the pull returns. A push failure is reported as an event and in the
     /// report rather than as an error, because the queue surviving *is* the handling.
     pub async fn once(&self) -> Result<SyncReport> {
-        self.pass(Reach::Full).await
+        self.pass(Reach::Full, Backoff::Respect).await
     }
 
     /// Push, then pull only what changed.
@@ -317,11 +339,24 @@ impl Sync {
     /// # Errors
     /// As [`Self::once`].
     pub async fn delta(&self) -> Result<SyncReport> {
-        self.pass(Reach::Incremental).await
+        self.pass(Reach::Incremental, Backoff::Respect).await
     }
 
-    async fn pass(&self, reach: Reach) -> Result<SyncReport> {
-        let push = self.push().await?;
+    /// A pass the user asked for, which retries everything queued.
+    ///
+    /// The one caller is a keystroke — `r` with [`Reach::Incremental`], `R` with
+    /// [`Reach::Full`]. The timer and startup call [`Self::once`] instead, so a server
+    /// that is genuinely down still gets the retreating schedule rather than a request
+    /// every five minutes.
+    ///
+    /// # Errors
+    /// As [`Self::once`].
+    pub async fn asked(&self, reach: Reach) -> Result<SyncReport> {
+        self.pass(reach, Backoff::Ignore).await
+    }
+
+    async fn pass(&self, reach: Reach, backoff: Backoff) -> Result<SyncReport> {
+        let push = self.push_with(backoff).await?;
         let pull = self.pull_with(reach).await?;
         let report = SyncReport { push, pull };
         self.emit(SyncEvent::Finished(report));
@@ -335,6 +370,14 @@ impl Sync {
     /// server failure is not an error here: it is recorded against the entry, which
     /// stays queued.
     pub async fn push(&self) -> Result<PushReport> {
+        self.push_with(Backoff::Respect).await
+    }
+
+    /// [`Self::push`], told whether to wait out a failed entry's backoff.
+    ///
+    /// # Errors
+    /// As [`Self::push`].
+    pub async fn push_with(&self, backoff: Backoff) -> Result<PushReport> {
         self.emit(SyncEvent::Started(Phase::Push));
         let mut report = PushReport::default();
         // Ordering is a contract *per task*: two edits to one task must arrive in the
@@ -377,7 +420,7 @@ impl Sync {
                 {
                     continue;
                 }
-                if !queued.is_due(now) {
+                if backoff == Backoff::Respect && !queued.is_due(now) {
                     // Not attempted on this pass, and just as much in the way as one that
                     // was: an entry inside its backoff is an entry the server has not been
                     // told about, so everything that depends on it waits with it. Without
