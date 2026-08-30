@@ -239,6 +239,19 @@ Read-only milestone: launch, load from SQLite, browse. Should be *instant* — n
 Toggle done, edit, quick-add, the Space-prefixed quick actions (`QUICK_ACTIONS.md`), undo/redo on the
 optimistic-write mechanism, project/label/filter pickers with fuzzy match.
 
+**The label lifecycle was a gap in this phase, and was closed out of sequence on 2026-08-29.** Nothing
+above says *create a label*, so nothing did: the pickers could only choose from labels the server already
+had, and four places in the interface apologised for it in words ("tui-do cannot create labels yet"). It
+was found after Phase 4 was signed off and built before Phase 5, at the user's direction — designed in
+`md/2026-08-28-label-creation-design.md` and shipped in eleven commits. What landed: a queued mutation's
+subject became a typed `Subject` with a `subject_kind` column (schema v5); `Mutation::CreateLabel` and
+`UpdateLabel`, with `Label::merge_onto` and a read-before-retry for a create whose response may have been
+lost; `Ctrl-N` in the `l` form to create, `Ctrl-E` there and in the `g l` picker to rename or recolour, a
+`y`/`n` confirmation for an unknown `*label` in quick-add and the edit form, and `--create-labels` for
+`tui-do add`, which has no interface to confirm in. **Deliberately no delete** — see decision 1 of the
+design. The rules it left behind are under rule 5 of `CLAUDE.md`; the checks a human drives are section F
+of `md/MANUAL-CHECKS2.md`.
+
 ### Phase 5 — Rich features
 
 - **Markdown task descriptions via `glow`.** Vikunja stores descriptions as HTML/Markdown and cria renders
