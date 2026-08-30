@@ -60,7 +60,7 @@ running on it, so either location works.
 | `up.sh` | Deploys/redeploys the stack; safe to re-run |
 | `seed-from-prod.sh` | Reads prod over HTTPS, writes dev |
 | `snapshot-dev.sh` | `pg_dump` on the dev host; the dump stays there |
-| `reset-dev.sh` | Restores that dump; refuses to target prod |
+| `reset-dev.sh` | Restores that dump, keeping API tokens; refuses to target prod |
 | `test-ubuntu.sh` | Local Docker only; does not touch either server |
 
 ## If the deployment still carries the old name
@@ -102,6 +102,14 @@ bind mounts follow `TUI_DO_DEV_ROOT`, and there are no named volumes to orphan.
 ./seed-from-prod.sh     # prompts for credentials; nothing is written to disk
 ./snapshot-dev.sh       # capture the seeded state as the reset baseline
 ```
+
+**A reset keeps your API tokens.** The baseline is a snapshot of task data; a token is a
+credential, and restoring one should not revoke the other. Found the hard way on
+2026-08-30: this instance's baseline was dumped nine hours before the token the client
+authenticates with was created, so an honest restore would have started answering 401 from
+a server that was reachable, healthy, and serving the right data — the worst kind of
+failure to diagnose. `reset-dev.sh` now saves `api_tokens`, restores the dump, and puts the
+table back exactly as it was.
 
 `seed-from-prod.sh` uses Vikunja's own export/import path — `POST /user/export/request`
 on prod, then `POST /migration/vikunja-file/migrate` on dev. Both export endpoints
