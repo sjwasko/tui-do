@@ -786,8 +786,9 @@ impl Store {
     /// Unlike a task, the entries that have to move are **not** found by subject: an
     /// `AttachLabel` queued behind this create has the *task* as its subject and carries
     /// the label by value inside its payload. So every queued entry is re-encoded, and
-    /// `subject_id` is rewritten too -- a queued mutation whose subject *is* the label
-    /// (an `UpdateLabel`, once one exists) must follow just the same.
+    /// `subject_id` is rewritten too -- a queued mutation whose subject *is* the label,
+    /// an `UpdateLabel`, must follow just the same. That path is exercised by
+    /// `a_rename_queued_behind_a_create_follows_the_label_to_its_real_id`.
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure, or
