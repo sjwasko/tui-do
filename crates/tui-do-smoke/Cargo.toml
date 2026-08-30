@@ -1,0 +1,25 @@
+[package]
+name = "tui-do-smoke"
+description = "The layers wired together, for tests that no single crate can host."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tui-do-api.workspace = true
+tui-do-core.workspace = true
+tui-do-ui.workspace = true
+chrono.workspace = true
+crossterm.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

@@ -333,6 +333,19 @@ closest to missing, and its failure is **silence** — the form resolves its tic
 renumbered list, matches nothing, queues no mutation and says "Nothing changed". So a pass
 here is not "no error appeared". It is the label reaching the task.
 
+**Smoked automatically as of 2026-08-30**, in `crates/tui-do-smoke/tests/labels.rs`. That
+crate exists for this: `tui-do-ui`'s tests hand `update` a `SyncEvent::Adopted` by hand and
+`tui-do-core`'s prove a push emits one, and neither can prove they are the *same* event.
+The smoke drives `l`, the name, `C-n` and Enter through the real `update`, the real store
+and the real engine against a mock server, and asserts the task ends up carrying the id the
+server issued. Deleting the engine's label adoption makes it fail; that was checked rather
+than assumed.
+
+It does not retire this check. The harness reimplements the effect runtime rather than
+running it, so the runtime's own wiring is the one link it cannot see, and a mock server is
+not Vikunja. What the smoke buys is that F3 no longer has to be driven to find a *break* —
+only to confirm the parts nothing automated touches.
+
 **F4 — `C-e` renames and recolours, from both lists.** Highlight a label in the `l` form
 and press `C-e`; then do the same from `g l`, where the key is advertised in the title
 rather than a footer. Tab moves between Title and Colour, Enter saves, Esc abandons. A
