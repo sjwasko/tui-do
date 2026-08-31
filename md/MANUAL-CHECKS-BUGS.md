@@ -209,7 +209,10 @@ Recorded so nobody spends an evening trying.
 
 ## G9 — BUG-1: the cursor lands on the wrong task after adding one
 
-**This is the only Critical in `bugs.md`, and it is reachable by hand.** I said earlier it
+**FIXED 2026-08-31.** Driven and failed first — creating `cursor probe` with no due date put
+the highlight on the top row, id 2071 — then fixed, and this is now its regression check.
+
+**This was the only Critical in `bugs.md`, and it is reachable by hand.** I said earlier it
 was awkward to drive; that was wrong. The default sort is by due date with dateless tasks
 **last**, which is exactly the arrangement that exposes it.
 

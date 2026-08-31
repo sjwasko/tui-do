@@ -33,13 +33,18 @@ const ASSIGNED: i64 = 77;
 /// Without this the mock server 404s, `is_permanent` calls that the server's final answer,
 /// and the task is rolled back -- correct behaviour that would mask the question being
 /// asked here.
-async fn mount_create(server: &MockServer) {
+async fn mount_create(server: &MockServer, title: &str) {
+    // The echoed title has to match what was typed. A hardcoded one is not a harmless
+    // fixture: the push replaces the local row with the server's answer, so a mock that
+    // echoes the wrong title renames the task under the cursor and an assertion about
+    // *which task is selected* then fails for a reason that has nothing to do with the
+    // selection.
     Mock::given(method("PUT"))
         .and(path("/api/v1/projects/1/tasks"))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "id": ASSIGNED,
             "project_id": 1,
-            "title": "the one I just typed",
+            "title": title,
             "done": false,
         })))
         .mount(server)
@@ -86,7 +91,7 @@ async fn seeded(server: &MockServer) -> Harness {
 #[tokio::test]
 async fn the_task_just_added_is_the_one_selected() {
     let server = MockServer::start().await;
-    mount_create(&server).await;
+    mount_create(&server, "the one I just typed").await;
     let mut harness = seeded(&server).await;
 
     // `a`, the title, Enter -- the way a person adds a task.
@@ -114,7 +119,7 @@ async fn the_selected_id_is_the_one_the_store_actually_assigned() {
     // later. If those two are not the same value, the selection is dangling and only
     // *looks* right when the new task happens to sort first.
     let server = MockServer::start().await;
-    mount_create(&server).await;
+    mount_create(&server, "the one I just typed").await;
     let mut harness = seeded(&server).await;
 
     harness.press(KeyCode::Char('a')).await;
@@ -145,11 +150,16 @@ async fn the_selected_id_is_the_one_the_store_actually_assigned() {
     );
 }
 
-// FAILS TODAY. This is BUG-1 in `bugs.md`, kept as executable proof rather than prose:
-// run it with `cargo test -p tui-do-smoke -- --ignored`. It is ignored so the suite stays
-// green while the bug is triaged; delete the attribute when the bug is fixed and this
-// becomes the regression test for it.
-#[ignore = "BUG-1: selection dangles on TaskId(0) after a create; see bugs.md"]
+// This was BUG-1, and it is the test that proved it: before the fix the cursor landed on
+// whichever task sorted first rather than the one just created, so the next `x` deleted a
+// task the user never chose. Reproduced by hand on 2026-08-31 (the top row, id 2071, took
+// the highlight) and now a regression test.
+//
+// It is the *third* shape of this test and the only one that could fail. With no mock the
+// create 404s and rolls back correctly; with the new task sorting first, the dangling
+// selection and the "take the first row" fallback land on the same row and the bug is
+// invisible. Only an unfavourable sort exposes it -- which is why the seeded tasks carry
+// due dates and this one does not.
 #[tokio::test]
 async fn the_new_task_is_still_selected_when_it_does_not_sort_first() {
     // The previous two tests would pass even if the selection were dangling, so long as
@@ -158,7 +168,7 @@ async fn the_new_task_is_still_selected_when_it_does_not_sort_first() {
     // dates puts them ahead of a dateless new one under the default layout, so the
     // fallback and the correct answer are now different rows.
     let server = MockServer::start().await;
-    mount_create(&server).await;
+    mount_create(&server, "dateless, sorts last").await;
     let mut harness = Harness::new(&server.uri(), now()).unwrap();
     harness
         .store
