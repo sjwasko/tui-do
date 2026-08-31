@@ -201,12 +201,76 @@ Recorded so nobody spends an evening trying.
 
 - **BUG-2** — the reordering window is under 50 microseconds. No sequence of keystrokes can
   land inside it. Accepted and not being fixed; see `bugs.md`.
-- **BUG-1** — reachable by hand in principle (press `a`, type a task with no due date,
-  Enter, then look at which row the cursor is on), but only when the new task does not sort
-  to the top, which depends on your layout's sort. It already has an automated proof in
-  `crates/tui-do-smoke/tests/add_selection.rs`. **If you want to try it:** sort by due date,
-  make sure some overdue tasks exist, then add a task with no date and see whether the cursor
-  stays on it. If the cursor jumps to an overdue task at the top, that is BUG-1 — and the
-  next `x` would delete that one.
+- **BUG-1** — this *is* checkable by hand after all, and is now **G9** above.
 - **BUG-14** — needs a create to be rejected and a delete to be rolled back in one sequence,
   which cannot be staged from the interface.
+
+---
+
+## G9 — BUG-1: the cursor lands on the wrong task after adding one
+
+**This is the only Critical in `bugs.md`, and it is reachable by hand.** I said earlier it
+was awkward to drive; that was wrong. The default sort is by due date with dateless tasks
+**last**, which is exactly the arrangement that exposes it.
+
+**Do not use `x` to test this.** The consequence is that the next keystroke acts on the wrong
+task, and `x` deletes. Use `p`, which is reversible.
+
+### The setup
+
+The bug is invisible when the new task happens to sort to the top, because that is also where
+the broken fallback lands. So the list must have something above it.
+
+1. `deploy/reset-dev.sh`, start `tui-do`, press `R`.
+2. Pick a project with several tasks that **have due dates** — anything overdue is ideal.
+   `g p` to go there. If nothing has a date, give two tasks a date with `D` first.
+3. Confirm the dated tasks are at the top of the list and note the title of the **first
+   row**.
+
+### The check
+
+4. Press `a`, type `cursor probe`, and press Enter. **Give it no due date** — no `tomorrow`,
+   no date words at all. It sorts to the bottom.
+5. **Look at which row is highlighted.** Do not press anything else yet.
+
+**Pass:** the cursor is on `cursor probe`, wherever in the list it landed.
+
+**Fail — this is the bug:** the cursor is on the first row, the dated task you noted in step
+3. The new task exists, further down, unselected.
+
+### Proving the consequence
+
+Only if step 5 failed, and only with a reversible key:
+
+6. Press `p` and set a priority.
+7. Look at which task got it.
+
+**Fail:** the priority went to the task at the top — the one you never chose. Had that been
+`x`, it would have been deleted. `u` takes it back.
+
+### Why it happens
+
+The new row is created with the placeholder id `TaskId(0)` and the cursor is set to follow
+that id. The store then assigns a real (negative) provisional id, and the reload that
+follows cannot find `TaskId(0)` — so the selection quietly falls back to "the first row".
+Tracking the selection by id is the right mechanism; the id being tracked is the wrong one.
+
+### Automated cover
+
+`crates/tui-do-smoke/tests/add_selection.rs` has three tests. Two pass and stay as
+regression tests. The third, `the_new_task_is_still_selected_when_it_does_not_sort_first`,
+is the proof and is `#[ignore]`d so the suite stays green:
+
+```sh
+cargo test -p tui-do-smoke -- --ignored
+```
+
+**When this is fixed, delete that `#[ignore]`** — it becomes the regression test.
+
+### What a fix has to decide
+
+Not a one-liner, which is why it is still open. The interface cannot know the provisional id,
+because it comes from the store's own counter. So either `Effect::Apply` has to answer with
+the id the store assigned, or the reload has to be told to adopt the row that was just
+created. That is a design choice about the message flow, not a patch.
+
