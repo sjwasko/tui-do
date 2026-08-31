@@ -30,17 +30,51 @@ frame on a network call.
 
 ## Installing
 
-tui-do is a single binary. SQLite is compiled in, so there is nothing to install alongside
-it; the one external program it ever calls is `xdg-open`, and only when you press `o`.
+tui-do runs as a single binary with nothing to install beside it — SQLite is compiled in,
+and the only external program it ever calls is `xdg-open`, when you press `o`. **Building it
+is a different matter:** SQLite is compiled *from source*, so a C toolchain is required even
+though the result needs none.
+
+There are no published packages yet.
+
+### Build prerequisites
+
+Rust **1.85 or newer**, plus a C toolchain for the bundled SQLite. On a fresh Debian or
+Ubuntu:
 
 ```sh
-git clone <this repository>
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+    curl ca-certificates build-essential pkg-config git
+```
+
+Take Rust from rustup rather than the distribution, which may package a version older than
+1.85:
+
+```sh
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+. "$HOME/.cargo/env"
+```
+
+On Arch: `sudo pacman -S --needed rust base-devel git`.
+
+No OpenSSL development headers are needed — TLS is rustls, and `ca-certificates` is what it
+reads the system trust store from.
+
+### Build and install
+
+```sh
+git clone https://sw-hp2.tail9803a5.ts.net:9443/swasko/tui-do.git
 cd tui-do
 cargo build --release
 install -Dm755 target/release/tui-do ~/.local/bin/tui-do
 ```
 
-Needs Rust 1.85 or newer. There are no published packages yet.
+Over SSH instead, if you have a key on the Forgejo instance:
+`git clone ssh://git@sw-hp2.tail9803a5.ts.net:2222/swasko/tui-do.git`
+
+The first build fetches and compiles the whole dependency tree and takes a few minutes.
+Make sure `~/.local/bin` is on your `PATH`.
 
 Shell completions, including for the quick-add flags:
 
@@ -54,6 +88,21 @@ tui-do completions bash > ~/.local/share/bash-completion/completions/tui-do
 
 tui-do reads `~/.config/tui-do/config.yaml` (or `$XDG_CONFIG_HOME/tui-do/config.yaml`).
 `TUI_DO_CONFIG` overrides the path.
+
+**There is no first-run wizard, and no config is written for you.** Without that file tui-do
+stops with `could not read …/config.yaml: No such file or directory`. Create it:
+
+```sh
+mkdir -p ~/.config/tui-do
+$EDITOR ~/.config/tui-do/config.yaml       # the shape is below
+
+# The API token goes in its own file, not in the config.
+printf '%s' 'YOUR_TOKEN_HERE' > ~/.config/tui-do/token
+chmod 600 ~/.config/tui-do/token           # tui-do warns if others can read it
+```
+
+Only the first line of the token file is used and it is trimmed, so a trailing newline is
+harmless. `TUI_DO_API_TOKEN` works instead of the file if you would rather not have one.
 
 ```yaml
 server:
@@ -134,7 +183,13 @@ rather not remember a key.
 **`o` copies instead of opening where there is nothing to open onto.** Over SSH, `xdg-open`
 would launch a browser on the machine at the far end of the connection rather than the one
 you are sitting at, so tui-do detects that and puts the URL on your clipboard using OSC 52
-instead — and says which it did. A few terminals ship with OSC 52 disabled.
+instead — and says which it did.
+
+This is the ordinary case on a server: with `SSH_CONNECTION` set, or with neither `DISPLAY`
+nor `WAYLAND_DISPLAY`, `o` always copies. That is working as intended, not a missing
+`xdg-open`. The copy lands in the clipboard of the terminal *you* are typing in, which is
+what makes it useful — but a few terminals ship with OSC 52 disabled, and there is no way
+for tui-do to know: the toast says what it copied so you can tell.
 
 ## Quick-add syntax
 
