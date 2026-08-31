@@ -16,6 +16,7 @@ use tui_do_ui::keymap::Key;
 use tui_do_ui::modal::{Candidate, LabelsState, Modal, ModalView, Pick, PickerKind, PickerState};
 use tui_do_ui::model::{Focus, PaneState, SyncStatus};
 use tui_do_ui::query::Scope;
+use tui_do_ui::sidebar::SidebarTarget;
 use tui_do_ui::update::{reload_everything, update};
 use tui_do_ui::{Effect, Model, Msg};
 
@@ -3920,4 +3921,71 @@ fn o_with_nothing_selected_does_not_panic() {
     answer(&mut model, Vec::new());
     let effects = press(&mut model, 'o');
     assert!(effects.is_empty());
+}
+
+/// Archiving elsewhere the project you are looking at must not strand the cursor.
+///
+/// Driven on 2026-08-31: five tasks added to `Retirement` in the web UI, `R` in tui-do,
+/// navigate into it, archive it in the web UI, `R` again. The project left the sidebar --
+/// `sidebar::rows` filters archived ones out -- while the breadcrumb still said
+/// `Retirement › List` and its five tasks were still listed, with no way back to them once
+/// you left. And the sidebar's arrows died: the selection named a row that was no longer
+/// drawn, so `position()` found nothing and every keypress returned without moving.
+#[test]
+fn a_project_archived_elsewhere_does_not_strand_the_sidebar() {
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "Alpha", 0), project(3, "Retirement", 0)]),
+    );
+    // Looking at it, the way `g p` then choosing it leaves you.
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)),
+    );
+    press(&mut model, 'p');
+    for c in "Retirement".chars() {
+        press(&mut model, c);
+    }
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.sidebar.selected, SidebarTarget::Project(ProjectId(3)));
+
+    // Somebody archives it in the web UI, and the next pull says so.
+    let mut archived = project(3, "Retirement", 0);
+    archived.is_archived = true;
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "Alpha", 0), archived]),
+    );
+
+    assert_eq!(
+        model.sidebar.selected,
+        SidebarTarget::AllTasks,
+        "the cursor stayed on a project that is no longer in the tree"
+    );
+    let toast = model.status.toast.as_ref().map(|t| t.text.as_str());
+    assert!(
+        toast.is_some_and(|t| t.contains("Retirement") && t.contains("archived")),
+        "nothing said why the view moved: {toast:?}"
+    );
+}
+
+/// And the arrows must work even if a selection does somehow point at a missing row.
+#[test]
+fn the_sidebar_arrows_never_dead_end() {
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "Alpha", 0)]),
+    );
+    model.focus = Focus::Sidebar;
+    // A target that is not in the tree at all -- the wedged state, forced directly.
+    model.sidebar.selected = SidebarTarget::Project(ProjectId(999));
+
+    press(&mut model, 'j');
+    assert_ne!(
+        model.sidebar.selected,
+        SidebarTarget::Project(ProjectId(999)),
+        "the sidebar is wedged: j did nothing and there is no way out but a restart"
+    );
 }

@@ -1,4 +1,4 @@
-tui-do  Work › List  Table  Kanban               ⚠ offline — connection refused
+tui-do  Work › List  Table (soon)  Kanban (soon) ⚠ offline — connection refused
 ────────────────────────────────────────────────────────────────────────────────
  Title                              Project          Labels         Due
  !!!!! Fix the token refresh that … Work              urgent …      2 days ago

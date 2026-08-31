@@ -1,4 +1,4 @@
-tui-do  Project 15 › List  Table  Kanban                                                                ⟳ synced 2m ago
+tui-do  Project 15 › List  Table (soon)  Kanban (soon)                                                  ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Project 07           │ Title                   Project    Labels   Due        │ Fix the token refresh that drops the
   Project 08           │ !!!!! Fix the token re… Project 01  urgent  2 days ago │ cookie

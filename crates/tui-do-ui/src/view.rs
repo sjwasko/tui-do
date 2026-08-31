@@ -73,11 +73,19 @@ fn header(model: &Model, frame: &mut Frame, area: Rect) {
     };
     // Only List is reachable today; Table and Kanban arrive with the views API, and the
     // strip is here from the start so they land in a place rather than a redesign.
+    //
+    // "soon" is in the *text* rather than left to the dimming, because the dimming does not
+    // survive every terminal: `muted()` resolves to `Color::Reset` at `ColorDepth::None` --
+    // `NO_COLOR`, `TERM=dumb`, no `TERM` -- which is exactly what `text()` is. There the two
+    // unbuilt views rendered identically to the working one and read as tabs you could
+    // reach. There is deliberately no way to focus them: a tab stop whose only destination
+    // is a "coming soon" notice is navigation to a dead end, and this project's own verdict
+    // on that shape is written down under rule 2.
     let tabs = || {
         vec![
             Span::styled(" › ", theme.muted()),
             Span::styled("List", theme.text().add_modifier(Modifier::UNDERLINED)),
-            Span::styled("  Table  Kanban", theme.muted()),
+            Span::styled("  Table (soon)  Kanban (soon)", theme.muted()),
         ]
     };
 

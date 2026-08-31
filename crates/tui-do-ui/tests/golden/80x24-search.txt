@@ -1,4 +1,4 @@
-tui-do  Work › List  Table  Kanban                              ⟳ synced 2m ago
+tui-do  Work › List  Table (soon)  Kanban (soon)                ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────
  Title                              Project          Labels         Due
  Renew the passport                 Home              backend       Sep 23
