@@ -41,6 +41,10 @@ unicode-width = "0.2"
 # OSC 52 carries the clipboard payload base64-encoded. Already in the tree by way of
 # the HTTP stack, so declaring it directly costs nothing new.
 base64 = "0.22"
+# Parsing a URL to find its host, for the production guard. Already in the tree by way of
+# reqwest, so declaring it directly costs nothing -- and hand-rolling host extraction in a
+# guard is how the guard grows a hole.
+url = "2"
 dirs = "6.0"
 # Markdown -> HTML. `default-features = false` drops the CLI-only extras; the parser and
 # `markdown_to_html` are in the default-off set.

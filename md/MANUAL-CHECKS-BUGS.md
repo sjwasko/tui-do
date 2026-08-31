@@ -73,8 +73,12 @@ create is queued either way.
    `/tmp/prod-by-ip.yaml` with `server.url` set to `https://<that IP>:8443`.
 4. `TUI_DO_CONFIG=/tmp/prod-by-ip.yaml tui-do`
 
-**Fail — and this is the bug:** it starts. Same server, same data, no guard, because the
-guard matches the literal text `sw-hp2` and an IP does not contain it.
+**Fixed 2026-08-31.** Both steps must now refuse. Before the fix, step 4 started normally —
+same server, same data, no guard — because the check matched the literal text `sw-hp2` and
+an IP does not contain it.
+
+**Fail:** step 4 starts. That means the address is no longer in the guard's list, which is
+what happens if prod is ever renumbered.
 
 **Quit immediately with `q`.** Starting is enough to prove it; do not press anything else.
 
