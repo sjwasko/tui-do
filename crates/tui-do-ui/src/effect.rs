@@ -69,6 +69,18 @@ pub enum Effect {
     /// What startup and the timer do anyway; `R` is for wanting it before either.
     SyncFull,
 
+    /// Hand this URL to the desktop.
+    ///
+    /// A subprocess, so it is described here and performed by the runtime -- rule 1. The
+    /// choice between this and [`Self::CopyToClipboard`] is already taken by the time it
+    /// arrives: `update` reads `Model::url_action`, which the runtime set at startup, so
+    /// the runtime still decides nothing.
+    OpenUrl(String),
+
+    /// Put this text in the clipboard, and prefer the clipboard of the machine the user
+    /// is sitting at over the one tui-do is running on.
+    CopyToClipboard(String),
+
     /// Leave the application.
     Quit,
 }

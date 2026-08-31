@@ -21,8 +21,8 @@ Projects               │ !!! Ship the release    Work                Tomorrow 
                        │      │ Show or hide completed tasks                           t │
                        │      │ Open the selected task                             Enter │
                        │      │ Edit the selected task                                 e │
+                       │      │ Open a link in the selected task                       o │
                        │      │ Delete the task                                        x │
-                       │      │                                                          │
                        │      │                                                          │
                        │      │                                                          │
                        │      └──────────────────────────────────────────────────────────┘

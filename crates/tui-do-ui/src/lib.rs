@@ -49,6 +49,7 @@ pub mod rows;
 pub mod sidebar;
 pub mod theme;
 pub mod update;
+pub mod urls;
 pub mod view;
 
 pub use effect::Effect;
