@@ -539,4 +539,66 @@ mod tests {
             "a trailing blank line was kept as content: {lines:?}"
         );
     }
+
+    #[test]
+    fn script_and_style_content_is_not_shown() {
+        // `rows::plain_text` had an `OPAQUE` list for exactly this: `<script>` and
+        // `<style>` hold code and CSS, not prose, and a user must never see either in a
+        // task's description. Measured: `html2text` (via `html5ever`) drops both element
+        // bodies on its own, with no help from this module.
+        let lines = rendered(
+            "<p>real text</p><script>alert('x')</script><style>p{color:red}</style>",
+            60,
+        );
+        let joined = lines.join("\n");
+        assert!(
+            lines.iter().any(|l| l.contains("real text")),
+            "the real content went missing too: {lines:?}"
+        );
+        assert!(
+            !joined.contains("alert"),
+            "script content leaked into the rendered description: {lines:?}"
+        );
+        assert!(
+            !joined.contains("color:red") && !joined.contains("color: red"),
+            "style content leaked into the rendered description: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn table_cells_are_separated_rather_than_run_together() {
+        // Decision 6 turns on `extension.table = true`; nothing asserted its output
+        // survived the trip through `html2text`. Measured: both a Markdown pipe table
+        // and a raw `<table>` come out as a boxed grid with `│` between cells and `┬ ─ ┼
+        // ┴` for the rules, not text run together.
+        let md_lines = rendered("| a | b |\n|---|---|\n| 1 | 2 |", 60);
+        let md_joined = md_lines.join("\n");
+        assert!(
+            md_lines.iter().any(|l| l.contains('│')),
+            "markdown table cells were not visibly separated: {md_lines:?}"
+        );
+        assert!(
+            !md_joined.contains("ab") && !md_joined.contains("12"),
+            "markdown table cells ran together: {md_lines:?}"
+        );
+
+        let html = "<table><tr><td>one</td><td>two</td></tr><tr><td>three</td></tr></table>";
+        let html_lines = rendered(html, 60);
+        let row = html_lines
+            .iter()
+            .find(|l| l.contains("one"))
+            .expect("no rendered row held the first cell");
+        assert!(
+            row.contains("two"),
+            "the two cells of one row did not land on the same line: {html_lines:?}"
+        );
+        assert!(
+            !row.contains("onetwo"),
+            "html table cells ran together: {html_lines:?}"
+        );
+        assert!(
+            row.contains('│'),
+            "html table cells had no visible separator: {html_lines:?}"
+        );
+    }
 }
