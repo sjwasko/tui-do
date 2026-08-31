@@ -15,6 +15,18 @@ After the nine fixes: **687 tests pass** (plus one `#[ignore]`d, which is BUG-1'
 exits 0, the release build succeeds, and **no invocation of the binary panicked** under any
 malformed input the smoke test could construct.
 
+## How to drive these by hand
+
+**The code snippets below are for whoever fixes each bug. They are not the test procedure.**
+`md/MANUAL-CHECKS-BUGS.md` has the hand-driven version — what to press, what a pass looks
+like, and what a fail looks like — in the same shape as `md/MANUAL-CHECKS2.md`.
+
+One correction recorded there and worth repeating here, because it was found by driving it:
+**editing a task, `Ctrl-S`, then `q` cannot expose BUG-3.** That path queues an `UpdateTask`,
+and replaying an update just re-applies the same change to the same id — idempotent, nothing
+to duplicate. BUG-3 needs a **create** in flight when you quit. A clean run of the edit
+version proves the flush works, not that the bug is absent.
+
 ## Every open finding has a test case
 
 Each entry below now carries a **Suggested test** written to *expose* the bug — deterministic
