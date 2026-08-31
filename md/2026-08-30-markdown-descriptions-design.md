@@ -89,7 +89,8 @@ task.description
                   hardbreaks: true                       │
                   escape: true                           ▼
                   extension.table: true          html2text + Deco
-                                                 (Annotation = Style)
+                  extension.autolink: true      (Annotation = Style)
+                  extension.strikethrough: true
                                                          │
                                           Vec<TaggedLine<Vec<Style>>>
                                                          │
@@ -167,12 +168,49 @@ comrak", and misrouting is what broke `Vec<String>` above: sent down the HTML br
 therefore *wrong*, and it is what the crude SQL in the table above used — which is why
 `Use Vec<String> here` counts in the 120 rather than the 367.
 
-The test is **a recognised HTML block tag** — `<p`, `<h1`…`<h6`, `<ul`, `<ol`, `<pre`,
-`<table`, `<div`, `<blockquote`. TipTap always wraps content in at least one; prose
-mentioning `Vec<String>` contains none. `rows.rs` already has this list as `BLOCK`, and
-its tests already encode the hazards. **`plain_text` is not extended into a converter, as
-the first draft proposed — it is deleted, and its knowledge becomes the router**, with
-those six assertions carried across as router tests.
+This section undersold the router from the start and then went stale three times more as
+real descriptions found holes in it; `markdown.rs`'s own doc comment on `looks_like_html`
+is now the authoritative account, this is only a summary. The rule that shipped: the
+trimmed description either *starts with* a recognised HTML block tag — `<p`, `<h1`…`<h6`,
+`<ul`, `<ol`, `<pre`, `<table`, `<div`, `<blockquote` — or contains, anywhere in the body,
+both an opening tag and its own matching closing tag for the same element (`<div` paired
+with `</div>`, `<p` paired with `</p>`, and so on).
+
+Three earlier rounds landed on weaker rules, each closing one hole and opening or leaving
+another: unanchored ("a block tag mentioned anywhere"), a bare mention of a tag in prose
+(`"Wrap it in a <div>"`) misrouted to HTML and lost the bracketed word to `html5ever`.
+Anchoring the opening half to "starts with a block tag" fixed that but left the
+closing-tag check unanchored, so a sentence merely *describing* a close (`"close the
+</div> tag"`) still misrouted. Anchoring *both* halves to "starts with `<`" fixed that in
+turn, but broke ids 49, 369 and 420 on dev — genuine TipTap output shaped as a leading
+sentence of bare text followed by real `<div><br></div>` blocks (the shape pasting from
+Google Keep into TipTap produces), none of which opens on `<`.
+
+The pairing rule now in place drops the "starts with `<`" anchor and asks a stronger
+question instead: a genuine TipTap document always closes what it opens, wherever in the
+string that falls, and prose mentioning markup supplies at most one half at a time. That
+one fact — the pair, not the position — separates every case the three earlier rounds
+were fighting over, including the `<img>`-first shape (store ids 27, 116) that opens on a
+tag outside the block list but still carries a bare `<p></p>` pair. Validated against the
+487 real descriptions on dev: 112 classify as HTML, up from 108 under the previous rule —
+ids 49, 369 and 420 moved back to HTML as intended, and one previously-unexamined row (id
+1842, free-form notes with a genuine `<p>…</p>` fragment pasted mid-text) moved with them,
+consistent with the rule as stated.
+
+**Known residual, accepted rather than chased:** a sentence naming *both* halves of the
+same element — `"use <div> and close with </div>"` — still misroutes to HTML and loses
+both words. Nothing short of parsing the sentence separates that from a real TipTap paste
+of an empty `<div></div>`, and three rounds of narrowing the discriminator by string shape
+alone is enough evidence that this is where that approach stops paying off. `rows.rs`
+originally had the block-tag list as `BLOCK`, and its tests were carried across as router
+tests. **`plain_text` is not extended into a converter, as the first draft proposed — it
+is deleted, and its knowledge becomes the router.**
+
+`plain_text` also carried an `OPAQUE` list so that `<script>` and `<style>` bodies —
+code and CSS, not prose — were never shown. That list did not need porting: `html5ever`
+strips both elements' bodies on its own, and `html2text` (which is built on it) inherits
+that for free. Measured: a description containing `<script>alert('x')</script>` renders
+with no trace of the script, with no help from this module.
 
 **4. Wrapping is html2text's, and the widths cannot disagree with ratatui's.**
 `lines_from_read(html, width)` returns lines already wrapped. `CLAUDE.md` is emphatic that
@@ -196,10 +234,37 @@ emits a few rules (`h1`…`h6`, `blockquote`) and heading colour arrives as our 
 This costs the `css` feature and `nom`. If it proves awkward the fallback is a `#` prefix
 with no colour, which is honest and is what most terminal renderers do.
 
+**That fallback also happens on a non-TrueColor terminal, and it is deliberate rather than
+accidental.** `agent_css` builds its stylesheet from `style_rgb`, which matches only
+`Color::Rgb`; `theme.rs`'s `Shade::at` answers `Color::Blue` at `ColorDepth::Ansi16` and
+`Color::Indexed` at `Ansi256`, neither of which CSS can name. So on those two depths
+`style_rgb` returns `None`, `agent_css` returns an empty stylesheet, and a heading keeps
+`header_prefix`'s `#` with no colour — the same fallback named above, reached by depth
+rather than by a `css` failure. `style_rgb` carries a comment saying so.
+
+**`html2text` 0.17.1's CSS parser silently drops a block's final declaration if it is
+missing its trailing `;`.** `add_agent_css` returns `Ok` either way, so a rule written
+without the semicolon on its last line is a no-op, not an error, and the symptom is a
+heading that simply comes out uncoloured. Cost real debugging time to trace back to a
+missing character. Every rule in `theme.rs`'s stylesheet carries a trailing `;`, including
+the last one in each block.
+
 **6. Tables are html2text's, with `extension.table` on.** comrak does not parse GFM tables
 by default and the pipes came through literally until it was enabled. 10 of 487
-descriptions have a table and the pane is about 40 columns, so this may still not fit; the
-first version renders what html2text gives and does not fight it.
+descriptions have a table and the pane is about 40 columns. Measured rather than guessed:
+a table renders as a proper boxed grid at both 60 and 40 columns, so the width the preview
+pane actually has is not a concern here.
+
+Two more extensions are on. `extension.strikethrough` turns `~~struck~~` into `<del>`,
+which is benign — nothing in the corpus depends on a bare `~~` staying text.
+`extension.autolink` turns a bare `http://…`, with no `<>` or `[]()` around it, into a
+styled link — measured: `see http://example.com/path` gets a styled span only with the
+extension on. It is *not* what `an_autolink_loses_its_brackets_and_gains_a_style` tests;
+that input, `<http://Www.ftc.gov>`, is a CommonMark autolink and needs no extension, and
+the test still passes with `extension.autolink` off. No test currently depends on it, but
+it is the same "literal syntax should render, not stay literal" reasoning behind `escape`
+and `strikethrough`, and URL opening later in Phase 5 wants exactly this for a bare URL a
+user typed without brackets.
 
 **7. No cache**, from the sizes above.
 
@@ -283,3 +348,33 @@ platform trait the macOS port depends on, and is a better home for that seam.
 - Wrapping at a narrow width, because the preview pane is narrow and it is the case the
   old code never had to handle.
 - An empty description, and a description that is only whitespace.
+
+## What is not covered
+
+`markdown::render` returns an empty `Vec` both when a description is genuinely empty and
+when the pipeline fails — observed with deeply nested lists at small widths, where
+`html2text` reports the pane too narrow to lay the list out (`TooNarrow`). That failure is
+not partial: it fails the whole document, not just the offending list, so a description
+whose first paragraph is ordinary prose and which only *later* contains a deeply nested
+list renders completely blank, not blank-from-that-point-on. Measured threshold: at 30
+columns, the narrowest a real pane gets, a list nested 14 levels deep blanks the entire
+description. `view::preview` has no way to tell a failed render apart from a genuinely
+empty one, so a task with real content can show a blank description area with nothing on
+screen to say why.
+
+This is unlikely at realistic pane widths — it took deliberately nested input to trigger —
+and was accepted rather than fixed: distinguishing the two cases means `render` returning a
+`Result` and `preview` rendering an error state, which is more machinery than a failure
+mode this narrow has earned. Recorded here so it is found by reading rather than by a user
+reporting a task that looks empty and is not.
+
+**Image-only descriptions preview as blank.** Store ids 27 and 116 are
+`<img …><p></p>` — an image with no other content — and render to nothing. Measured why:
+`decorate_image` does run, but only when the `<img>` carries a non-empty `alt`; with
+`alt=""` or no `alt` attribute at all, `html2text` emits no text for the image and no call
+reaches the decorator. TipTap's own markup is `data-src`, `src="#"`, `id` — never `alt` —
+so this is not a narrow miss, it is every image TipTap has ever produced landing on the
+no-text path. This is not a regression — `rows::plain_text` showed nothing for these two
+either — and it is deliberately not fixed here: deciding what an image should look like in
+a terminal (a placeholder, a generic `[image]`, something else) is its own piece of work,
+not a side effect of this one.

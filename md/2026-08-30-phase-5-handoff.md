@@ -4,6 +4,11 @@ Written 2026-08-30 at the end of the session that finished the label lifecycle a
 `md/MANUAL-CHECKS2.md` section F. Read `CLAUDE.md` first; this only covers what that file
 does not, which is *what to do next* rather than what is true.
 
+**Correction, later the same day.** Everything below that names `glow` as the plan for
+markdown descriptions is superseded: `glow` was measured and rejected, and the plan of
+record is now comrak + html2text, built and shipped. See
+`md/2026-08-30-markdown-descriptions-design.md`.
+
 ## Where the project actually is
 
 Phases 1–4 are complete and driven by hand. The label lifecycle — create, rename,
