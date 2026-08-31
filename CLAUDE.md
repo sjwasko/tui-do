@@ -270,6 +270,32 @@ safely, and a `null` assignees field means genuinely nobody rather than "not loa
 is still unsafe is *constructing* a task from partial data and sending it — anything that
 does must fill assignees itself or it will unassign everyone.
 
+**A description is Markdown, plain text, or HTML, and nothing on the wire says which.**
+Measured on dev 2026-08-30 across 487 non-empty descriptions: 367 carry no tag at all, 108
+are TipTap HTML from the web editor, and the rest are mixed. A task written through the API
+keeps what was sent; a task touched in the web editor comes back as HTML. Both persist, so
+every reader meets both.
+
+What tells them apart is a **recognised HTML block tag**, not a `<`: real descriptions say
+`Use Vec<String> here` and `# - CAM_<CAMERA_MAC>_NAME=fr`, and routing those to an HTML
+parser deletes the bracketed word. `markdown::looks_like_html` is the one place that
+decision is taken.
+
+Two `comrak` options in `markdown::render` are load-bearing and both fail *silently, by
+deleting text*. `render.hardbreaks` keeps a single newline as a line break — CommonMark
+joins consecutive lines, which runs an address block together, and roughly 350 of those 367
+descriptions carry their structure in single newlines. `render.escape` keeps text that looks
+like a tag as text — without it `<String>` is read as raw HTML and dropped, and the line
+reads `Use Vec here`. Each has a named regression test.
+
+`html2text`'s CSS parser drops a stylesheet block's final declaration silently if it lacks a
+trailing `;` — `add_agent_css` returns `Ok` either way, so a missing semicolon on the last
+rule in a block is a no-op and headings simply come out uncoloured. Every rule needs its own
+trailing `;`, including the last.
+
+`html5ever` strips `<script>` and `<style>` element bodies on its own; nothing here needs to
+repeat that filtering.
+
 **A label change that has already happened answers three different ways**, and only one of
 them is the one you would guess. Measured on dev 2026-08-24, because the spec describes
 none of it:
