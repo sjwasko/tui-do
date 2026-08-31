@@ -15,11 +15,38 @@ After the nine fixes: **687 tests pass** (plus one `#[ignore]`d, which is BUG-1'
 exits 0, the release build succeeds, and **no invocation of the binary panicked** under any
 malformed input the smoke test could construct.
 
+## Every open finding has a test case
+
+Each entry below now carries a **Suggested test** written to *expose* the bug — deterministic
+where the bug allows it, and honest about where it does not. Two rules were applied
+throughout, both learned the hard way in this pass:
+
+- **Never test a race by sampling it.** BUG-2 reorders 18.3% of the time, so a test that
+  fires it and hopes is flaky, and worse, would pass for the wrong reason after a fix. Where
+  timing is the mechanism, the test either controls the interleaving (wiremock delays) or
+  asserts the invariant the fix establishes.
+- **Check the test fails for the right reason.** BUG-1's proof failed twice in ways that
+  looked like the bug and were not — once because an unmocked create 404s and rolls back
+  correctly, once because the dangling selection and the fallback happened to land on the
+  same row. Both are written up under BUG-1 as a warning.
+
+| bug | its test is | deterministic? |
+|---|---|---|
+| BUG-1 | written and in the tree, `#[ignore]`d | yes |
+| BUG-3 | wiremock delay + `.expect(1)` | yes |
+| BUG-4 | classifier table + one 408 integration test | yes |
+| BUG-6 | pure URL table test | yes |
+| BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
+| BUG-9 | grapheme table against `truncate`/`wrap` | yes |
+| BUG-14 | store-level rollback sequence | yes |
+| BUG-15 | a live experiment against dev — not a unit test | needs the server |
+
 ## What is left, at a glance
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-1 (Critical), BUG-2, BUG-3, BUG-4, BUG-6, BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-1 (Critical), BUG-3, BUG-4, BUG-6, BUG-7, BUG-9 |
+| **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-15 (archived tasks — highest value), BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
@@ -104,7 +131,7 @@ design decision, which is why this is filed rather than patched.
 
 ## Important
 
-### BUG-2 — two rapid edits to one task can be applied out of order
+### BUG-2 — ACCEPTED, NOT FIXED — two rapid edits to one task can be applied out of order
 
 `crates/tui-do/src/runtime/mod.rs:253` and `crates/tui-do-core/src/store/mod.rs:179`.
 
@@ -154,6 +181,33 @@ the wrong reason after a fix.
 3. **Keep the sweep as an `#[ignore]`d probe** — it is the evidence for the table above and
    is how the window gets re-checked on other hardware.
 
+**Decision, 2026-08-31: accepted as-is. Not fixed.** The reasoning is not "the window is
+small so it probably will not happen" — it is sharper than that, and it came out of checking
+whether a *single* keystroke can produce two `Apply`s.
+
+It can. `apply_edit` (`update.rs:1720-1745`) emits `UpdateTask` **plus** one `AttachLabel`
+per added label **plus** one `DetachLabel` per removed one, all for the same task subject,
+all landing in one `Vec<Effect>` and performed back to back. **So the 0 µs path is not rare
+at all — every multi-label edit takes it, and reorders 18.3% of the time.**
+
+It is harmless there, because those mutations **commute**:
+
+- `UpdateTask` writes the task's own fields, and labels are *not* replaced from a task body
+  (measured, recorded above in this file).
+- `AttachLabel` and `DetachLabel` go to their own endpoints.
+- A label can never be in both the attach and the detach set, because the two are computed
+  as a diff of one list.
+
+The harmful pairing is **two `UpdateTask`s for one task**, and no single action emits two.
+That requires two distinct user actions, which are at least ~50 ms apart — three orders of
+magnitude outside the measured window.
+
+**The residual**, stated so nobody thinks it is zero: key auto-repeat on `d` or `u` delivers
+~25–35 ms apart, which is still far outside the window, but a loop stalled on a slow draw
+could in principle batch two of them. If that ever happened the user would see the
+`Overwrote` toast rather than nothing. Revisit if a "saved over a change made elsewhere"
+report ever arrives that nobody can explain.
+
 ### BUG-3 — quitting mid-request can duplicate a task or label
 
 `crates/tui-do/src/runtime/mod.rs:507` with `crates/tui-do-core/src/sync/mod.rs:646`.
@@ -164,12 +218,63 @@ cancelled mid-request leaves its outbox entry intact with `attempts == 0`, so th
 `is_failing()`, which is false at zero attempts, it is skipped. Result: a duplicate on the
 server. The same hole exists on SIGKILL.
 
+**Confirmed by reading the chain, 2026-08-31.** `flush_on_exit` (`runtime/mod.rs:507`) calls
+`handle.abort()` unconditionally before its own push. An aborted request never reaches
+`defer()`, so `attempts` stays `0`; `is_failing()` is exactly `attempts > 0`
+(`outbox.rs:454`); the read-before-retry reconcile is gated on it and is therefore skipped;
+and the push that follows immediately re-sends the create.
+
+**Its window is a full network round trip** — milliseconds to seconds — not BUG-2's 50 µs,
+and the trigger is pressing `q` while a sync is in flight, which is ordinary. **This is the
+most reachable of the open findings.**
+
+**Suggested test — deterministic, no race.** In `crates/tui-do-smoke`, using wiremock's
+controllable delay:
+
+```rust
+// PUT /projects/1/tasks answers 201, but only after 2s.
+Mock::given(method("PUT")).and(path("/api/v1/projects/1/tasks"))
+    .respond_with(ResponseTemplate::new(201)
+        .set_delay(Duration::from_secs(2))
+        .set_body_json(json!({"id": 77, "project_id": 1, "title": "t"})))
+    .expect(1)                     // <-- the assertion: exactly one create reaches the server
+    .mount(&server).await;
+
+// queue a CreateTask, start a push, abort it mid-request the way quitting does,
+// then run the push flush_on_exit performs.
+let handle = tokio::spawn({ let s = sync.clone(); async move { s.push().await } });
+tokio::time::sleep(Duration::from_millis(100)).await;   // request is in flight
+handle.abort();
+let _ = sync.push().await;                              // what flush_on_exit does next
+```
+
+The delay makes the interleaving deterministic rather than sampled. `.expect(1)` fails on
+drop if the server saw two creates, which is the bug. The same shape with
+`PUT /labels` plus a `GET /labels?s=` mock proves the reconcile was skipped.
+
 ### BUG-4 — a 408 or 425 discards the user's edit
 
 `crates/tui-do-core/src/sync/mod.rs:901`. `is_permanent` treats every 4xx except 401/403/429
 as the server's final answer, so a proxy's **408 Request Timeout** (or 425 Too Early) rolls
 back the edit and toasts "the server refused" when nothing was decided. 401 and 429 are
 handled correctly.
+
+**Suggested test — two levels, both deterministic.** A unit test on the classifier, which is
+the cheap half and pins the decision once it is made:
+
+```rust
+for status in [408, 425, 429, 500, 503] {
+    assert!(!is_permanent(&ApiError::from_status(status, &body, None)),
+            "{status} is not the server's final answer");
+}
+for status in [400, 403, 404, 422] {
+    assert!(is_permanent(&ApiError::from_status(status, &body, None)));
+}
+```
+
+Then one integration test for the consequence: mock the update endpoint to answer `408`,
+push, and assert the outbox entry is **still queued with `attempts == 1`** rather than rolled
+back — that is, `store.pending()` is non-empty and the local row still shows the edit.
 
 ### ~~BUG-5~~ — FIXED — a server can silence retries indefinitely
 
@@ -193,12 +298,68 @@ it reports `PT2591999.99S`, the full 30 days, and fails.
 the real production host was never contacted. The guard exists precisely so that "yes, I
 meant it" is possible to say — and a stale config pointed at prod by IP would write to it.
 
+**Suggested test — a pure table test, no network.** `guard_production` takes a URL and
+returns a decision, so it is directly testable:
+
+```rust
+// Each of these is production and must be refused without --i-know-this-is-prod.
+for url in [
+    "https://sw-hp2.tail9803a5.ts.net:8443",
+    "https://SW-HP2.tail9803a5.ts.net:8443",   // case
+    "https://sw-hp2.tail9803a5.ts.net:8443/",  // trailing slash
+    "https://sw-hp2.tail9803a5.ts.net",        // no port
+    "https://100.x.y.z:8443",                  // the tailnet IP -- FAILS TODAY
+] {
+    assert!(guard_production(url).is_err(), "{url} was not recognised as production");
+}
+// And the dev server must still start without the flag.
+assert!(guard_production("https://sw-surface.tail9803a5.ts.net:8443").is_ok());
+```
+
+The IP row is the one that fails now. Note the fix needs a decision first — whether "what
+counts as production" is a hostname list, a resolved address, or an explicit config flag —
+because a substring match cannot be made correct.
+
 ### BUG-7 — a panicking effect leaves the screen garbled instead of exiting
 
 `crates/tui-do/src/runtime/terminal.rs:36-40`. The global panic hook restores the terminal
 on any thread's panic, but tokio catches a spawned effect's panic at the task boundary and
 the process keeps running — raw mode off, alternate screen gone, application still drawing
 into a terminal that no longer expects it.
+
+**Confirmed by experiment, 2026-08-31.** A throwaway reproducing the exact structure — a
+global hook whose `restore()` is one-shot via `RAW.swap(false, ..)`, and a `tokio::spawn`
+whose `JoinHandle` is dropped, as `perform` does:
+
+```
+1. spawning an effect that panics, exactly as perform() does
+  [hook] restore() ran -- raw mode off, alt screen exited
+2. process alive? true | hook ran? true | terminal already restored? true
+3. the event loop would now keep drawing into a restored terminal.
+4. Drop did nothing -- the one-shot was spent by the panic hook
+```
+
+So all four halves hold, including the one nobody had noticed: **the eventual clean exit's
+`Drop` is a no-op**, because the panic hook already spent the one-shot.
+
+**Reachability is the open question, and it is lower than the mechanism suggests.** Every
+effect currently returns a `Result`, and the workspace denies `unwrap`/`panic` in production
+code, so a panic has to come from inside a dependency or from arithmetic overflow in a debug
+build. This is a "when something else goes wrong, it goes wrong badly" robustness problem
+rather than something reachable from input.
+
+**Suggested test — test the fix, not the panic.** The fix is for `perform` to stop discarding
+`JoinHandle`s: join them, or wrap each effect so a panic becomes a message. Then:
+
+```rust
+// A test-only effect that panics on purpose.
+perform(Effect::__PanicForTest, &store, None, &tx);
+let msg = rx.recv().await.expect("a panicking effect must report something");
+assert!(matches!(msg, Msg::EffectFailed(_)));
+```
+
+Plus a unit test that `restore()` is idempotent *and* that the guard can still restore after
+the hook has run — the second half is what is broken today.
 
 ### ~~BUG-8~~ — FIXED — `tui-do add --offline` swallows a real configuration error
 
@@ -217,6 +378,26 @@ not "do not tell me sending is broken".
 (there is no `unicode-segmentation` dependency), so a flag or ZWJ emoji sequence can be cut
 mid-glyph and the cell corrupted. No panic — `unicode-width` keeps the arithmetic sound —
 but the display is wrong.
+
+**Suggested test — pure, deterministic, no dependency needed to write it.** Only to fix it:
+
+```rust
+// A ZWJ family and a regional-indicator flag are each one grapheme, several chars.
+let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";   // one glyph
+let flag = "\u{1F1EC}\u{1F1E7}";                                // one glyph
+for text in [format!("{family} tail"), format!("{flag} tail")] {
+    for width in 1..=6 {
+        let cut = truncate(&text, width);
+        assert!(display_width(&cut) <= width);
+        // The real assertion: never end part-way through a sequence.
+        assert!(!cut.ends_with('\u{200D}'), "cut on a zero-width joiner: {cut:?}");
+        assert!(!ends_with_lone_regional_indicator(&cut), "split a flag: {cut:?}");
+    }
+}
+```
+
+The same table against `wrap`. Fixing it means taking `unicode-segmentation` and iterating
+graphemes rather than `char`s — which is the decision, since it is a new dependency.
 
 ### ~~BUG-10~~ — FIXED — a percent-width column can collapse to width 1
 
@@ -270,6 +451,29 @@ calls `upsert_task(before)` and recreates a `labels` row at a stale negative id 
 `CreateLabel` rollback already deleted. The result never settles and never syncs. The code's
 own comment flags this as a known gap; the reviewer confirmed a concrete reachable sequence
 and that no test covers it.
+
+**Suggested test — a store-level sequence test, fully deterministic.** No server needed for
+the assertion that matters:
+
+```rust
+// 1. create a label -> provisional id -1, and attach it to a task
+let create = store.queue(Mutation::CreateLabel { label: provisional }).await?;
+store.queue(Mutation::AttachLabel { task: TaskId(1), label: provisional.clone() }).await?;
+// 2. delete that task -- `before` carries the provisional label
+let delete = store.queue(Mutation::DeleteTask { before: task_carrying_label }).await?;
+// 3. the create is rejected: its rollback deletes label -1
+store.roll_back(create.id).await?;
+// 4. the delete is rejected too, or undone: its rollback re-writes `before`
+store.roll_back(delete.id).await?;
+
+// The assertion: no label row with a negative id may survive a rollback of its create.
+let orphans = store.labels_with_negative_ids().await?;
+assert!(orphans.is_empty(), "a provisional label was resurrected: {orphans:?}");
+```
+
+If `labels_with_negative_ids` does not exist, the same check is one `SELECT id FROM labels
+WHERE id < 0` in a test helper. The row it finds will never settle and never sync, which is
+what makes it a phantom rather than merely stale.
 
 ### BUG-15 — unverified: are tasks in archived projects deleted on every full pull?
 
