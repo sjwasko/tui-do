@@ -187,8 +187,17 @@ pub enum ApiError {
 impl ApiError {
     /// Whether retrying the same request unchanged could plausibly succeed.
     ///
-    /// The sync engine uses this to decide between re-queueing an outbox entry and
-    /// surfacing the failure to the user.
+    /// **The sync engine does not use this**, whatever this comment said before. The
+    /// decision that actually governs an outbox entry is `sync::is_permanent`, which is a
+    /// separate implementation, and the two **disagree**: on `Unauthorized` this answers
+    /// "do not retry" while `is_permanent` treats a 401 as transient and keeps retrying,
+    /// and they differ again on `Deserialize`. Nothing is broken today because nothing in
+    /// production calls this — but a reader who assumes the shared-looking helper is the
+    /// shared one will change the wrong thing.
+    ///
+    /// Which of the two classifications is right is an open question, recorded as BUG-4 in
+    /// `bugs.md`: `is_permanent` currently calls a 408 or 425 the server's final answer and
+    /// discards the user's edit. Resolve that, then collapse these two into one.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
