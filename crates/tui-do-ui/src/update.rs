@@ -86,6 +86,15 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Reload => reload_everything(model),
+        Msg::TaskCreated(id) => {
+            // Follow the task that was just made, whatever it contained. `apply_locally`
+            // selected the placeholder id because that is all it had; this is the store's
+            // answer, and it arrives before the reload so `TasksLoaded` finds the row and
+            // leaves the selection alone.
+            model.list.selected = Some(id);
+            model.list.preview_scroll = 0;
+            Vec::new()
+        }
         Msg::EffectFailed(message) => {
             model.toast(Toast::error(message));
             Vec::new()

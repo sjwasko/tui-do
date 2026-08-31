@@ -46,7 +46,7 @@ use chrono::{DateTime, FixedOffset};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_do_api::{Client, Credentials};
 use tui_do_core::config::Config;
-use tui_do_core::store::{LabelFilter, LabelSort, ProjectFilter, ProjectSort, Store};
+use tui_do_core::store::{LabelFilter, LabelSort, Mutation, ProjectFilter, ProjectSort, Store};
 use tui_do_core::sync::Sync;
 use tui_do_core::SyncEvent;
 use tui_do_ui::query::Scope;
@@ -225,9 +225,16 @@ impl Harness {
             // push is a round trip, and what it learns arrives afterwards. See
             // `pending_push`.
             Effect::Apply(mutation) => {
-                self.store.queue(mutation).await.expect("queue the change");
+                let entry = self.store.queue(mutation).await.expect("queue the change");
                 self.pending_push = true;
-                vec![Msg::Reload]
+                // Faithful to the runtime, and the order matters: the assigned id is sent
+                // *before* the reload, so `TasksLoaded` finds the selected row rather than
+                // falling back to the first one. Sending it after would leave the harness
+                // agreeing with a bug the real program does not have.
+                match &entry.mutation {
+                    Mutation::CreateTask { task } => vec![Msg::TaskCreated(task.id), Msg::Reload],
+                    _ => vec![Msg::Reload],
+                }
             }
             // Both are a push here. The pull half needs a mounted listing and would make
             // every test mount one; the tests that care about a pull live in

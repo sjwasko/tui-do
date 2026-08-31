@@ -44,7 +44,7 @@ throughout, both learned the hard way in this pass:
 
 | bug | its test is | deterministic? |
 |---|---|---|
-| BUG-1 | written and in the tree, `#[ignore]`d | yes |
+| ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
@@ -57,7 +57,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-1 (Critical), BUG-4, BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-4, BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-15 (archived tasks — highest value), BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -77,8 +77,8 @@ mechanical — that was the point of the 2026-08-31 pass.
 | Runtime and CLI | 0 | 3 → 2 | 3 |
 | API client | 0 | 1 → 0 | 1 |
 | **found** | **1** | **14** | **15** |
-| **fixed** | 0 | **5** | **2** |
-| **open** | **1** | **9** | **13** |
+| **fixed** | **1** | **7** | **2** |
+| **open** | **0** | **7** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -94,7 +94,7 @@ properly rather than assumed:
 
 ---
 
-## BUG-1 — Critical — the cursor lands on the wrong task after `a`
+## ~~BUG-1~~ — FIXED — Critical — the cursor lands on the wrong task after `a`
 
 **Where:** `crates/tui-do-ui/src/update.rs:2212-2219` (the `CreateTask` arm of
 `apply_locally`), with `update.rs:65-68` (the selection fallback) and
@@ -134,10 +134,32 @@ kept as regression tests; the third is `#[ignore]`d with a pointer here and is r
 the interface selects and the id the store assigns are agreed nowhere except in the smoke
 crate, which is exactly what that crate exists for.
 
-**Note on the fix.** There is no obviously correct one-liner. The UI cannot know the
-provisional id — it comes from the store's own counter — so either `Effect::Apply` must
-answer with the assigned id, or the reload must be told to adopt the newest row. That is a
-design decision, which is why this is filed rather than patched.
+**Reproduced by hand 2026-08-31**: creating `cursor probe` with no due date and no priority
+put the highlight on the top row, id 2071.
+
+**Decision, 2026-08-31: the cursor follows the record just created, whatever detail it was
+created with.** So the interface is *told* the id rather than guessing at the row — the
+alternative, having the reload adopt the newest row, is a heuristic that would pick wrongly
+the moment two creates land together or another client's task arrives in the same pull.
+
+**Fixed.** `Store::queue` allocates the provisional id inside its own transaction and
+returns the entry, so the id exists at exactly the moment it is assigned. The runtime now
+sends `Msg::TaskCreated(id)` from that returned entry **before** `Msg::Reload`, and `update`
+sets the selection from it. By the time `TasksLoaded` arrives the selected id names a real
+row, so the "no selection, take the first row" fallback never fires.
+
+The smoke harness mirrors that order, because it reimplements the runtime and `CLAUDE.md`
+warns that getting the order wrong there makes tests pass against broken code.
+
+All three tests in `crates/tui-do-smoke/tests/add_selection.rs` now pass and **none is
+`#[ignore]`d**. Verified non-vacuous: removing just the `Msg::TaskCreated` half reproduces
+the reported symptom exactly — *"the cursor landed on 'overdue, sorts first'"*.
+
+**A test bug found on the way, worth recording.** The first run after the fix still failed,
+and not because of the product: `mount_create` echoed a hardcoded title, and since the push
+replaces the local row with the server's answer, the mock was renaming the task under the
+cursor. The selection was right and the assertion was reading the wrong thing. A fixture
+that echoes something other than what was sent is not a harmless simplification.
 
 ---
 

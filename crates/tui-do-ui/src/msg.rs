@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
-use tui_do_core::models::{Label, Project, Task};
+use tui_do_core::models::{Label, Project, Task, TaskId};
 use tui_do_core::store::{ProjectCounts, QueueHealth};
 use tui_do_core::SyncEvent;
 
@@ -56,6 +56,15 @@ pub enum Msg {
 
     /// A store read failed. The interface stays usable and says so.
     StoreFailed(String),
+
+    /// The store assigned this id to the task the user just created.
+    ///
+    /// The interface cannot work this out for itself: a provisional id comes from the
+    /// store's own counter, inside the transaction that queues the create. Without being
+    /// told, the optimistic row carries the placeholder `TaskId(0)`, the reload that
+    /// follows cannot find it, and the selection falls back to the first row -- so the
+    /// next keystroke acts on a task the user never chose.
+    TaskCreated(TaskId),
 
     /// An effect the runtime performed could not be done, in words for the user.
     ///
