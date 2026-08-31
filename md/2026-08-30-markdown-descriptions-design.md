@@ -104,8 +104,16 @@ One styling layer, one wrap engine, two entry points. A new module,
 no `Msg`, no model state and no cache. `PLAN.md` specified a cache keyed per task and
 invalidated on width because it assumed a subprocess, and a fork-exec at 5–20ms genuinely
 needs one; parsing a median 118-byte string does not. The loop draws once per message with
-a one-second `Tick` floor, so the idle cost is one parse per second of a string smaller
-than this paragraph.
+a one-second `Tick` floor.
+
+**Revised 2026-08-31, because the data outgrew the measurement.** The sizes above — median
+118 bytes, largest 16,987 — were the whole store on 2026-08-30. A session transcript pasted
+into a task made one of **131,204 bytes**, nine times the previous maximum, and it renders in
+**7.7 ms**. That is still inside a frame budget and the no-cache decision stands, but the
+claim that this is "one parse per second of a string smaller than this paragraph" is no
+longer true, and the margin is thinner than it reads. If a description an order of magnitude
+larger again appears, the preview pane will feel sticky while that task is selected, and a
+cache keyed by task id and width becomes worth its complexity.
 
 `a_pure_ui_names_no_io` keeps passing. It greps this crate's source for `Store`, `.await`,
 `spawn_blocking` and three crate names; neither library is any of those and neither
