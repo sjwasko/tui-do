@@ -138,6 +138,18 @@ impl TextDecorator for Deco {
         format!("{} ", "#".repeat(level))
     }
 
+    fn push_colour(&mut self, colour: html2text::Colour) -> Option<Style> {
+        Some(
+            self.theme
+                .text()
+                .fg(ratatui::style::Color::Rgb(colour.r, colour.g, colour.b)),
+        )
+    }
+
+    fn pop_colour(&mut self) -> bool {
+        true
+    }
+
     fn quote_prefix(&self) -> String {
         "│ ".to_string()
     }
@@ -162,6 +174,35 @@ use ratatui::text::{Line, Span};
 /// `html2text` is given a width and a one- or two-column pane has nothing useful to say;
 /// asking it to wrap into that is how a renderer ends up in a loop or a panic.
 const FLOOR: u16 = 4;
+
+/// The theme, as the few CSS rules `html2text` can act on.
+///
+/// `TextDecorator` has `header_prefix` but no header *annotation*, so this is the only
+/// way a heading gets a colour. Anything not listed here is painted by the decorator.
+///
+/// Each declaration ends in `;`, deliberately: `html2text`'s CSS parser (measured against
+/// 0.17.1) silently drops a block's last declaration when it has no trailing semicolon, so
+/// `color: #rrggbb }` with no `;` parses as an empty ruleset and every heading comes back
+/// uncoloured with no error at all.
+fn agent_css(theme: Theme) -> String {
+    let Some(rgb) = style_rgb(theme.accent()) else {
+        return String::new();
+    };
+    let muted = style_rgb(theme.muted()).unwrap_or(rgb);
+    format!(
+        "h1,h2,h3,h4,h5,h6 {{ color: #{:02x}{:02x}{:02x}; }}\n\
+         blockquote {{ color: #{:02x}{:02x}{:02x}; }}\n",
+        rgb.0, rgb.1, rgb.2, muted.0, muted.1, muted.2
+    )
+}
+
+/// The RGB of a style's foreground, when it has one that CSS can name.
+fn style_rgb(style: Style) -> Option<(u8, u8, u8)> {
+    match style.fg {
+        Some(ratatui::style::Color::Rgb(r, g, b)) => Some((r, g, b)),
+        _ => None,
+    }
+}
 
 /// A task's description, ready to draw.
 ///
@@ -191,9 +232,14 @@ pub fn render(description: &str, width: u16, theme: Theme) -> Vec<Line<'static>>
         comrak::markdown_to_html(description, &options)
     };
 
-    let Ok(lines) = html2text::config::with_decorator(Deco { theme })
-        .lines_from_read(html.as_bytes(), usize::from(width.max(FLOOR)))
-    else {
+    let config = html2text::config::with_decorator(Deco { theme });
+    let config = match config.add_agent_css(&agent_css(theme)) {
+        Ok(config) => config,
+        // A stylesheet this module wrote failing to parse is a bug here, not bad input,
+        // and it costs colour rather than correctness -- render without it.
+        Err(_) => html2text::config::with_decorator(Deco { theme }),
+    };
+    let Ok(lines) = config.lines_from_read(html.as_bytes(), usize::from(width.max(FLOOR))) else {
         return Vec::new();
     };
 
@@ -229,7 +275,7 @@ pub fn render(description: &str, width: u16, theme: Theme) -> Vec<Line<'static>>
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::theme::{ColorDepth, Theme};
@@ -463,5 +509,34 @@ mod tests {
                 Theme::new(ColorDepth::TrueColor),
             );
         }
+    }
+
+    #[test]
+    fn a_heading_is_coloured_not_merely_prefixed() {
+        let theme = Theme::new(ColorDepth::TrueColor);
+        let lines = render("# Plan: Migrate Forgejo\n\nbody text", 60, theme);
+        let heading = lines
+            .iter()
+            .find(|l| text_of(std::slice::from_ref(l))[0].contains("Migrate Forgejo"))
+            .expect("no heading line");
+        assert!(
+            heading
+                .spans
+                .iter()
+                .any(|s| s.style != Style::new() && s.style != theme.text()),
+            "the heading was not styled: {:?}",
+            heading.spans
+        );
+    }
+
+    #[test]
+    fn a_trailing_empty_paragraph_is_not_content() {
+        // Vikunja's web editor genuinely produces this shape: an empty paragraph left
+        // behind at the end of a description, holding only a non-breaking space.
+        let lines = rendered("<p>real text</p><p>&nbsp;</p>", 60);
+        assert!(
+            lines.last().is_some_and(|l| l.contains("real text")),
+            "a trailing blank line was kept as content: {lines:?}"
+        );
     }
 }
