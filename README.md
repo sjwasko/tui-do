@@ -76,6 +76,25 @@ Over SSH instead, if you have a key on the Forgejo instance:
 The first build fetches and compiles the whole dependency tree and takes a few minutes.
 Make sure `~/.local/bin` is on your `PATH`.
 
+### Verifying the build
+
+```sh
+cargo test --workspace
+```
+
+**Read the total, not the last line.** `cargo test` prints one `test result:` line per test
+binary — eighteen of them — and the last few are doc-test targets that legitimately contain
+no tests, so the output ends with `0 passed` however well the run went. Summing them is what
+tells you:
+
+```sh
+cargo test --workspace 2>&1 | grep -E '^test result' | \
+  awk '{p+=$4; f+=$6} END {print "passed="p"  failed="f}'
+```
+
+Anything but `failed=0` is a real problem. `cargo clippy --workspace --all-targets` should
+also be silent.
+
 Shell completions, including for the quick-add flags:
 
 ```sh
