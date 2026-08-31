@@ -850,7 +850,16 @@ pub async fn add(
     }
 
     if offline {
-        println!("Queued. The next run will send it.");
+        // `--offline` says "do not send it now", not "do not tell me the sending is
+        // broken". A config that cannot authenticate -- an unreadable token file, or one
+        // that is a directory -- makes "the next run will send it" a false promise, and
+        // the same config without `--offline` reports the problem plainly. Saying it here
+        // too costs one line and is the difference between a task that is waiting and a
+        // task that will never go.
+        match problem {
+            Some(problem) => println!("Queued, but not syncing later either: {problem}"),
+            None => println!("Queued. The next run will send it."),
+        }
         return Ok(());
     }
 

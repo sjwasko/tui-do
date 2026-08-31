@@ -602,9 +602,13 @@ impl Store {
     /// [`crate::CoreError::Encoding`] if a stored payload cannot be parsed.
     pub async fn pending(&self, limit: Option<u32>) -> Result<Vec<OutboxEntry>> {
         self.read(move |connection| {
-            // `next_attempt_at` in the future means a previous attempt failed and the
-            // backoff has not elapsed. Filtered in SQL rather than in the caller so
-            // `pending_count` and the drain loop cannot disagree about what is ready.
+            // Every queued entry, including ones whose `next_attempt_at` is still in the
+            // future. **Deliberately unfiltered**, and an earlier version of this comment
+            // claimed the opposite: filtering the backoff out in SQL would break `r` and
+            // `R`, which pass `Backoff::Ignore` precisely so a user who has just fixed
+            // their network can retry everything queued. Whether an entry is *due* is the
+            // drain's decision, not this query's, because only the drain knows which
+            // trigger asked.
             let mut sql = String::from(
                 "SELECT id, created, payload, attempts, last_error, next_attempt_at
                    FROM outbox ORDER BY id ASC",
@@ -867,7 +871,15 @@ impl Store {
                 )
                 .optional()?
                 .unwrap_or(0);
-            let wait = retry_after.unwrap_or_else(|| backoff(attempts + 1));
+            // The server's `Retry-After` is honoured, but not further than tui-do's own
+            // ceiling. It is a hint from a machine that may be misconfigured, and an
+            // oversized one -- a proxy answering in milliseconds-as-seconds, say -- would
+            // otherwise push `next_attempt_at` weeks out and silence this entry's
+            // automatic retries entirely. `r` and `R` would still force it, but the user
+            // has no way to know they need to.
+            let wait = retry_after
+                .unwrap_or_else(|| backoff(attempts + 1))
+                .min(BACKOFF_CEILING);
             let next =
                 Utc::now() + chrono::TimeDelta::from_std(wait).unwrap_or(chrono::TimeDelta::zero());
             tx.execute(
@@ -1327,6 +1339,41 @@ mod tests {
             "original"
         );
         assert_eq!(store.pending_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_wild_retry_after_cannot_silence_an_entry() {
+        // A misconfigured server or proxy can send a `Retry-After` of any size. Honouring
+        // it verbatim pushed `next_attempt_at` arbitrarily far out and stopped this entry
+        // retrying on its own, with nothing on screen to say so.
+        let store = Store::in_memory().unwrap();
+        store.upsert_tasks(vec![task(1, "t")]).await.unwrap();
+        let entry = store
+            .queue(Mutation::UpdateTask {
+                before: Box::new(task(1, "t")),
+                after: Box::new(task(1, "edited")),
+            })
+            .await
+            .unwrap();
+
+        store
+            .defer(
+                entry.id,
+                "slow down".into(),
+                Some(Duration::from_secs(60 * 60 * 24 * 30)),
+            )
+            .await
+            .unwrap();
+
+        let pending = store.pending(None).await.unwrap();
+        let next = pending[0]
+            .next_attempt_at
+            .expect("a deferred entry is scheduled");
+        let wait = next - Utc::now();
+        assert!(
+            wait <= chrono::TimeDelta::from_std(BACKOFF_CEILING).unwrap(),
+            "a 30-day Retry-After was honoured verbatim: {wait}"
+        );
     }
 
     #[tokio::test]

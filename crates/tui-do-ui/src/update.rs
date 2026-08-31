@@ -74,64 +74,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             keep_sidebar_visible(model);
             Vec::new()
         }
-        Msg::LabelsLoaded(labels) => {
-            model.data.labels = labels;
-            // The one place a label form ever learns the id of a label it asked for.
-            // `Store::queue` allocates the provisional id inside its own transaction,
-            // so the reload it triggers is the only route back — and the form is on
-            // screen at exactly this moment, because that is where the label was made.
-            // A form left without it shows no tick, so the user's next Enter queues
-            // nothing at all for the label they just created.
-            //
-            // And the route back for a title, which a rename made necessary: both lists
-            // hold their own clones, `apply_locally` writes the optimistic new title
-            // into them, and the store is what decides whether that title survives. A
-            // rejected `UpdateLabel` rolls the row back and reloads *this* -- so without
-            // the refresh below the pool says `urgent` while the form the user is still
-            // looking at says `critical`, which is the rename they were just told failed.
-            // Another box's rename arrives the same way.
-            for modal in &mut model.modals {
-                match modal {
-                    Modal::Labels(state) => {
-                        state.absorb_created(&model.data.labels);
-                        state.refresh(&model.data.labels);
-                    }
-                    Modal::Picker(state) => {
-                        for candidate in &mut state.candidates {
-                            let Pick::Label(id) = candidate.pick else {
-                                continue;
-                            };
-                            if let Some(known) =
-                                model.data.labels.iter().find(|label| label.id == id)
-                            {
-                                candidate.title.clone_from(&known.title);
-                            }
-                        }
-                    }
-                    // The other half of the same gap, from the other surface that
-                    // creates a label: this one is holding a whole submission until the
-                    // labels it named exist, and this snapshot is where it finds out
-                    // they do. `resume_confirmed` below is what then runs it.
-                    Modal::ConfirmLabels(state) => state.absorb_created(&model.data.labels),
-                    // Two that hold a label and are deliberately left as they are:
-                    // `LabelEdit`'s copy is the `before` half of a three-way merge and
-                    // its fields are what the user is part-way through typing, so a
-                    // refresh would overwrite them -- a rename that landed underneath is
-                    // what `Label::merge_onto` is for, and it toasts. `Edit` holds label
-                    // *names* the user typed, which are theirs until they save. The rest
-                    // hold no label at all.
-                    Modal::LabelEdit(_)
-                    | Modal::Help(_)
-                    | Modal::Search(_)
-                    | Modal::Add(_)
-                    | Modal::Edit(_)
-                    | Modal::Priority(_)
-                    | Modal::Due(_)
-                    | Modal::QuickActions(_) => {}
-                }
-            }
-            resume_confirmed(model)
-        }
+        Msg::LabelsLoaded(labels) => absorb_labels(model, labels),
         Msg::CountsLoaded(counts) => {
             model.data.counts = counts;
             Vec::new()
@@ -161,6 +104,135 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
 ///
 /// A finished pass is the only one that reloads: the store has just changed underneath
 /// the list, and nothing else would tell the interface about it.
+/// A write the server refused: explain it, forget its undo history, and reload.
+///
+/// Hoisted out of `on_sync`'s `SyncEvent::Rejected` arm, which was roughly 60 of that
+/// function's 134 lines and did four separate jobs while every other arm did one. The body
+/// is unchanged; the reasoning in the comments is the record of why each job is here.
+fn on_rejected(model: &mut Model, subject: Subject, kind: &str, message: &str) -> Vec<Effect> {
+    // Cleared before the release below, which toasts. `Model::toast` is a single
+    // slot, so what is standing afterwards can only be the release's own note --
+    // where without this an unrelated toast left over from a moment ago would be
+    // folded into the rejection as though it were about it. Nothing is lost: the
+    // message below is set unconditionally.
+    model.status.toast = None;
+    let released = release_held_labels(model, subject, kind);
+    let aside = model.status.toast.take().map(|toast| toast.text);
+    // The one event the user must see: their edit has just vanished from the
+    // screen and they are owed an explanation.
+    //
+    // Combined rather than sequential, because the slot is one deep and the two
+    // messages are about one event. The rejection has to win -- it is the half
+    // the user cannot work out by looking -- but a released submission that went
+    // out without its label would then be written and overwritten inside the same
+    // update, leaving the task row itself as the only signal it happened.
+    model.toast(Toast::error(match aside {
+        Some(note) => format!("{kind} rejected: {message} — {note}"),
+        None => format!("{kind} rejected: {message}"),
+    }));
+    // An inverse of a change that never happened is not an undo of anything. The
+    // store has rolled the row back, so replaying the inverse would queue a write
+    // derived from a state the server never held -- `u` after a rejected create
+    // asks it to delete an id it has never seen. Drop what named this task from
+    // both stacks and leave the rest of the session's history intact.
+    model.undo.retain(|mutation| mutation.subject() != subject);
+    model.redo.retain(|mutation| mutation.subject() != subject);
+    // And it has to actually vanish. The store rolled the row back before this
+    // event was emitted, but the screen is drawn from the last query's answer, so
+    // without a reload the toast says "rejected" over a row still showing the
+    // change. Nothing else reloads in time either: an edit reaches the server via
+    // a standalone push, which ends at `Pushed` -- and that returns only
+    // `LoadPending`. The next full pass is five minutes away by default, so the
+    // contradiction sits on screen until the user presses `r`.
+    //
+    // The counts go too: a rejected done-toggle changes how many tasks a project
+    // is showing as open.
+    //
+    // The labels go too, and that became reachable when the `l` form learned to
+    // create one. The store rolls a rejected `CreateLabel` back, but
+    // `model.data.labels` and any open label form still hold the provisional --
+    // ticked, because creating is what ticked it -- so the user's next Enter
+    // queues an `AttachLabel` for an id the server has never had, which fails in
+    // turn. A rejected `UpdateLabel` is the same story with a rename: the store
+    // has the old title and both snapshots show the new one.
+    //
+    // The released work leads, and the reload follows it. A resumed `CreateTask`
+    // and the task reload are two effects the runtime spawns on two tasks of its
+    // own, so a reload that read the store first would answer without the row the
+    // user has just watched appear and blank it until something reloaded again.
+    // Spawn order is a head start rather than a guarantee -- `Effect::Apply`
+    // sends `Msg::Reload` once its write lands, which is what actually closes the
+    // window -- but the wrong order here loses that race every time and this one
+    // wins it nearly always.
+    let mut effects = released;
+    effects.extend(reload_tasks(model));
+    effects.push(Effect::LoadCounts);
+    effects.push(Effect::LoadLabels);
+    effects.push(Effect::LoadPending);
+    effects
+}
+
+/// Take a fresh label list, and tell every modal holding a label about it.
+///
+/// Hoisted out of `update`'s `Msg::LabelsLoaded` arm, which was 78 of that function's 127
+/// lines and the only thing stopping it reading as a flat dispatch. The body is unchanged.
+fn absorb_labels(model: &mut Model, labels: Vec<Label>) -> Vec<Effect> {
+    model.data.labels = labels;
+    // The one place a label form ever learns the id of a label it asked for.
+    // `Store::queue` allocates the provisional id inside its own transaction,
+    // so the reload it triggers is the only route back — and the form is on
+    // screen at exactly this moment, because that is where the label was made.
+    // A form left without it shows no tick, so the user's next Enter queues
+    // nothing at all for the label they just created.
+    //
+    // And the route back for a title, which a rename made necessary: both lists
+    // hold their own clones, `apply_locally` writes the optimistic new title
+    // into them, and the store is what decides whether that title survives. A
+    // rejected `UpdateLabel` rolls the row back and reloads *this* -- so without
+    // the refresh below the pool says `urgent` while the form the user is still
+    // looking at says `critical`, which is the rename they were just told failed.
+    // Another box's rename arrives the same way.
+    for modal in &mut model.modals {
+        match modal {
+            Modal::Labels(state) => {
+                state.absorb_created(&model.data.labels);
+                state.refresh(&model.data.labels);
+            }
+            Modal::Picker(state) => {
+                for candidate in &mut state.candidates {
+                    let Pick::Label(id) = candidate.pick else {
+                        continue;
+                    };
+                    if let Some(known) = model.data.labels.iter().find(|label| label.id == id) {
+                        candidate.title.clone_from(&known.title);
+                    }
+                }
+            }
+            // The other half of the same gap, from the other surface that
+            // creates a label: this one is holding a whole submission until the
+            // labels it named exist, and this snapshot is where it finds out
+            // they do. `resume_confirmed` below is what then runs it.
+            Modal::ConfirmLabels(state) => state.absorb_created(&model.data.labels),
+            // Two that hold a label and are deliberately left as they are:
+            // `LabelEdit`'s copy is the `before` half of a three-way merge and
+            // its fields are what the user is part-way through typing, so a
+            // refresh would overwrite them -- a rename that landed underneath is
+            // what `Label::merge_onto` is for, and it toasts. `Edit` holds label
+            // *names* the user typed, which are theirs until they save. The rest
+            // hold no label at all.
+            Modal::LabelEdit(_)
+            | Modal::Help(_)
+            | Modal::Search(_)
+            | Modal::Add(_)
+            | Modal::Edit(_)
+            | Modal::Priority(_)
+            | Modal::Due(_)
+            | Modal::QuickActions(_) => {}
+        }
+    }
+    resume_confirmed(model)
+}
+
 fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
     match event {
         SyncEvent::Started(phase) => {
@@ -205,68 +277,7 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             subject,
             kind,
             message,
-        } => {
-            // Cleared before the release below, which toasts. `Model::toast` is a single
-            // slot, so what is standing afterwards can only be the release's own note --
-            // where without this an unrelated toast left over from a moment ago would be
-            // folded into the rejection as though it were about it. Nothing is lost: the
-            // message below is set unconditionally.
-            model.status.toast = None;
-            let released = release_held_labels(model, subject, &kind);
-            let aside = model.status.toast.take().map(|toast| toast.text);
-            // The one event the user must see: their edit has just vanished from the
-            // screen and they are owed an explanation.
-            //
-            // Combined rather than sequential, because the slot is one deep and the two
-            // messages are about one event. The rejection has to win -- it is the half
-            // the user cannot work out by looking -- but a released submission that went
-            // out without its label would then be written and overwritten inside the same
-            // update, leaving the task row itself as the only signal it happened.
-            model.toast(Toast::error(match aside {
-                Some(note) => format!("{kind} rejected: {message} — {note}"),
-                None => format!("{kind} rejected: {message}"),
-            }));
-            // An inverse of a change that never happened is not an undo of anything. The
-            // store has rolled the row back, so replaying the inverse would queue a write
-            // derived from a state the server never held -- `u` after a rejected create
-            // asks it to delete an id it has never seen. Drop what named this task from
-            // both stacks and leave the rest of the session's history intact.
-            model.undo.retain(|mutation| mutation.subject() != subject);
-            model.redo.retain(|mutation| mutation.subject() != subject);
-            // And it has to actually vanish. The store rolled the row back before this
-            // event was emitted, but the screen is drawn from the last query's answer, so
-            // without a reload the toast says "rejected" over a row still showing the
-            // change. Nothing else reloads in time either: an edit reaches the server via
-            // a standalone push, which ends at `Pushed` -- and that returns only
-            // `LoadPending`. The next full pass is five minutes away by default, so the
-            // contradiction sits on screen until the user presses `r`.
-            //
-            // The counts go too: a rejected done-toggle changes how many tasks a project
-            // is showing as open.
-            //
-            // The labels go too, and that became reachable when the `l` form learned to
-            // create one. The store rolls a rejected `CreateLabel` back, but
-            // `model.data.labels` and any open label form still hold the provisional --
-            // ticked, because creating is what ticked it -- so the user's next Enter
-            // queues an `AttachLabel` for an id the server has never had, which fails in
-            // turn. A rejected `UpdateLabel` is the same story with a rename: the store
-            // has the old title and both snapshots show the new one.
-            //
-            // The released work leads, and the reload follows it. A resumed `CreateTask`
-            // and the task reload are two effects the runtime spawns on two tasks of its
-            // own, so a reload that read the store first would answer without the row the
-            // user has just watched appear and blank it until something reloaded again.
-            // Spawn order is a head start rather than a guarantee -- `Effect::Apply`
-            // sends `Msg::Reload` once its write lands, which is what actually closes the
-            // window -- but the wrong order here loses that race every time and this one
-            // wins it nearly always.
-            let mut effects = released;
-            effects.extend(reload_tasks(model));
-            effects.push(Effect::LoadCounts);
-            effects.push(Effect::LoadLabels);
-            effects.push(Effect::LoadPending);
-            effects
-        }
+        } => on_rejected(model, subject, &kind, &message),
         SyncEvent::Adopted {
             provisional,
             assigned,
@@ -1691,7 +1702,17 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // By day, not by instant: the field shows a date and the parser gives it a time, so
     // re-saving an untouched form moves 09:00 to 23:59 and an instant comparison would
     // call that a backdate on every save of anything overdue.
-    let day = |task: &Task| task.due_date.get().map(|due| due.date_naive());
+    // In the user's zone before asking what day it is, the same as
+    // [`crate::rows::relative_date`]. "The day changed" is a claim about the calendar the
+    // user is living in: for a reader at UTC+10, moving a due date from the 27th to the
+    // 26th local is 2026-08-26T14:00Z against 2026-08-25T14:00Z -- different UTC days by
+    // luck, but a shift of a few hours either way makes two different local days share
+    // one UTC day, and the warning that the date has passed is then never shown.
+    let day = |task: &Task| {
+        task.due_date
+            .get()
+            .map(|due| due.with_timezone(&model.now.timezone()).date_naive())
+    };
     let backdated = (day(&after) != day(&before))
         .then(|| past_due_note(after.due_date.get(), model.now))
         .flatten();

@@ -3,25 +3,45 @@
 Findings from a full-codebase review on **2026-08-31**, run by seven parallel reviewers
 over all ~28,000 lines of production Rust, plus a live smoke test of the built binary.
 
-**Nothing here is fixed.** This is the triage list. Each finding names a file and line, a
-concrete failure scenario, and — where one was run — the experiment that confirmed or
-refuted it.
+Each finding names a file and line, a concrete failure scenario, and — where one was run —
+the experiment that confirmed or refuted it.
 
-At the time of writing: 686 tests pass, `cargo clippy --workspace --all-targets -D warnings`
+**Nine were fixed on 2026-08-31** and are struck through below with their commit. They were
+the ones needing no design decision: each matched a pattern already in the codebase. What
+remains is deliberately the harder list — every open item is a real decision or needs
+verification first.
+
+After the nine fixes: **687 tests pass** (plus one `#[ignore]`d, which is BUG-1's proof), `cargo clippy --workspace --all-targets -- -D warnings`
 exits 0, the release build succeeds, and **no invocation of the binary panicked** under any
 malformed input the smoke test could construct.
+
+## What is left, at a glance
+
+| | |
+|---|---|
+| **Decide, then fix** | BUG-1 (Critical), BUG-2, BUG-3, BUG-4, BUG-6, BUG-7, BUG-9 |
+| **Verify first** | BUG-15 (archived tasks — highest value), BUG-14 |
+| **Structural** | `push_with`, `runtime::add`, `apply_edit` |
+| **Minor** | 13 remaining, none urgent |
+
+Every open item needs either a decision or a measurement. Nothing is left that is merely
+mechanical — that was the point of the 2026-08-31 pass.
 
 ## Summary
 
 | area | Critical | Important | Minor |
 |---|---|---|---|
-| UI state machine | **1** | 1 | 2 |
-| Sync engine | 0 | 4 | 7 |
-| Outbox and schema | 0 | 2 | 0 |
-| Rendering | 0 | 3 | 2 |
-| Runtime and CLI | 0 | 3 | 3 |
-| API client | 0 | 1 | 1 |
-| **total** | **1** | **14** | **15** |
+| UI state machine | **1** | 1 → 0 | 2 |
+| Sync engine | 0 | 4 | 7 → 5 |
+| Outbox and schema | 0 | 2 → 1 | 0 |
+| Rendering | 0 | 3 → 2 | 2 |
+| Runtime and CLI | 0 | 3 → 2 | 3 |
+| API client | 0 | 1 → 0 | 1 |
+| **found** | **1** | **14** | **15** |
+| **fixed** | 0 | **5** | **2** |
+| **open** | **1** | **9** | **13** |
+
+Plus two of the four structural items, leaving three.
 
 Two things came back clean that were expected to be the weak points, and both were checked
 properly rather than assumed:
@@ -111,7 +131,7 @@ as the server's final answer, so a proxy's **408 Request Timeout** (or 425 Too E
 back the edit and toasts "the server refused" when nothing was decided. 401 and 429 are
 handled correctly.
 
-### BUG-5 — a server can silence retries indefinitely
+### ~~BUG-5~~ — FIXED — a server can silence retries indefinitely
 
 `crates/tui-do-core/src/store/outbox.rs:855-882` with
 `crates/tui-do-api/src/client.rs:1179-1209`. `Store::defer` honours a `Retry-After` or
@@ -119,6 +139,11 @@ handled correctly.
 which is capped at 15 minutes. A misbehaving server or proxy sending an oversized value
 pushes `next_attempt_at` arbitrarily far out. Not unrecoverable — `r`/`R` force a retry via
 `Backoff::Ignore` — but automatic retry stops silently.
+
+**Fixed.** `Store::defer` now clamps the server's value with `.min(BACKOFF_CEILING)`, the
+same 15-minute ceiling the computed backoff already used. Guarded by
+`a_wild_retry_after_cannot_silence_an_entry`, verified non-vacuous — with the clamp removed
+it reports `PT2591999.99S`, the full 30 days, and fails.
 
 ### BUG-6 — the production guard is a substring match
 
@@ -135,12 +160,16 @@ on any thread's panic, but tokio catches a spawned effect's panic at the task bo
 the process keeps running — raw mode off, alternate screen gone, application still drawing
 into a terminal that no longer expects it.
 
-### BUG-8 — `tui-do add --offline` swallows a real configuration error
+### ~~BUG-8~~ — FIXED — `tui-do add --offline` swallows a real configuration error
 
 `crates/tui-do/src/runtime/mod.rs:743, 852-855`. `--offline` discards the `build_sync`
 diagnostic, so an unreadable `token_file`, or one pointing at a directory, prints nothing —
 while the same config without `--offline` prints a clear error. The "the next run will send
 it" reassurance is then false, because the next run cannot authenticate either.
+
+**Fixed.** `--offline` now reports the diagnostic instead of discarding it:
+`Queued, but not syncing later either: {problem}`. `--offline` means "do not send it now",
+not "do not tell me sending is broken".
 
 ### BUG-9 — `truncate` and `wrap` split graphemes
 
@@ -149,11 +178,15 @@ it" reassurance is then false, because the next run cannot authenticate either.
 mid-glyph and the cell corrupted. No panic — `unicode-width` keeps the arithmetic sound —
 but the display is wrong.
 
-### BUG-10 — a percent-width column can collapse to width 1
+### ~~BUG-10~~ — FIXED — a percent-width column can collapse to width 1
 
 `crates/tui-do-ui/src/rows.rs:81-88`. `measure()`'s percentage path has no floor. A config
 producing a wrap-enabled column of width 1, combined with unspaced CJK text, makes `wrap()`'s
 long-word-break loop emit blank rows and drop the title entirely, leaving only `…`.
+
+**Fixed.** The percentage path now floors at `natural_min(spec.column)`, which the
+non-percent path already used as its default — so the two agree rather than leaving the
+percentage to round itself away to nothing.
 
 ### BUG-11 — the edit form can focus a field that is off-screen
 
@@ -162,7 +195,7 @@ unlike every other multi-row modal. On a short terminal, `Tab` moves focus to a 
 has been clipped away, and the user types into it with no visual feedback at all — caret
 placement is silently skipped when `y >= area.bottom()`.
 
-### BUG-12 — the local-day rule is broken in the backdate check
+### ~~BUG-12~~ — FIXED — the local-day rule is broken in the backdate check
 
 `crates/tui-do-ui/src/update.rs:1694`. `apply_edit`'s day-changed check calls `.date_naive()`
 directly on the UTC due-date instant instead of converting into `model.now.timezone()` first.
@@ -170,13 +203,22 @@ directly on the UTC due-date instant instead of converting into `model.now.timez
 genuine local-day backdate can look unchanged in UTC, suppressing the "that date has passed"
 warning. This is a narrower instance of the exact bug `CLAUDE.md` says the predecessor had.
 
-### BUG-13 — a dead error classifier disagrees with the live one
+**Fixed.** The `day` closure now converts with `.with_timezone(&model.now.timezone())`
+before `.date_naive()`, matching `rows::relative_date`.
+
+### ~~BUG-13~~ — PARTLY FIXED — a dead error classifier disagrees with the live one
 
 `crates/tui-do-api/src/error.rs:193`. `ApiError::is_retryable()` is dead code whose doc
 comment claims the sync engine uses it. The engine actually reimplements the classification
 as `is_permanent()` (`sync/mod.rs:901`), and the two **disagree on 401** — and on 429 and
 `Deserialize`. Harmless today because nothing calls it; a landmine for whoever refactors
 next and reasonably assumes the shared-looking helper is the shared one.
+
+**Partly fixed, deliberately.** The doc comment was the landmine — it claimed the sync
+engine used this — so it now states plainly that it does not, names `sync::is_permanent` as
+the real decision, spells out that the two disagree on 401 and `Deserialize`, and points at
+BUG-4. **Collapsing them into one is not done**, because which classification is correct
+*is* BUG-4, and that is an open decision.
 
 ### BUG-14 — a rolled-back `DeleteTask` can resurrect a phantom label row
 
@@ -238,8 +280,13 @@ a permission classifier** and were not run, so the question is still open.
 - The 120-second clock-skew margin on the incremental watermark is a guess, where
   `GET /info`'s `Date` header would give the real offset for free. Bounded by the timer's
   periodic Full pass.
-- `LAST_RECONCILE` is written and never read.
-- `Store::pending`'s comment claims an SQL backoff filter that is not in the query.
+- ~~`LAST_RECONCILE` is written and never read.~~ **Fixed** — kept (the distinction it
+  carries is real and documented in `CLAUDE.md`) but its doc comment now says plainly that
+  nothing in production reads it and what it is for.
+- ~~`Store::pending`'s comment claims an SQL backoff filter that is not in the query.~~
+  **Fixed** — and the comment was worse than stale: implementing what it described would
+  **break** `r`/`R`, which pass `Backoff::Ignore` precisely to retry entries still inside
+  their backoff. The comment now says the query is deliberately unfiltered and why.
 - `RUNNING` is never cleared on panic or abort.
 - A two-atomic seam in the sync trigger can drop an `Asked` force.
 - A 4xx from `labels_named` rejects the create it was there to protect.
@@ -313,11 +360,20 @@ it is the only function in the UI crate doing parsing *and* validation *and* mut
 in one body — and its second `resolve_labels` call needs a nine-line comment explaining why
 it is not a duplicate. Extract `draft_into_task(draft, model) -> (Task, Vec<String>)`.
 
-### 4. `update::on_sync` (`update.rs:164`) and `update::update` (`update.rs:32`)
+### ~~4.~~ DONE — `update::on_sync` (`update.rs:164`) and `update::update` (`update.rs:32`)
 
-Both are clean flat dispatches spoiled by one obese arm each: `SyncEvent::Rejected` is ~60
-lines doing four jobs, and `Msg::LabelsLoaded` is ~78 of `update`'s 127. Hoisting them to
-`on_rejected` and `absorb_labels` is free and mechanical. **Do these first.**
+Both were clean flat dispatches spoiled by one obese arm each: `SyncEvent::Rejected` was ~60
+lines doing four jobs, and `Msg::LabelsLoaded` was ~78 of `update`'s 127.
+
+**Done.** Hoisted verbatim — no logic changed, every comment carried across — into
+`on_rejected` and `absorb_labels`. Both callers are now one line, and the measurements moved:
+
+| | before | after |
+|---|---|---|
+| `fn update` | 127 | **70** |
+| `fn on_sync` | 134 | **73** |
+
+Neither exceeds 100 lines any more, so the count of over-100-line functions is 12 → 10.
 
 ### Explicitly fine, do not "fix"
 

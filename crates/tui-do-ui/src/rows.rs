@@ -81,7 +81,15 @@ pub fn measure(layout: &ColumnLayout, available: u16) -> Vec<MeasuredColumn> {
     let want = |spec: &ColumnSpec| -> u16 {
         let base = spec.width_percent.map_or_else(
             || spec.min_width.unwrap_or_else(|| natural_min(spec.column)),
-            |percent| available.saturating_mul(percent.min(100)) / 100,
+            // Never below what the column needs to say anything. A small percentage of a
+            // narrow terminal rounds to 0 or 1 -- `width_percent: 1` at 80 columns is
+            // zero -- and a wrap-enabled column one cell wide makes `wrap`'s long-word
+            // break emit blank rows and drop the text, leaving a lone ellipsis. The
+            // non-percent path already treats `natural_min` as the floor; this makes the
+            // two agree rather than leaving the percentage path to round itself away.
+            |percent| {
+                (available.saturating_mul(percent.min(100)) / 100).max(natural_min(spec.column))
+            },
         );
         let base = base.max(spec.min_width.unwrap_or(0));
         spec.max_width.map_or(base, |max| base.min(max))
