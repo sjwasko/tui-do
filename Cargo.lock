@@ -3239,6 +3239,7 @@ dependencies = [
  "tui-do-api",
  "tui-do-core",
  "tui-do-ui",
+ "url",
 ]
 
 [[package]]

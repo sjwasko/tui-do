@@ -22,6 +22,18 @@ const REDACTED: &str = "<redacted — the real token is written to the file>";
 /// answer is "yes, I meant it" rather than "there was no way to say no".
 const PROD_HOSTS: &[&str] = &["prod-box"];
 
+/// Addresses that are the production instance.
+///
+/// A hostname is not the only way to name a machine, and the guard used to check only the
+/// name. A config pointing at `https://203.0.113.7:8443` reached exactly the same server
+/// with exactly the same data and no guard at all — found on 2026-08-31 and recorded as
+/// BUG-6. Both of prod's addresses are listed because both route to it: the tailnet one from
+/// anywhere on the tailnet, the LAN one from the house.
+///
+/// These are addresses on a private tailnet and a home LAN. They are not secrets and they
+/// resolve to nothing from outside it.
+const PROD_ADDRS: &[&str] = &["203.0.113.7", "192.0.2.19"];
+
 /// Command-line interface.
 #[derive(Debug, Parser)]
 #[command(name = "tui-do", version, about, long_about = None)]
@@ -268,14 +280,49 @@ fn run_completions(shell: clap_complete::Shell) {
 
 /// Refuse to start against production unless it was asked for explicitly.
 fn guard_production(url: &str, acknowledged: bool) -> anyhow::Result<()> {
-    let host = url.to_ascii_lowercase();
-    if !PROD_HOSTS.iter().any(|prod| host.contains(prod)) || acknowledged {
+    if acknowledged || !names_production(url) {
         return Ok(());
     }
     bail!(
         "{url} is the production server, which is read-only by policy.\n\
          Point server.url at the dev instance, or pass --i-know-this-is-prod if you mean it."
     )
+}
+
+/// Whether this URL reaches the production instance, by either of its names.
+///
+/// The check is against the URL's **host**, not the URL text. Substring-matching the whole
+/// string was wrong in both directions: it missed `https://203.0.113.7:8443`, which is
+/// prod, and it would have refused `https://dev.example.com/?note=prod-box`, which is not.
+///
+/// A name matches when it *is* a production host or when its first label is one, so both
+/// `prod-box` and `prod-box.example.net` are caught while `prod-box-notreally.example.com`
+/// is not. The port and the path never take part.
+fn names_production(url: &str) -> bool {
+    let Some(host) = host_of(url) else {
+        // Unparseable. The guard cannot do better than the old test here, and waving an
+        // unreadable URL through would be a worse answer than a false positive.
+        let lowered = url.to_ascii_lowercase();
+        return PROD_HOSTS.iter().any(|prod| lowered.contains(prod));
+    };
+    if PROD_ADDRS.contains(&host.as_str()) {
+        return true;
+    }
+    PROD_HOSTS.iter().any(|prod| {
+        host == *prod
+            || host
+                .strip_prefix(prod)
+                .is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
+/// The host of a URL, lowercased, without its port, path or trailing dot.
+fn host_of(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    // `example.com.` and `example.com` are the same name; a trailing dot is how you say
+    // "fully qualified" and is not part of the identity.
+    Some(host.trim_end_matches('.').to_string())
 }
 
 /// Add a task from the command line.
@@ -381,6 +428,57 @@ fn redacted(config: &Config) -> Config {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// BUG-6: the guard matched the URL *text*, so prod-by-IP walked straight through.
+    ///
+    /// Proved on 2026-08-31 by starting tui-do against prod's tailnet address with no
+    /// `--i-know-this-is-prod` and no complaint. Every row here is a way of naming the same
+    /// machine that holds real task data.
+    #[test]
+    fn every_way_of_naming_production_is_refused() {
+        for url in [
+            "https://prod-box.example.net:8443",
+            "https://SW-HP2.example.net:8443",  // case
+            "https://prod-box.example.net:8443/", // trailing slash
+            "https://prod-box.example.net./",     // fully-qualified trailing dot
+            "https://prod-box.example.net",       // no port
+            "http://prod-box:8443",                     // short name
+            "https://203.0.113.7:8443",            // tailnet address -- BUG-6
+            "https://192.0.2.19:8443",              // LAN address
+        ] {
+            assert!(
+                guard_production(url, false).is_err(),
+                "{url} was not recognised as production"
+            );
+            // ...and the acknowledgement still works, or the flag would be a lie.
+            assert!(
+                guard_production(url, true).is_ok(),
+                "{url} refused despite the flag"
+            );
+        }
+    }
+
+    /// The other direction: the guard must not cry wolf, or it trains people to pass the
+    /// flag by reflex — at which point it protects nothing.
+    #[test]
+    fn everything_that_is_not_production_still_starts() {
+        for url in [
+            "https://dev-box.example.net:8443", // the dev instance
+            "https://198.51.100.4:8443",                // dev by address
+            "http://localhost:3456",
+            "https://vikunja.example.com",
+            // The old check substring-matched the whole URL, so this was refused for a
+            // word in its query string.
+            "https://dev.example.com/?note=prod-box",
+            // A different machine whose name merely begins the same way.
+            "https://prod-box-notreally.example.com",
+        ] {
+            assert!(
+                guard_production(url, false).is_ok(),
+                "{url} was wrongly treated as production"
+            );
+        }
+    }
     use super::*;
 
     /// Generate a completion script into a string.

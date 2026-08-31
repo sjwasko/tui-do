@@ -47,7 +47,7 @@ throughout, both learned the hard way in this pass:
 | BUG-1 | written and in the tree, `#[ignore]`d | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
-| BUG-6 | pure URL table test | yes |
+| ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
 | BUG-9 | grapheme table against `truncate`/`wrap` | yes |
 | BUG-14 | store-level rollback sequence | yes |
@@ -57,7 +57,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-1 (Critical), BUG-4, BUG-6, BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-1 (Critical), BUG-4, BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-15 (archived tasks — highest value), BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -348,13 +348,36 @@ same 15-minute ceiling the computed backoff already used. Guarded by
 `a_wild_retry_after_cannot_silence_an_entry`, verified non-vacuous — with the clamp removed
 it reports `PT2591999.99S`, the full 30 days, and fails.
 
-### BUG-6 — the production guard is a substring match
+### ~~BUG-6~~ — FIXED — the production guard is a substring match
 
 `crates/tui-do/src/main.rs:270-279`. `guard_production` matches the literal string
 `"prod-box"`. A config naming production **by IP address** passes straight through with no
 `--i-know-this-is-prod` required. Proved with the documentation-range address `192.0.2.55`;
 the real production host was never contacted. The guard exists precisely so that "yes, I
 meant it" is possible to say — and a stale config pointed at prod by IP would write to it.
+
+**Fixed 2026-08-31, and it was wrong in *both* directions.** Matching the URL text rather
+than its host missed `https://203.0.113.7:8443`, which is production, and would have
+refused `https://dev.example.com/?note=prod-box`, which is not — and a guard that cries wolf
+trains people to pass `--i-know-this-is-prod` by reflex, at which point it protects nothing.
+
+`guard_production` now parses the URL with `url::Url` and tests the **host**: a name matches
+when it is a production host or when its first label is one, so `prod-box` and
+`prod-box.example.net` are caught while `prod-box-notreally.example.com` is not. Port,
+path and query never take part, a trailing dot is stripped, and matching is
+case-insensitive. Prod's addresses — tailnet and LAN — are listed alongside its name,
+because a hostname is not the only way to name a machine. An unparseable URL falls back to
+the old substring test rather than being waved through.
+
+Two table tests pin both directions, verified non-vacuous: restoring the old one-line guard
+fails them with *"`https://203.0.113.7:8443` was not recognised as production"* and
+*"`https://dev.example.com/?note=prod-box` was wrongly treated as production"*. Confirmed
+against the release binary, which now refuses.
+
+**The same hole existed in a second place and is closed too.** `FORBIDDEN_HOSTS` in
+`crates/tui-do-api/tests/live.rs` guards the live test suite the same way and checked only
+the name. That one is arguably worse — a test suite pointed at production writes with nobody
+watching.
 
 **Suggested test — a pure table test, no network.** `guard_production` takes a URL and
 returns a decision, so it is directly testable:
