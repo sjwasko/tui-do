@@ -59,10 +59,121 @@ pub(crate) fn looks_like_html(description: &str) -> bool {
     })
 }
 
+use html2text::render::TextDecorator;
+use ratatui::style::{Modifier, Style};
+
+use crate::theme::Theme;
+
+/// How each construct is painted.
+///
+/// `TextDecorator::Annotation` is whatever the implementor says it is, so it is a ratatui
+/// `Style` and there is no second palette to keep in step with `theme.rs` — which is the
+/// thing `glow` could not offer at any price.
+// Task 4 constructs this; `expect` rather than `allow` so that wiring it up makes this
+// attribute warn and forces its own removal.
+#[cfg_attr(not(test), expect(dead_code))]
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Deco {
+    theme: Theme,
+}
+
+impl TextDecorator for Deco {
+    type Annotation = Style;
+
+    fn decorate_link_start(&mut self, _url: &str) -> (String, Style) {
+        (
+            String::new(),
+            self.theme.accent().add_modifier(Modifier::UNDERLINED),
+        )
+    }
+
+    fn decorate_link_end(&mut self) -> String {
+        String::new()
+    }
+
+    fn decorate_em_start(&self) -> (String, Style) {
+        (
+            String::new(),
+            self.theme.text().add_modifier(Modifier::ITALIC),
+        )
+    }
+
+    fn decorate_em_end(&self) -> String {
+        String::new()
+    }
+
+    fn decorate_strong_start(&self) -> (String, Style) {
+        (
+            String::new(),
+            self.theme.text().add_modifier(Modifier::BOLD),
+        )
+    }
+
+    fn decorate_strong_end(&self) -> String {
+        String::new()
+    }
+
+    fn decorate_strikeout_start(&self) -> (String, Style) {
+        (
+            String::new(),
+            self.theme.text().add_modifier(Modifier::CROSSED_OUT),
+        )
+    }
+
+    fn decorate_strikeout_end(&self) -> String {
+        String::new()
+    }
+
+    // Foreground only: the theme paints no backgrounds, deliberately -- see theme.rs.
+    fn decorate_code_start(&self) -> (String, Style) {
+        (String::new(), self.theme.accent())
+    }
+
+    fn decorate_code_end(&self) -> String {
+        String::new()
+    }
+
+    fn decorate_preformat_first(&self) -> Style {
+        self.theme.muted()
+    }
+
+    fn decorate_preformat_cont(&self) -> Style {
+        self.theme.muted()
+    }
+
+    fn decorate_image(&mut self, _src: &str, title: &str) -> (String, Style) {
+        (format!("[{title}]"), self.theme.muted())
+    }
+
+    fn header_prefix(&self, level: usize) -> String {
+        format!("{} ", "#".repeat(level))
+    }
+
+    fn quote_prefix(&self) -> String {
+        "│ ".to_string()
+    }
+
+    fn unordered_item_prefix(&self) -> String {
+        "• ".to_string()
+    }
+
+    fn ordered_item_prefix(&self, i: i64) -> String {
+        format!("{i}. ")
+    }
+
+    fn make_subblock_decorator(&self) -> Self {
+        *self
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::theme::{ColorDepth, Theme};
+    use html2text::render::TextDecorator;
+    use ratatui::style::Modifier;
 
     #[test]
     fn html_from_the_web_editor_is_recognised() {
@@ -101,5 +212,41 @@ mod tests {
             "# Plan: Migrate Forgejo\n\n## Overview\n\n- one\n- two"
         ));
         assert!(!looks_like_html("| a | b |\n|---|---|\n| 1 | 2 |"));
+    }
+
+    fn deco() -> Deco {
+        Deco {
+            theme: Theme::new(ColorDepth::TrueColor),
+        }
+    }
+
+    #[test]
+    fn the_decorator_answers_in_the_projects_own_theme() {
+        let theme = Theme::new(ColorDepth::TrueColor);
+        let mut d = deco();
+        assert_eq!(
+            d.decorate_strong_start().1,
+            theme.text().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            d.decorate_em_start().1,
+            theme.text().add_modifier(Modifier::ITALIC)
+        );
+        assert_eq!(d.decorate_code_start().1, theme.accent());
+        assert_eq!(
+            d.decorate_link_start("http://x").1,
+            theme.accent().add_modifier(Modifier::UNDERLINED)
+        );
+        assert_eq!(d.decorate_preformat_first(), theme.muted());
+    }
+
+    #[test]
+    fn list_and_quote_prefixes_are_the_ones_the_preview_pane_already_uses() {
+        let d = deco();
+        // `rows::plain_text` used "• " for a list item; the preview should not change
+        // shape just because the renderer under it did.
+        assert_eq!(d.unordered_item_prefix(), "• ");
+        assert_eq!(d.ordered_item_prefix(3), "3. ");
+        assert_eq!(d.quote_prefix(), "│ ");
     }
 }
