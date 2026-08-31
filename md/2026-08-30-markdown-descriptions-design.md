@@ -174,6 +174,12 @@ its tests already encode the hazards. **`plain_text` is not extended into a conv
 the first draft proposed — it is deleted, and its knowledge becomes the router**, with
 those six assertions carried across as router tests.
 
+`plain_text` also carried an `OPAQUE` list so that `<script>` and `<style>` bodies —
+code and CSS, not prose — were never shown. That list did not need porting: `html5ever`
+strips both elements' bodies on its own, and `html2text` (which is built on it) inherits
+that for free. Measured: a description containing `<script>alert('x')</script>` renders
+with no trace of the script, with no help from this module.
+
 **4. Wrapping is html2text's, and the widths cannot disagree with ratatui's.**
 `lines_from_read(html, width)` returns lines already wrapped. `CLAUDE.md` is emphatic that
 a second width implementation is a bug waiting to happen, so this was checked rather than
@@ -196,10 +202,18 @@ emits a few rules (`h1`…`h6`, `blockquote`) and heading colour arrives as our 
 This costs the `css` feature and `nom`. If it proves awkward the fallback is a `#` prefix
 with no colour, which is honest and is what most terminal renderers do.
 
+**`html2text` 0.17.1's CSS parser silently drops a block's final declaration if it is
+missing its trailing `;`.** `add_agent_css` returns `Ok` either way, so a rule written
+without the semicolon on its last line is a no-op, not an error, and the symptom is a
+heading that simply comes out uncoloured. Cost real debugging time to trace back to a
+missing character. Every rule in `theme.rs`'s stylesheet carries a trailing `;`, including
+the last one in each block.
+
 **6. Tables are html2text's, with `extension.table` on.** comrak does not parse GFM tables
 by default and the pipes came through literally until it was enabled. 10 of 487
-descriptions have a table and the pane is about 40 columns, so this may still not fit; the
-first version renders what html2text gives and does not fight it.
+descriptions have a table and the pane is about 40 columns. Measured rather than guessed:
+a table renders as a proper boxed grid at both 60 and 40 columns, so the width the preview
+pane actually has is not a concern here.
 
 **7. No cache**, from the sizes above.
 
@@ -283,3 +297,17 @@ platform trait the macOS port depends on, and is a better home for that seam.
 - Wrapping at a narrow width, because the preview pane is narrow and it is the case the
   old code never had to handle.
 - An empty description, and a description that is only whitespace.
+
+## What is not covered
+
+`markdown::render` returns an empty `Vec` both when a description is genuinely empty and
+when the pipeline fails — observed with deeply nested lists at small widths, where
+`html2text` reports the pane too narrow to lay the list out. `view::preview` has no way to
+tell those two apart, so a task with real content can show a blank description area with
+nothing on screen to say why.
+
+This is unlikely at realistic pane widths — it took deliberately nested input to trigger —
+and was accepted rather than fixed: distinguishing the two cases means `render` returning a
+`Result` and `preview` rendering an error state, which is more machinery than a failure
+mode this narrow has earned. Recorded here so it is found by reading rather than by a user
+reporting a task that looks empty and is not.
