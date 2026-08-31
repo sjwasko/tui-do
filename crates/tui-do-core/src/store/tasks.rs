@@ -398,6 +398,19 @@ impl Store {
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
+    /// A task in an **archived** project is never deleted here, whatever the listing said.
+    ///
+    /// Measured on dev 2026-08-31: an unfiltered `GET /tasks` returned 3,879 tasks over 78
+    /// pages and did not include any of the four in an archived project, which the server
+    /// still holds and still serves from `GET /projects/{id}/tasks`. So the listing is
+    /// *incomplete* with respect to archived projects, and absence from it is not evidence
+    /// that a task is gone — the same reasoning that stops `Reach::Incremental` retaining
+    /// at all.
+    ///
+    /// Without this guard every full pull deleted the user's archived work, silently and
+    /// repeatedly. It is the second half of a bug whose first half was fixed by passing
+    /// `is_archived=true` to `GET /projects`: that made the *projects* survive, and their
+    /// tasks went on being deleted underneath them.
     pub async fn retain_tasks(&self, projects: Vec<ProjectId>, keep: Vec<TaskId>) -> Result<usize> {
         self.write(move |tx| {
             let project_ids: Vec<i64> = projects.iter().map(|id| id.get()).collect();
@@ -409,14 +422,16 @@ impl Store {
                 removed += tx.execute(
                     "DELETE FROM tasks
                       WHERE id NOT IN (SELECT id FROM keep_ids)
-                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL AND subject_kind = 'task')",
+                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL AND subject_kind = 'task')
+                        AND project_id NOT IN (SELECT id FROM projects WHERE is_archived = 1)",
                     [],
                 )?;
             } else {
                 let mut statement = tx.prepare(
                     "DELETE FROM tasks
                       WHERE project_id = ?1 AND id NOT IN (SELECT id FROM keep_ids)
-                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL AND subject_kind = 'task')",
+                        AND id NOT IN (SELECT subject_id FROM outbox WHERE subject_id IS NOT NULL AND subject_kind = 'task')
+                        AND project_id NOT IN (SELECT id FROM projects WHERE is_archived = 1)",
                 )?;
                 for project in &project_ids {
                     removed += statement.execute(params![project])?;
@@ -616,8 +631,110 @@ fn row_to_task(row: &Row<'_>) -> rusqlite::Result<Task> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::models::Project;
     use tui_do_api::models::{Label, LabelId, User, UserId};
 
+    /// The tasks of an archived project survive a retain that does not mention them.
+    ///
+    /// Driven by hand on 2026-08-31: a project archived in the web UI lost all four of its
+    /// tasks from the local store on the next `R`, while the server still had them. The
+    /// unfiltered `GET /tasks` that feeds `keep` omits them — measured, 3,879 tasks over 78
+    /// pages with none of the four — so retaining against it deletes work the user can still
+    /// see in the browser.
+    ///
+    /// The existing `an_archived_project_and_its_tasks_survive_a_pull` mocks the server's
+    /// answer rather than observing it, so it proved the handling and not the premise.
+    #[tokio::test]
+    async fn an_archived_projects_tasks_are_not_deleted_by_a_listing_that_omits_them() {
+        let store = Store::in_memory().unwrap();
+        store
+            .upsert_projects(vec![
+                Project {
+                    id: ProjectId(1),
+                    title: "Live".to_string(),
+                    ..Project::default()
+                },
+                Project {
+                    id: ProjectId(31),
+                    title: "Archive-test".to_string(),
+                    is_archived: true,
+                    ..Project::default()
+                },
+            ])
+            .await
+            .unwrap();
+        store
+            .upsert_tasks(vec![
+                task(1, "still listed"),
+                Task {
+                    id: TaskId(3880),
+                    project_id: ProjectId(31),
+                    title: "in the archived project".to_string(),
+                    ..Task::default()
+                },
+            ])
+            .await
+            .unwrap();
+
+        // What a full pull hands over: everything the listing named. The archived
+        // project's task is absent because the server does not list it.
+        store
+            .retain_tasks(Vec::new(), vec![TaskId(1)])
+            .await
+            .unwrap();
+
+        let ids: Vec<i64> = store
+            .tasks(TaskFilter::default(), TaskSort::default())
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| t.id.get())
+            .collect();
+        assert!(
+            ids.contains(&3880),
+            "the archived project's task was deleted by a listing that cannot name it: {ids:?}"
+        );
+        assert!(ids.contains(&1), "the listed task should still be here too");
+    }
+
+    /// And the per-project path, which a scoped pull takes.
+    #[tokio::test]
+    async fn the_same_holds_when_the_retain_names_projects() {
+        let store = Store::in_memory().unwrap();
+        store
+            .upsert_projects(vec![Project {
+                id: ProjectId(31),
+                title: "Archive-test".to_string(),
+                is_archived: true,
+                ..Project::default()
+            }])
+            .await
+            .unwrap();
+        store
+            .upsert_tasks(vec![Task {
+                id: TaskId(3881),
+                project_id: ProjectId(31),
+                title: "archived".to_string(),
+                ..Task::default()
+            }])
+            .await
+            .unwrap();
+
+        store
+            .retain_tasks(vec![ProjectId(31)], Vec::new())
+            .await
+            .unwrap();
+
+        let remaining = store
+            .tasks(TaskFilter::default(), TaskSort::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the per-project retain deleted an archived project's task"
+        );
+    }
     fn task(id: i64, title: &str) -> Task {
         Task {
             id: TaskId(id),
