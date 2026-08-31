@@ -51,7 +51,7 @@ throughout, both learned the hard way in this pass:
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
 | BUG-9 | grapheme table against `truncate`/`wrap` | yes |
 | BUG-14 | store-level rollback sequence | yes |
-| BUG-15 | a live experiment against dev — not a unit test | needs the server |
+| ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 
 ## What is left, at a glance
 
@@ -59,7 +59,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | BUG-4, BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
-| **Verify first** | BUG-15 (archived tasks — highest value), BUG-14 |
+| **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
@@ -578,7 +578,7 @@ If `labels_with_negative_ids` does not exist, the same check is one `SELECT id F
 WHERE id < 0` in a test helper. The row it finds will never settle and never sync, which is
 what makes it a phantom rather than merely stale.
 
-### BUG-15 — unverified: are tasks in archived projects deleted on every full pull?
+### ~~BUG-15~~ — CONFIRMED AND FIXED — tasks in archived projects were deleted on every full pull
 
 `crates/tui-do-core/src/sync/mod.rs:831-866`. **This is the one finding nobody could
 settle, and it is the highest-value thing to check next**, because it is the same shape as a
@@ -590,24 +590,48 @@ unfiltered `GET /tasks` includes tasks belonging to an *archived* project. If it
 `an_archived_project_and_its_tasks_survive_a_pull` mocks the server's answer rather than
 observing it, so it proves the handling and not the premise.
 
-**The experiment**, against dev only:
+**MEASURED 2026-08-31. The answer was yes, and it was real data loss.**
 
-```sh
-# 1. baseline: confirm the project's tasks appear in the unfiltered listing
-curl -s -H "Authorization: Bearer $TOKEN" "$BASE/projects/10/tasks?per_page=50"
-# walk every page of $BASE/tasks and record the ids
+Driven by hand: a project archived in the web UI lost all four of its tasks from the local
+store on the next `R`. The server still had them.
 
-# 2. archive the project
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"id":10,"title":"Trust","is_archived":true}' "$BASE/projects/10"
+| | |
+|---|---|
+| server, `GET /projects/31/tasks` | **4 tasks** — 3880, 3881, 3882, 3883 |
+| local store, project 31 | **0 tasks** |
+| unfiltered `GET /tasks` | 3,879 tasks over 78 pages, **none of the four** |
 
-# 3. walk every page of $BASE/tasks again and look for those same ids
-# 4. un-archive, restoring the dev state
-```
+So the listing that feeds `keep` is *incomplete* with respect to archived projects, and
+`retain_tasks` read absence as deletion. Every full pull did it again, silently.
 
-I ran step 1 on 2026-08-31 — dev has 3,878 tasks over 78 pages, and project 10 ("Trust", 4
-tasks: 354, 355, 356, 357) is the smallest useful subject. **Steps 2 onward were blocked by
-a permission classifier** and were not run, so the question is still open.
+**This is the second half of a bug whose first half was already fixed.** Passing
+`is_archived=true` to `GET /projects` made the archived *projects* survive a pull. Their
+tasks went on being deleted underneath them, because the tasks listing has the same gap and
+nobody checked it. The note in this file said the fix "covers `/projects` only" — it did,
+and that was the bug.
+
+**Fixed** by teaching both of `retain_tasks`'s delete paths that a task in an archived
+project is never deleted here, whatever the listing said — the same reasoning that stops
+`Reach::Incremental` retaining at all: a listing that *cannot* name a task is not evidence
+the task is gone.
+
+Two tests, both verified non-vacuous against the unguarded query:
+`an_archived_projects_tasks_are_not_deleted_by_a_listing_that_omits_them` and
+`the_same_holds_when_the_retain_names_projects`. The pre-existing
+`an_archived_project_and_its_tasks_survive_a_pull` did not catch this because it **mocks**
+the server's answer rather than observing it — it proved the handling and not the premise.
+
+**Two things this does not do**, both smaller and both open:
+
+- **It does not bring back what is already gone.** Nothing fetches an archived project's
+  tasks — the global listing omits them and the pull does not ask per project — so a store
+  that has lost them stays that way, and a fresh install never sees them at all. They are
+  safe on the server. Fetching them needs a per-project pull for archived projects.
+- **Editing a task in an archived project fails with `412`**, which is how this was noticed:
+  *"update_task rejected: 412 This project is archived."* The server is right to refuse, and
+  `is_permanent` correctly rolls the edit back — but the toast reads as a sync failure rather
+  than "this project is archived", and the user loses what they typed with no warning that
+  it could never have been saved.
 
 ---
 
