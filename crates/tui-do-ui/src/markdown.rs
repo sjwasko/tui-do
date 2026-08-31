@@ -67,26 +67,44 @@ const HTML_CLOSING_TAGS: &[&str] = &[
 /// a real element and the surrounding text as its (empty) content. The same happened with
 /// `<li>`, `<table>` and `<pre>` mentioned in a sentence.
 ///
-/// What tells genuine web-editor HTML apart from prose that mentions a tag is that TipTap
-/// always wraps its whole output in block elements: real HTML both *begins* with one of
-/// them and *closes* one somewhere in the document, where prose supplies at most a bare
-/// opening tag and never a matching close. So this checks the trimmed description's start
-/// against `HTML_BLOCKS` and its full text against `HTML_CLOSING_TAGS`, and either is
-/// enough.
+/// The fix after that ("starts with a block tag, OR contains a matching close anywhere")
+/// only closed the opening-tag half of the hole: the closing half still matched anywhere
+/// in the string, so a sentence that merely *describes* closing a tag — `"Remember to
+/// close the </div> tag at the end."`, `"Don't forget </p> at the end of your HTML
+/// snippet."` — was still routed to HTML and lost the word, exactly as before. Anchoring
+/// the closing-tag check the same way the opening one is anchored fixes it: a genuine
+/// TipTap document never carries prose ahead of its markup, so a real closing tag only
+/// needs to be searched for once the description is already known to *start* with a tag
+/// of some kind.
 ///
-/// Validated against the 487 real descriptions on dev: the old rule counted 113 as HTML,
-/// one more than the 112 the design doc's own survey names (108 genuine TipTap + 1
-/// markdown wrapped in `<pre>` + 3 containing `<table>`). The extra one was id 417, whose
-/// description is `Empty inbox waits<br>A test task drifts into view<br>Proof the pipe
-/// still flows` — three lines joined by bare `<br>` with no wrapping element, not
-/// TipTap's output (title: "test task", a manually-inserted fixture). This rule answers
-/// 112, matching the design doc's tally exactly, and reclassifies nothing else: every
-/// genuine HTML row still starts with a block tag, and the four prose-mentions-a-tag
-/// examples above now correctly answer `false`.
+/// That "some kind" is deliberately not narrowed to `HTML_BLOCKS`: id 27 and 116 on dev
+/// are genuine TipTap output shaped `<img …><p></p>` — an image TipTap left outside any
+/// paragraph, followed by the empty paragraph it leaves behind (see
+/// `an_image_only_description_renders_nothing`) — and neither starts with a recognised
+/// *block* tag. What every one of them shares with a `<div>`/`<p>`-first document, and
+/// what no prose sentence shares with either, is that the trimmed description's very
+/// first character is `<`: TipTap never emits free text before its first tag, however
+/// that first tag is spelled, and prose never opens on `<` at all — `"<pre-release
+/// plan>"` and `"<http://…>"` both fail this today for the unrelated reason that they
+/// contain no closing tag to find.
+///
+/// So the rule is: starts with a recognised block tag (covers the common case and every
+/// row that has no closing tag to check, such as a bare `<p>` with no `</p>` yet typed),
+/// or starts with `<` at all *and* closes a recognised tag somewhere in the body.
+///
+/// Validated against the 487 real descriptions on dev: the previous rule counted 112 as
+/// HTML. The new rule counts 108, and every one of the four rows that moved is prose with
+/// real `<div>`/`<br>` markup pasted in *after* a leading sentence of free text — e.g. id
+/// 49, `"yay -S naps2-bin<div><br></div>…"` — which is exactly the shape a genuine TipTap
+/// document cannot produce and exactly the shape that lets a closing-tag mention hide
+/// inside plain prose. None of the six genuine-HTML rows the block-tag list names (`<p>`,
+/// `<h1>`…`<h6>`, `<ul>`, `<ol>`, `<pre>`, `<table>`, `<div>`, `<blockquote>`) changed, and
+/// id 27/116's `<img>`-first shape stays HTML because it still opens on `<`.
 pub(crate) fn looks_like_html(description: &str) -> bool {
     let trimmed = description.trim();
     let lower = trimmed.to_ascii_lowercase();
-    starts_with_block_tag(&lower) || HTML_CLOSING_TAGS.iter().any(|tag| lower.contains(tag))
+    starts_with_block_tag(&lower)
+        || (lower.starts_with('<') && HTML_CLOSING_TAGS.iter().any(|tag| lower.contains(tag)))
 }
 
 /// Whether `lower` (already trimmed and lowercased) opens with a recognised block tag.
@@ -404,6 +422,43 @@ mod tests {
         assert!(!looks_like_html("Add an <li> element for each row."));
         assert!(!looks_like_html("Use a <table> to lay it out."));
         assert!(!looks_like_html("A <pre> block preserves whitespace."));
+    }
+
+    #[test]
+    fn prose_that_describes_closing_a_tag_is_not_html() {
+        // FIX 3: the "starts with a block tag OR closes one anywhere" rule from the
+        // previous fix only anchored the opening half. The closing half still matched a
+        // bare mention anywhere in the string, so a sentence describing HTML -- not
+        // containing any -- was still misrouted and lost the bracketed word. None of
+        // these opens on `<`, which is what now tells them apart from genuine HTML.
+        assert!(!looks_like_html(
+            "Remember to close the </div> tag at the end."
+        ));
+        assert!(!looks_like_html(
+            "Don't forget </p> at the end of your HTML snippet."
+        ));
+        assert!(!looks_like_html(
+            "The template ends with </table> not </div>."
+        ));
+    }
+
+    #[test]
+    fn prose_that_describes_closing_a_tag_survives_the_round_trip() {
+        // The rendering half of FIX 3: not just that these are classified as text, but
+        // that the words `html5ever` would otherwise have swallowed actually stay on
+        // screen.
+        assert_eq!(
+            rendered("Remember to close the </div> tag at the end.", 60),
+            vec!["Remember to close the </div> tag at the end."]
+        );
+        assert_eq!(
+            rendered("Don't forget </p> at the end of your HTML snippet.", 60),
+            vec!["Don't forget </p> at the end of your HTML snippet."]
+        );
+        assert_eq!(
+            rendered("The template ends with </table> not </div>.", 60),
+            vec!["The template ends with </table> not </div>."]
+        );
     }
 
     #[test]

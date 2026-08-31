@@ -168,12 +168,22 @@ comrak", and misrouting is what broke `Vec<String>` above: sent down the HTML br
 therefore *wrong*, and it is what the crude SQL in the table above used — which is why
 `Use Vec<String> here` counts in the 120 rather than the 367.
 
-The test is **a recognised HTML block tag** — `<p`, `<h1`…`<h6`, `<ul`, `<ol`, `<pre`,
-`<table`, `<div`, `<blockquote`. TipTap always wraps content in at least one; prose
-mentioning `Vec<String>` contains none. `rows.rs` already has this list as `BLOCK`, and
-its tests already encode the hazards. **`plain_text` is not extended into a converter, as
-the first draft proposed — it is deleted, and its knowledge becomes the router**, with
-those six assertions carried across as router tests.
+This section undersold the router from the start and then went stale twice more as real
+descriptions found holes in it; `markdown.rs`'s own doc comment on `looks_like_html` is
+now the authoritative account, this is only a summary. The rule that shipped: the trimmed
+description either *starts with* a recognised HTML block tag — `<p`, `<h1`…`<h6`, `<ul`,
+`<ol`, `<pre`, `<table`, `<div`, `<blockquote` — or starts with `<` at all and *closes* one
+of those tags somewhere in the body. Anchoring both halves to "starts with `<`" is what
+took three rounds to reach: unanchored, a bare mention of a tag anywhere in prose (`"Wrap
+it in a <div>"`) or a sentence merely describing a closing tag (`"close the </div>
+tag"`) both misrouted to HTML and lost the bracketed word to `html5ever`; anchoring only
+the opening half left the closing half still unanchored and still losing words. What
+finally justifies the anchor is that TipTap never emits free text before its first tag,
+however that tag is spelled — which is also why `<img>`-first descriptions (store ids 27,
+116) still route correctly despite `<img` not being in the block-tag list. `rows.rs`
+originally had this list as `BLOCK`, and its tests were carried across as router tests.
+**`plain_text` is not extended into a converter, as the first draft proposed — it is
+deleted, and its knowledge becomes the router.**
 
 `plain_text` also carried an `OPAQUE` list so that `<script>` and `<style>` bodies —
 code and CSS, not prose — were never shown. That list did not need porting: `html5ever`
