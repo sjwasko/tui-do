@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::keymap::{help_rows, HelpRow};
+use crate::markdown;
 use crate::modal::{
     ConfirmLabelsState, DueState, EditField, EditState, LabelEditState, LabelField, LabelsState,
     Modal, PickerState, PriorityState, QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
@@ -382,9 +383,6 @@ fn row_lines(row: &rows::RenderedRow, columns: &[MeasuredColumn]) -> Vec<Line<'s
         .collect()
 }
 
-/// The most lines one paragraph of a description may take before it is ellipsised.
-const MAX_PARAGRAPH_LINES: u16 = 40;
-
 /// The selected task, in more detail than a row can hold.
 fn preview(model: &Model, frame: &mut Frame, area: Rect) {
     let theme = model.theme;
@@ -445,24 +443,26 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
         lines.push(field(" Assignees", &names.join(", "), theme));
     }
 
-    // Descriptions are HTML from the web editor. Phase 5 renders them properly, through
-    // `glow` with a `pulldown-cmark` fallback; until then the tags are stripped, because
-    // the alternative on screen is `<p><a target="_blank" rel="noopener"`.
-    let description = rows::plain_text(&task.description);
-    if !description.is_empty() {
+    // Rendered rather than stripped: `markdown::render` answers with styled, wrapped
+    // lines whether the description is Markdown, plain text, or the HTML the web editor
+    // stores. It runs in process, so this stays a pure call from `view`.
+    let rendered = markdown::render(&task.description, width, theme);
+    if !rendered.is_empty() {
         lines.push(Line::default());
-        // Only what can be seen is laid out. Wrapping every paragraph of a long
-        // description on every frame, to draw the dozen lines that fit, is the same
-        // mistake the task list already avoids -- and a per-paragraph cap is no cap at
-        // all, since a description has as many paragraphs as it likes.
+        // Only what can be seen is laid out. Rendering is cheap -- a median description
+        // is 118 bytes -- but pushing every line of a 17 KB one into a vector to draw the
+        // dozen that fit is the same waste the task list already avoids.
         let budget = usize::from(model.list.preview_scroll) + usize::from(inner.height);
-        for paragraph in description.lines() {
+        for line in rendered {
             if lines.len() >= budget {
                 break;
             }
-            for line in rows::wrap(paragraph, width, MAX_PARAGRAPH_LINES) {
-                lines.push(Line::from(Span::styled(format!(" {line}"), theme.text())));
-            }
+            // The pane insets everything by one column, which is why `width` above is
+            // `inner.width - 1`. The rendered lines pay it the same way the title and
+            // the fields do.
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
         }
     }
 
