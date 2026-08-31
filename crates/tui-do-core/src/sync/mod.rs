@@ -43,6 +43,8 @@
 //! risks a duplicate. A duplicate task is an annoyance and a lost one is a bug report, so
 //! the entry stays.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tui_do_api::models::{Label, LabelId, ProjectId, Task, TaskId};
 use tui_do_api::{ApiError, Client, TaskQuery};
@@ -296,9 +298,50 @@ pub struct Sync {
     client: Client,
     store: Store,
     events: Option<UnboundedSender<SyncEvent>>,
+    /// Whether a push is between its first request and its last.
+    ///
+    /// Read by the runtime when the user quits. Aborting a pass mid-*pull* is harmless --
+    /// whole pages have been applied and the retain has not run, so the store is a little
+    /// stale and the next pull fixes it. Aborting mid-*push* is not: the request may
+    /// already have reached the server, and re-sending its entry creates the task a second
+    /// time. Vikunja has no idempotency key and `CreateTask` has no read-before-retry the
+    /// way `CreateLabel` does, so the only defence is not to send it twice.
+    ///
+    /// Reproduced by hand on 2026-08-31 with the dev container paused: two tasks, ids 3889
+    /// and 3891, both `Bug #3 - pause container test`.
+    pushing: Arc<AtomicBool>,
+}
+
+/// Holds [`Sync::pushing`] true for as long as it lives.
+///
+/// A plain `store(false)` at the end of `push_with` would never run when the task is
+/// aborted -- and an aborted push is the whole reason the flag exists. Dropping is the one
+/// thing that still happens.
+struct Pushing<'a>(&'a AtomicBool);
+
+impl<'a> Pushing<'a> {
+    fn armed(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self(flag)
+    }
+}
+
+impl Drop for Pushing<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl Sync {
+    /// Whether a push is mid-flight right now.
+    ///
+    /// The runtime asks this before deciding whether to abort a pass at quit. See
+    /// [`Sync::pushing`].
+    #[must_use]
+    pub fn is_pushing(&self) -> bool {
+        self.pushing.load(Ordering::SeqCst)
+    }
+
     /// Build an engine over a client and a store.
     #[must_use]
     pub fn new(client: Client, store: Store) -> Self {
@@ -306,6 +349,7 @@ impl Sync {
             client,
             store,
             events: None,
+            pushing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -379,6 +423,10 @@ impl Sync {
     /// As [`Self::push`].
     pub async fn push_with(&self, backoff: Backoff) -> Result<PushReport> {
         self.emit(SyncEvent::Started(Phase::Push));
+        // Cleared by `Drop` as well as on the way out, so an *aborted* push still says it
+        // is no longer running. The flag exists to be read at quit time, and quitting is
+        // exactly when this future gets dropped.
+        let _pushing = Pushing::armed(&self.pushing);
         let mut report = PushReport::default();
         // Ordering is a contract *per task*: two edits to one task must arrive in the
         // order they were made, or the server ends in a state the queue never described.
