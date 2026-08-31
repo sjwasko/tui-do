@@ -15,10 +15,6 @@
 /// `Use Vec<String> here` and `# - CAM_<CAMERA_MAC>_NAME=fr`, and sending those down the
 /// HTML branch deletes the bracketed word — `html5ever` reads it as an unknown element and
 /// drops it. TipTap always wraps its content in at least one of these.
-// Task 4 calls this; `expect` rather than `allow` so that wiring it up makes this
-// attribute warn and forces its own removal.
-#[cfg_attr(not(test), expect(dead_code))]
-#[cfg_attr(test, allow(dead_code))]
 const HTML_BLOCKS: &[&str] = &[
     "<p>",
     "<p ",
@@ -39,10 +35,6 @@ const HTML_BLOCKS: &[&str] = &[
 ];
 
 /// Whether this description came out of the web editor rather than a keyboard.
-// Task 4 calls this; `expect` rather than `allow` so that wiring it up makes this
-// attribute warn and forces its own removal.
-#[cfg_attr(not(test), expect(dead_code))]
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn looks_like_html(description: &str) -> bool {
     let lower = description.to_ascii_lowercase();
     HTML_BLOCKS.iter().any(|tag| {
@@ -69,10 +61,6 @@ use crate::theme::Theme;
 /// `TextDecorator::Annotation` is whatever the implementor says it is, so it is a ratatui
 /// `Style` and there is no second palette to keep in step with `theme.rs` — which is the
 /// thing `glow` could not offer at any price.
-// Task 4 constructs this; `expect` rather than `allow` so that wiring it up makes this
-// attribute warn and forces its own removal.
-#[cfg_attr(not(test), expect(dead_code))]
-#[cfg_attr(test, allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Deco {
     theme: Theme,
@@ -167,6 +155,79 @@ impl TextDecorator for Deco {
     }
 }
 
+use ratatui::text::{Line, Span};
+
+/// The narrowest pane worth rendering into.
+///
+/// `html2text` is given a width and a one- or two-column pane has nothing useful to say;
+/// asking it to wrap into that is how a renderer ends up in a loop or a panic.
+const FLOOR: u16 = 4;
+
+/// A task's description, ready to draw.
+///
+/// `width` is columns, `theme` decides every colour. Answers an empty vector for an empty
+/// description and for anything the pipeline cannot make sense of — a description is not
+/// worth failing the frame over.
+#[must_use]
+pub fn render(description: &str, width: u16, theme: Theme) -> Vec<Line<'static>> {
+    if description.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let html = if looks_like_html(description) {
+        description.to_string()
+    } else {
+        let mut options = comrak::Options::default();
+        // A single newline is a line break. Deliberately not CommonMark: roughly 350 of
+        // the 487 descriptions on dev carry their structure in single newlines, and
+        // conforming here runs an address block together into one line.
+        options.render.hardbreaks = true;
+        // Text that looks like a tag stays text. Without this `<String>` in
+        // `Use Vec<String> here` is read as raw HTML and dropped, silently.
+        options.render.escape = true;
+        options.extension.table = true;
+        options.extension.strikethrough = true;
+        options.extension.autolink = true;
+        comrak::markdown_to_html(description, &options)
+    };
+
+    let Ok(lines) = html2text::config::with_decorator(Deco { theme })
+        .lines_from_read(html.as_bytes(), usize::from(width.max(FLOOR)))
+    else {
+        return Vec::new();
+    };
+
+    let mut rendered: Vec<Line<'static>> = lines
+        .iter()
+        .map(|line| {
+            Line::from(
+                line.tagged_strings()
+                    .map(|tagged| {
+                        // Annotations nest, outermost first, so `<strong><em>` arrives as
+                        // both and patches into one style.
+                        let style = tagged
+                            .tag
+                            .iter()
+                            .fold(Style::new(), |acc, next| acc.patch(*next));
+                        Span::styled(tagged.s.clone(), style)
+                    })
+                    .collect::<Vec<Span<'static>>>(),
+            )
+        })
+        .collect();
+
+    // `html2text` can hand back a trailing blank line for what was, semantically, an empty
+    // document -- filter those off rather than call it content.
+    while rendered
+        .last()
+        .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+    {
+        rendered.pop();
+    }
+
+    rendered
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -174,6 +235,22 @@ mod tests {
     use crate::theme::{ColorDepth, Theme};
     use html2text::render::TextDecorator;
     use ratatui::style::Modifier;
+    use ratatui::text::Line;
+
+    fn text_of(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    fn rendered(description: &str, width: u16) -> Vec<String> {
+        text_of(&render(
+            description,
+            width,
+            Theme::new(ColorDepth::TrueColor),
+        ))
+    }
 
     #[test]
     fn html_from_the_web_editor_is_recognised() {
@@ -248,5 +325,143 @@ mod tests {
         assert_eq!(d.unordered_item_prefix(), "• ");
         assert_eq!(d.ordered_item_prefix(3), "3. ");
         assert_eq!(d.quote_prefix(), "│ ");
+    }
+
+    #[test]
+    fn an_empty_description_renders_nothing() {
+        assert!(render("", 40, Theme::new(ColorDepth::TrueColor)).is_empty());
+        assert!(render("   \n  \n", 40, Theme::new(ColorDepth::TrueColor)).is_empty());
+    }
+
+    #[test]
+    fn a_single_newline_is_a_line_break() {
+        // THE REGRESSION THIS FEATURE EXISTS TO AVOID. CommonMark joins consecutive
+        // lines into one paragraph, which turns this real description's address block
+        // into "Bradenton - old historic courthouse 1115 Manatee Ave West 830a-430p".
+        // `comrak`'s render.hardbreaks is what stops it. If someone "fixes" that to be
+        // spec-conforming, this test is what tells them what they broke.
+        let description = "Manatee County:\n\
+                           Bradenton - old historic courthouse\n\
+                           1115 Manatee Ave West\n\
+                           830a-430p";
+        let lines = rendered(description, 60);
+        assert!(lines.iter().any(|l| l.contains("1115 Manatee Ave West")));
+        assert!(
+            !lines.iter().any(|l| l.contains("courthouse 1115")),
+            "the address block collapsed into one line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn prose_containing_angle_brackets_survives_the_round_trip() {
+        // THE OTHER REGRESSION. Without comrak's render.escape, `<String>` is read as raw
+        // inline HTML, replaced with an omitted-HTML comment, and dropped -- the line
+        // comes out "Use Vec here". It fails silently, by deleting text.
+        assert_eq!(
+            rendered("Use Vec<String> here", 60),
+            vec!["Use Vec<String> here"]
+        );
+        assert_eq!(rendered("a < b and b > c", 60), vec!["a < b and b > c"]);
+        assert_eq!(rendered("a <b", 60), vec!["a <b"]);
+        assert_eq!(
+            rendered("<pre-release plan>", 60),
+            vec!["<pre-release plan>"]
+        );
+        assert_eq!(
+            rendered("# - CAM_<CAMERA_MAC>_NAME=fr", 60),
+            vec!["# - CAM_<CAMERA_MAC>_NAME=fr"]
+        );
+    }
+
+    #[test]
+    fn entities_in_stored_html_decode_once() {
+        // Carried across from `rows::plain_text`. `&#x27;` is what the dev instance
+        // stores; `&#39;` and `&#34;` are what Go's html.EscapeString emits.
+        assert_eq!(
+            rendered("<p>Tom &amp; Jerry &lt;3</p>", 60),
+            vec!["Tom & Jerry <3"]
+        );
+        assert_eq!(
+            rendered("<p>&amp;lt; stays escaped</p>", 60),
+            vec!["&lt; stays escaped"]
+        );
+        assert_eq!(
+            rendered("<p>TechHut&#x27;s homelab</p>", 60),
+            vec!["TechHut's homelab"]
+        );
+        assert_eq!(
+            rendered("<p>say &#34;hello&#34;</p>", 60),
+            vec!["say \"hello\""]
+        );
+        assert_eq!(rendered("<p>an &#8212; dash</p>", 60), vec!["an — dash"]);
+    }
+
+    #[test]
+    fn an_autolink_loses_its_brackets_and_gains_a_style() {
+        // A deliberate change from `plain_text`, which kept the brackets: CommonMark
+        // reads `<http://…>` as an autolink, so the text is the URL and it is styled as
+        // a link. Recorded because it is a *change*, and because URL opening later in
+        // Phase 5 wants exactly this.
+        let theme = Theme::new(ColorDepth::TrueColor);
+        let lines = render("<http://Www.ftc.gov> Report fraud", 60, theme);
+        assert_eq!(text_of(&lines), vec!["http://Www.ftc.gov Report fraud"]);
+        let link = theme.accent().add_modifier(Modifier::UNDERLINED);
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style == link && s.content.contains("ftc.gov")),
+            "the URL was not styled as a link: {:?}",
+            lines[0].spans
+        );
+    }
+
+    #[test]
+    fn html_from_the_web_editor_renders_its_structure() {
+        let html = "<p>The refresh call needs the cookie set by \
+                    <a target=\"_blank\" rel=\"noopener\" href=\"http://x\">POST /login</a>.</p>\
+                    <ul><li>one</li><li>two</li></ul>";
+        let lines = rendered(html, 60);
+        assert!(lines.iter().any(|l| l.contains("POST /login")));
+        assert!(lines.iter().any(|l| l.contains("• one")));
+        assert!(lines.iter().any(|l| l.contains("• two")));
+    }
+
+    #[test]
+    fn markdown_constructs_are_styled_not_just_kept() {
+        let theme = Theme::new(ColorDepth::TrueColor);
+        let lines = render("**bold** and *em* and `code`", 60, theme);
+        let spans: Vec<_> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+        let has = |style: ratatui::style::Style, text: &str| {
+            spans
+                .iter()
+                .any(|s| s.style == style && s.content.contains(text))
+        };
+        assert!(has(theme.text().add_modifier(Modifier::BOLD), "bold"));
+        assert!(has(theme.text().add_modifier(Modifier::ITALIC), "em"));
+        assert!(has(theme.accent(), "code"));
+    }
+
+    #[test]
+    fn long_lines_wrap_to_the_width_they_are_given() {
+        let long = "Hillsborough County Clerk of Court, Family Law division, room 101";
+        for line in rendered(long, 30) {
+            assert!(
+                crate::rows::display_width(&line) <= 30,
+                "line over width: {line:?}"
+            );
+        }
+        assert!(rendered(long, 30).len() > 1, "nothing wrapped at width 30");
+    }
+
+    #[test]
+    fn a_width_too_small_to_render_in_does_not_panic() {
+        for width in [0, 1, 2, 3] {
+            let _ = render(
+                "some text that cannot fit",
+                width,
+                Theme::new(ColorDepth::TrueColor),
+            );
+        }
     }
 }
