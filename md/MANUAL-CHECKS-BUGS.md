@@ -13,7 +13,10 @@ bugs are invisible unless you know precisely what to look at.
 
 ## G1 — BUG-3: quitting while a change is still in flight
 
-**This is the most reachable open bug, and it is worth driving first.**
+**Driven 2026-08-31: it failed, then the fix was made, then it passed.** The failing run
+produced tasks 3889 and 3891, both `Bug #3 - pause container test`. Keep this check — it is
+now the regression test for that fix, and it is the only one that exercises the quit path
+against a server that will not answer.
 
 ### G1a — why the obvious version of this test cannot fail
 
