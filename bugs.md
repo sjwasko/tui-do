@@ -108,11 +108,51 @@ design decision, which is why this is filed rather than patched.
 
 `crates/tui-do/src/runtime/mod.rs:253` and `crates/tui-do-core/src/store/mod.rs:179`.
 
-Each `Effect::Apply` is its own `tokio::spawn` around a `spawn_blocking` write, so two edits
-to the same task can take their `outbox.id`s in the wrong order. The push then replays the
-older `after` last and **silently reverts the newer edit on the server**. This breaks the
-within-subject ordering contract the engine explicitly assumes — `CLAUDE.md` states that
-ordering is a contract *within* a task even though it is not one between tasks.
+Each `Effect::Apply` is its own `tokio::spawn` around a `spawn_blocking` write that then
+races for a `std::sync::Mutex`, which offers no fairness guarantee. Two edits to one task can
+therefore take their `outbox.id`s in the wrong order, and the push replays the older `after`
+last — reverting the newer edit on the server. This breaks the within-subject ordering
+contract the engine assumes: `CLAUDE.md` states ordering is a contract *within* a task even
+though it is not one between tasks.
+
+**Measured 2026-08-31, because "there is a race" is not the same as "a user can hit it".**
+Two `tokio::spawn`ed `store.queue()` calls, exactly as `perform` issues them, 300 trials per
+gap:
+
+| gap between the two spawns | reordered |
+|---|---|
+| **0 µs** — back to back, which is what the code does | **55/300 (18.3%)** |
+| 50 µs | 0/300 |
+| 100 µs, 250 µs, 500 µs, 1 ms, 2 ms, 5 ms, 10 ms, 50 ms | 0/300 at every step |
+
+**The window is under 50 microseconds**, so two separately-timed keypresses can never reach
+it — the fastest human gap is ~50 ms, a thousand times wider.
+
+**What makes it reachable anyway is the event loop's shape.** `runtime/mod.rs:157-167`
+drains every queued message, accumulates all their effects into one `Vec`, and only then
+runs `for effect in effects { perform(...) }`. Two `Effect::Apply`s in one drain are spawned
+back to back — the 0 µs row. Two key events land in one drain whenever they arrive within a
+poll interval while the loop is busy (`INPUT_POLL` is 100 ms), or on key auto-repeat, or on
+a paste.
+
+**So: a true bug, narrow but not theoretical**, and 18.3% is far too high to dismiss. One
+mitigation worth knowing: it is not entirely silent. The out-of-order second merge sees a
+server value that differs from its own `before`, which is a real collision, so
+`SyncEvent::Overwrote` toasts *"saved over a change made elsewhere"* — misleading, since
+there was no elsewhere, but visible.
+
+**How to test it.** Do **not** test the race; an 18%-failure test is flaky and would pass for
+the wrong reason after a fix.
+
+1. **Fix structurally, then assert the invariant.** A single serialized writer — one task
+   consuming mutations FIFO — makes ordering not a race at all. The test then issues ~100
+   `Effect::Apply`s as fast as possible and asserts `store.pending()` returns them in issue
+   order. Deterministic, and it fails on any regression back to per-effect spawning.
+2. **A consequence test, worth having regardless.** Queue two edits to one task deliberately
+   out of order, push against a mock server, assert the server ends up holding the *older*
+   value. Deterministic today, and it pins why ordering is load-bearing.
+3. **Keep the sweep as an `#[ignore]`d probe** — it is the evidence for the table above and
+   is how the window gets re-checked on other hardware.
 
 ### BUG-3 — quitting mid-request can duplicate a task or label
 
