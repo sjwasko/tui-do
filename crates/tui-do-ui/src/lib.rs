@@ -40,6 +40,7 @@
 pub mod effect;
 pub mod geometry;
 pub mod keymap;
+pub mod markdown;
 pub mod modal;
 pub mod model;
 pub mod msg;

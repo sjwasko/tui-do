@@ -15,7 +15,8 @@ crossterm.workspace = true
 chrono.workspace = true
 fuzzy-matcher.workspace = true
 unicode-width.workspace = true
-pulldown-cmark.workspace = true
+comrak.workspace = true
+html2text.workspace = true
 tracing.workspace = true
 
 [lints]

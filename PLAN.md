@@ -254,14 +254,16 @@ of `md/MANUAL-CHECKS2.md`.
 
 ### Phase 5 — Rich features
 
-- **Markdown task descriptions via `glow`.** Vikunja stores descriptions as HTML/Markdown and cria renders
-  them as flat text. tui-do pipes them through **`glow`** (`glow -s dark -w <width> -`), cached per task and
-  re-rendered on width change, with ANSI parsed back into ratatui spans. `glow` is an external Go binary,
-  so it sits behind a `trait MarkdownRenderer` with a built-in `pulldown-cmark` → ratatui-spans fallback —
-  not for Windows' sake, but so tui-do degrades gracefully on any box where `glow` isn't installed (it's in
-  the Arch repos and Omarchy, but not in Ubuntu 26.04's default set). Configurable as
-  `markdown_renderer: glow | builtin | auto`, default `auto`; `tui-do doctor` reports which is active and
-  tells the user how to install `glow` for the better rendering.
+- **Task descriptions, rendered.** A description is Markdown, plain text, or the HTML the web
+  editor stores, and the API does not say which. `comrak` renders the first two to HTML, the
+  third is HTML already, and `html2text` turns both into wrapped lines annotated with styles
+  from `theme.rs`. In process, so `update` gains no `Effect` and the model gains no cache.
+  **`glow` was specified here and was measured and rejected on 2026-08-30** — it flattens an
+  HTML description to a single run, pads every line to a fixed width with styled spaces,
+  emits OSC 8 that ratatui cannot represent, and paints in its own palette. None of that is
+  particular to `glow`, so `markdown_renderer: glow | builtin | auto` and `doctor`'s
+  markdown line are dropped with it: there is no external binary left to choose between.
+  Design and measurements in `md/2026-08-30-markdown-descriptions-design.md`.
 - Task detail pane, comments, subtasks and relations — cria has relations half-built and disabled; do it
   properly or not at all — and URL extraction/opening.
 - **Attachments are out of scope, decided 2026-08-30.** Not deferred with a plan to return: dropped. Reading
@@ -335,7 +337,7 @@ the plan already calls for. tui-do ships `MIT OR Apache-2.0` with a README credi
   Omarchy workstation. First light (Phase 3) must show real imported tasks. From Phase 3 onward, every
   milestone also gets a build-and-test pass in the `ubuntu:26.04` container before it counts as done.
 - **Milestone gates:** `/code-review` after each phase; `/code-review ultra` before Phase 3 and Phase 6;
-  `/security-review` after Phase 1 (token handling) and Phase 5 (attachment file writes, `glow` subprocess).
+  `/security-review` after Phase 1 (token handling) and Phase 5 (URL opening).
 - **Non-negotiable manual checks:**
   1. With the server unreachable, `tui-do` starts instantly, renders cached tasks, accepts edits into the
      outbox, and never freezes. That's the whole thesis of the rewrite.

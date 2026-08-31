@@ -46,9 +46,8 @@ Ubuntu 26.04 LTS.
 cargo build --release
 ```
 
-Optional: install [`glow`](https://github.com/charmbracelet/glow) for richer Markdown
-rendering of task descriptions. Without it, tui-do falls back to a built-in renderer.
-`tui-do doctor` reports which is in use.
+Task descriptions (Markdown, plain text, or HTML) render in process — no external tools
+required.
 
 ## Relationship to cria
 

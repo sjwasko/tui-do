@@ -39,7 +39,13 @@ fuzzy-matcher = "0.3"
 # and the width ratatui draws it at cannot disagree.
 unicode-width = "0.2"
 dirs = "6.0"
-pulldown-cmark = { version = "0.13", default-features = false }
+# Markdown -> HTML. `default-features = false` drops the CLI-only extras; the parser and
+# `markdown_to_html` are in the default-off set.
+comrak = { version = "0.54", default-features = false }
+# HTML -> wrapped, annotated lines. The `css` feature is what lets a user-agent stylesheet
+# colour headings, which the TextDecorator trait alone cannot do -- see the design's
+# decision 5.
+html2text = { version = "0.17", features = ["css"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
