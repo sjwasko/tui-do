@@ -81,8 +81,7 @@ Publication prep, decided 2026-08-30:
 - `md/` keeps design documents and the manual checks; the ten session continuity notes
   were deleted on 2026-08-30. Do not start writing them again — a handoff like this one,
   when a session ends mid-phase, is the replacement.
-- The dev host was renamed from `criax-dev` to `tui-do-dev` on 2026-08-30, three days
-  after the repository was. Every `deploy/` script works again. `reset-dev.sh` now carries
+- The dev host's directories were brought onto the `tui-do` name on 2026-08-30. Every `deploy/` script works again. `reset-dev.sh` now carries
   `api_tokens` across the restore — the baseline predates the token this workstation
   authenticates with, so a plain restore answered 401 from a server that was otherwise
   perfectly healthy.

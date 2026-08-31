@@ -305,9 +305,8 @@ which is its only advantage.
 converts to markdown any more.
 
 **`pulldown-cmark` is now unused and should be removed.** It was declared in
-`crates/tui-do-ui/Cargo.toml` by the first scaffold commit, `d63357f`, when the project was
-still `criax`, in anticipation of exactly this feature, and no source file has ever
-imported it. comrak replaces it.
+`crates/tui-do-ui/Cargo.toml` by the first scaffold commit, `d63357f`, in anticipation of
+exactly this feature, and no source file has ever imported it. comrak replaces it.
 
 ## What changes
 

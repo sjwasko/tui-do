@@ -63,36 +63,6 @@ running on it, so either location works.
 | `reset-dev.sh` | Restores that dump, keeping API tokens; refuses to target prod |
 | `test-ubuntu.sh` | Local Docker only; does not touch either server |
 
-## If the deployment still carries the old name
-
-The project was `criax` until 2026-08-27, and the rename was a commit. A commit cannot
-reach a server: an instance stood up before that date still has `criax-vikunja` containers
-under `/opt/stacks/criax-dev`, with its data in `/opt/appdata/criax-dev`, while every
-script here looks for the `tui-do` name. Found on 2026-08-30, three days later, because
-nobody had run one of these scripts since the rename.
-
-The same class of leftover as `adopt-new-name.sh`, which handles the half that lives in a
-home directory. This half needs `sudo` on the dev host, so it is written down rather than
-scripted:
-
-```sh
-# On the dev host. Stop first -- Postgres does not want its data directory moved
-# underneath it.
-cd /opt/stacks/criax-dev && docker compose down
-
-sudo mv /opt/appdata/criax-dev /opt/appdata/tui-do-dev
-sudo mv /opt/stacks/criax-dev  /opt/stacks/tui-do-dev
-cd /opt/stacks/tui-do-dev
-
-# The compose file and the env keys both moved with the project name.
-sed -i 's/^CRIAX_/TUI_DO_/' .env
-sed -i 's#/opt/appdata/criax-dev#/opt/appdata/tui-do-dev#' .env
-# then copy this directory's docker-compose.yml over the old one
-
-docker compose up -d
-docker ps --format '{{.Names}}'        # expect tui-do-vikunja, tui-do-vikunja-db
-```
-
 `vikunja.env` needs no edit: every key in it is Vikunja's own. Nothing else moves — the
 bind mounts follow `TUI_DO_DEV_ROOT`, and there are no named volumes to orphan.
 

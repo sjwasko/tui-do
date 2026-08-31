@@ -20,8 +20,8 @@ run() {
 }
 
 # Two different failures, because they call for opposite actions and this script once
-# reported them as one. On 2026-08-30 the dev host was still carrying its pre-rename name
-# -- criax-dev -- so $ROOT did not exist, and the message sent a reader towards
+# reported them as one. On 2026-08-30 the dev host was still carrying a directory name this
+# script no longer looks for, so $ROOT did not exist, and the message sent a reader towards
 # snapshot-dev.sh, which would have captured a dirty test database as the permanent
 # baseline. A missing directory is a misconfiguration; a missing dump inside a directory
 # that exists is a step not yet run.
