@@ -14,6 +14,8 @@
     clippy::panic
 )]
 
+use std::sync::Arc;
+
 use chrono::TimeZone;
 use serde_json::json;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -2256,5 +2258,78 @@ async fn a_label_rename_does_not_store_the_answer_while_another_edit_is_queued()
             .title,
         "twice",
         "the first rename's answer was stored over the second edit"
+    );
+}
+
+/// BUG-3: a push that is aborted mid-request must not look like it is still running, and
+/// must not leave the runtime free to send the same entry again.
+///
+/// Driven by hand on 2026-08-31 against a paused dev container: quitting while a create was
+/// in flight produced two tasks, ids 3889 and 3891, both `Bug #3 - pause container test`.
+/// Vikunja has no idempotency key and `CreateTask` has no read-before-retry the way
+/// `CreateLabel` does, so the only defence is never to send it twice -- which means the
+/// runtime has to be able to tell that a push is mid-flight.
+#[tokio::test]
+async fn an_aborted_push_reports_that_it_is_no_longer_pushing() {
+    let server = MockServer::start().await;
+    // A create the server takes its time over, so the abort lands mid-request.
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/projects/1/tasks"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_delay(std::time::Duration::from_secs(30))
+                .set_body_json(serde_json::json!({"id": 77, "project_id": 1, "title": "t"})),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .upsert_projects(vec![Project {
+            id: ProjectId(1),
+            title: "Work".to_string(),
+            ..Project::default()
+        }])
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::CreateTask {
+            task: Box::new(Task {
+                project_id: ProjectId(1),
+                title: "in flight".to_string(),
+                ..Task::default()
+            }),
+        })
+        .await
+        .unwrap();
+
+    let (engine, _rx) = engine(&server, &store);
+    let sync = Arc::new(engine);
+    assert!(!sync.is_pushing(), "nothing has started yet");
+
+    let running = tokio::spawn({
+        let sync = Arc::clone(&sync);
+        async move {
+            let _ = sync.push().await;
+        }
+    });
+
+    // Let it reach the request.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        sync.is_pushing(),
+        "a push with a request outstanding must say so -- this is what the runtime reads \
+         at quit to decide whether aborting is safe"
+    );
+
+    // Exactly what quitting used to do.
+    running.abort();
+    let _ = running.await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    assert!(
+        !sync.is_pushing(),
+        "the flag survived an abort. `Pushing` must clear on Drop, or the runtime waits \
+         forever for a push that is already gone"
     );
 }

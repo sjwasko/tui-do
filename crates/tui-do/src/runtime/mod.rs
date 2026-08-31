@@ -509,7 +509,33 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     if pending <= 0 {
         return;
     }
-    if let Ok(mut slot) = in_flight().lock() {
+    // A pass mid-*pull* is aborted, as before: whole pages are applied and the retain has
+    // not run, so the store is a little stale and the next pull fixes it.
+    //
+    // A pass mid-*push* is not. The request may already have reached the server, and
+    // pushing again below would send the same outbox entry a second time -- which for a
+    // `CreateTask` means a second task, because Vikunja has no idempotency key and
+    // `CreateTask` has no read-before-retry the way `CreateLabel` does. Reproduced by hand
+    // on 2026-08-31 with the dev container paused: ids 3889 and 3891, both
+    // `Bug #3 - pause container test`.
+    //
+    // So a running push is given the same grace the flush itself gets. If it finishes, its
+    // entries are settled and the push below has nothing left to duplicate. If it does not,
+    // the entry stays queued for the next launch -- which is the right trade: a change that
+    // arrives late is better than a task that exists twice.
+    if sync.is_pushing() {
+        // The same budget the dots below get: five seconds, one per tick.
+        let deadline = FLUSH_TICK * FLUSH_DOTS;
+        let handle = in_flight().lock().ok().and_then(|mut slot| slot.take());
+        if let Some(handle) = handle {
+            if tokio::time::timeout(deadline, handle).await.is_err() {
+                // Still sending when the grace ran out. Walk away without pushing: what is
+                // queued is safe, and re-sending it is what creates the duplicate.
+                println!("Still sending; leaving the rest queued for next time.");
+                return;
+            }
+        }
+    } else if let Ok(mut slot) = in_flight().lock() {
         if let Some(handle) = slot.take() {
             handle.abort();
         }

@@ -45,7 +45,7 @@ throughout, both learned the hard way in this pass:
 | bug | its test is | deterministic? |
 |---|---|---|
 | BUG-1 | written and in the tree, `#[ignore]`d | yes |
-| BUG-3 | wiremock delay + `.expect(1)` | yes |
+| ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
 | BUG-6 | pure URL table test | yes |
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
@@ -57,7 +57,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-1 (Critical), BUG-3, BUG-4, BUG-6, BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-1 (Critical), BUG-4, BUG-6, BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-15 (archived tasks — highest value), BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -220,7 +220,7 @@ could in principle batch two of them. If that ever happened the user would see t
 `Overwrote` toast rather than nothing. Revisit if a "saved over a change made elsewhere"
 report ever arrives that nobody can explain.
 
-### BUG-3 — quitting mid-request can duplicate a task or label
+### ~~BUG-3~~ — FIXED — quitting mid-request can duplicate a task or label
 
 `crates/tui-do/src/runtime/mod.rs:507` with `crates/tui-do-core/src/sync/mod.rs:646`.
 
@@ -263,6 +263,49 @@ let _ = sync.push().await;                              // what flush_on_exit do
 The delay makes the interleaving deterministic rather than sampled. `.expect(1)` fails on
 drop if the server saw two creates, which is the bug. The same shape with
 `PUT /labels` plus a `GET /labels?s=` mock proves the reconcile was skipped.
+
+**REPRODUCED BY HAND, 2026-08-31**, by pausing the dev container and quitting with a create
+in flight: two tasks, ids **3889** and **3891**, both `Bug #3 - pause container test`.
+
+**And it was worse than this entry said.** The report described the `is_failing()`-gated
+reconcile being skipped. That is true for a label — but `Mutation::CreateTask` has **no
+replay guard at all**:
+
+```rust
+Mutation::CreateTask { task } => Sent::Created(Box::new(
+    self.client.create_task(task.project_id, task).await?,
+)),
+```
+
+`CreateLabel` reads before it writes; `CreateTask` does not, and cannot easily — a label
+title is at least a plausible key, and task titles are not unique in any useful sense
+("Call the VA" twice is ordinary). So for a task, *any* replay duplicates, whatever
+`attempts` says.
+
+**Fixed by never producing the replay.** `flush_on_exit` aborted the running pass
+unconditionally and then pushed, which is the two-overlapping-passes hazard that
+`spawn_sync`'s own comment warns about — *"an entry sent twice is a task created twice"* —
+reached by a path that bypasses the `RUNNING` guard.
+
+`Sync` now carries a `pushing` flag held by an RAII guard, so an **aborted** push still
+reports that it has stopped — `Drop` is the one thing that still runs when a task is
+aborted, and a plain store-false at the end of `push_with` would never execute. At quit:
+
+- mid-**pull** — aborted exactly as before; pages are applied, the retain has not run, the
+  store is a little stale and the next pull fixes it;
+- mid-**push** — given the same five-second grace the flush itself gets. If it finishes, its
+  entries are settled and there is nothing left to duplicate. If it does not, tui-do says
+  *"Still sending; leaving the rest queued for next time."* and walks away **without
+  pushing**. A change that arrives late beats a task that exists twice.
+
+Guarded by `an_aborted_push_reports_that_it_is_no_longer_pushing` in
+`crates/tui-do-core/tests/sync.rs`, verified non-vacuous: emptying the `Drop` body alone
+fails it with *"the flag survived an abort"*.
+
+**Still open, and narrower:** SIGKILL. Nothing runs on SIGKILL, so a create killed mid-flight
+can still be re-sent on the next launch. Closing that needs the outbox to record "this entry
+was handed to the server" durably — a schema change — and is worth doing only if it is ever
+seen.
 
 ### BUG-4 — a 408 or 425 discards the user's edit
 
