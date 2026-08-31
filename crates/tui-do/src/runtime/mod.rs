@@ -20,7 +20,9 @@ use anyhow::Context;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tui_do_api::Client;
 use tui_do_core::models::ProjectId;
-use tui_do_core::store::{LabelFilter, LabelSort, ProjectFilter, ProjectSort, LAST_PROJECT};
+use tui_do_core::store::{
+    LabelFilter, LabelSort, Mutation, ProjectFilter, ProjectSort, LAST_PROJECT,
+};
 use tui_do_core::sync::Reach;
 use tui_do_core::{Config, Store, Sync};
 use tui_do_ui::model::landing_scope;
@@ -254,11 +256,22 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
             let (store, tx) = (store.clone(), tx.clone());
             let sync = sync.cloned();
             tokio::spawn(async move {
-                if let Err(error) = store.queue(mutation).await {
+                match store.queue(mutation).await {
+                    // A create is the one mutation whose id the interface did not know
+                    // when it drew the row: `Store::queue` allocates the provisional id
+                    // inside its own transaction. Told before the reload, the selection
+                    // names a row that exists by the time the list comes back.
+                    Ok(entry) => {
+                        if let Mutation::CreateTask { task } = &entry.mutation {
+                            let _ = tx.send(Msg::TaskCreated(task.id));
+                        }
+                    }
                     // The model has already shown the change. Saying the store refused it
                     // is the only honest thing to do; the reload below puts the list back
                     // to what was actually written.
-                    let _ = tx.send(Msg::StoreFailed(error.to_string()));
+                    Err(error) => {
+                        let _ = tx.send(Msg::StoreFailed(error.to_string()));
+                    }
                 }
                 // Reload from the store rather than trusting the optimistic copy, then
                 // send it on its way. `spawn_sync` coalesces, so a burst of edits is one
