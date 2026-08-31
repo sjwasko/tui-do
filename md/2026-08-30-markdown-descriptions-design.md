@@ -168,22 +168,43 @@ comrak", and misrouting is what broke `Vec<String>` above: sent down the HTML br
 therefore *wrong*, and it is what the crude SQL in the table above used — which is why
 `Use Vec<String> here` counts in the 120 rather than the 367.
 
-This section undersold the router from the start and then went stale twice more as real
-descriptions found holes in it; `markdown.rs`'s own doc comment on `looks_like_html` is
-now the authoritative account, this is only a summary. The rule that shipped: the trimmed
-description either *starts with* a recognised HTML block tag — `<p`, `<h1`…`<h6`, `<ul`,
-`<ol`, `<pre`, `<table`, `<div`, `<blockquote` — or starts with `<` at all and *closes* one
-of those tags somewhere in the body. Anchoring both halves to "starts with `<`" is what
-took three rounds to reach: unanchored, a bare mention of a tag anywhere in prose (`"Wrap
-it in a <div>"`) or a sentence merely describing a closing tag (`"close the </div>
-tag"`) both misrouted to HTML and lost the bracketed word to `html5ever`; anchoring only
-the opening half left the closing half still unanchored and still losing words. What
-finally justifies the anchor is that TipTap never emits free text before its first tag,
-however that tag is spelled — which is also why `<img>`-first descriptions (store ids 27,
-116) still route correctly despite `<img` not being in the block-tag list. `rows.rs`
-originally had this list as `BLOCK`, and its tests were carried across as router tests.
-**`plain_text` is not extended into a converter, as the first draft proposed — it is
-deleted, and its knowledge becomes the router.**
+This section undersold the router from the start and then went stale three times more as
+real descriptions found holes in it; `markdown.rs`'s own doc comment on `looks_like_html`
+is now the authoritative account, this is only a summary. The rule that shipped: the
+trimmed description either *starts with* a recognised HTML block tag — `<p`, `<h1`…`<h6`,
+`<ul`, `<ol`, `<pre`, `<table`, `<div`, `<blockquote` — or contains, anywhere in the body,
+both an opening tag and its own matching closing tag for the same element (`<div` paired
+with `</div>`, `<p` paired with `</p>`, and so on).
+
+Three earlier rounds landed on weaker rules, each closing one hole and opening or leaving
+another: unanchored ("a block tag mentioned anywhere"), a bare mention of a tag in prose
+(`"Wrap it in a <div>"`) misrouted to HTML and lost the bracketed word to `html5ever`.
+Anchoring the opening half to "starts with a block tag" fixed that but left the
+closing-tag check unanchored, so a sentence merely *describing* a close (`"close the
+</div> tag"`) still misrouted. Anchoring *both* halves to "starts with `<`" fixed that in
+turn, but broke ids 49, 369 and 420 on dev — genuine TipTap output shaped as a leading
+sentence of bare text followed by real `<div><br></div>` blocks (the shape pasting from
+Google Keep into TipTap produces), none of which opens on `<`.
+
+The pairing rule now in place drops the "starts with `<`" anchor and asks a stronger
+question instead: a genuine TipTap document always closes what it opens, wherever in the
+string that falls, and prose mentioning markup supplies at most one half at a time. That
+one fact — the pair, not the position — separates every case the three earlier rounds
+were fighting over, including the `<img>`-first shape (store ids 27, 116) that opens on a
+tag outside the block list but still carries a bare `<p></p>` pair. Validated against the
+487 real descriptions on dev: 112 classify as HTML, up from 108 under the previous rule —
+ids 49, 369 and 420 moved back to HTML as intended, and one previously-unexamined row (id
+1842, free-form notes with a genuine `<p>…</p>` fragment pasted mid-text) moved with them,
+consistent with the rule as stated.
+
+**Known residual, accepted rather than chased:** a sentence naming *both* halves of the
+same element — `"use <div> and close with </div>"` — still misroutes to HTML and loses
+both words. Nothing short of parsing the sentence separates that from a real TipTap paste
+of an empty `<div></div>`, and three rounds of narrowing the discriminator by string shape
+alone is enough evidence that this is where that approach stops paying off. `rows.rs`
+originally had the block-tag list as `BLOCK`, and its tests were carried across as router
+tests. **`plain_text` is not extended into a converter, as the first draft proposed — it
+is deleted, and its knowledge becomes the router.**
 
 `plain_text` also carried an `OPAQUE` list so that `<script>` and `<style>` bodies —
 code and CSS, not prose — were never shown. That list did not need porting: `html5ever`

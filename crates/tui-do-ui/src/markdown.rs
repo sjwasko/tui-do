@@ -40,8 +40,9 @@ const HTML_BLOCKS: &[&str] = &[
 ///
 /// `<br>` is void and closes nothing, so it is the one tag missing here. Everything else
 /// pairs an opening and a closing tag because TipTap always emits both: it wraps its whole
-/// document in block elements, it never emits an unclosed one, and prose that merely
-/// mentions a tag supplies neither half at once. See `looks_like_html`.
+/// document in block elements and never emits an unclosed one. Prose that merely mentions
+/// markup supplies at most one half — the open or the close, never reliably both — which is
+/// the pair `looks_like_html` tests for.
 const HTML_CLOSING_TAGS: &[&str] = &[
     "</p>",
     "</h1>",
@@ -67,44 +68,51 @@ const HTML_CLOSING_TAGS: &[&str] = &[
 /// a real element and the surrounding text as its (empty) content. The same happened with
 /// `<li>`, `<table>` and `<pre>` mentioned in a sentence.
 ///
-/// The fix after that ("starts with a block tag, OR contains a matching close anywhere")
-/// only closed the opening-tag half of the hole: the closing half still matched anywhere
-/// in the string, so a sentence that merely *describes* closing a tag — `"Remember to
-/// close the </div> tag at the end."`, `"Don't forget </p> at the end of your HTML
-/// snippet."` — was still routed to HTML and lost the word, exactly as before. Anchoring
-/// the closing-tag check the same way the opening one is anchored fixes it: a genuine
-/// TipTap document never carries prose ahead of its markup, so a real closing tag only
-/// needs to be searched for once the description is already known to *start* with a tag
-/// of some kind.
+/// The fix after that ("starts with a block tag, OR starts with `<` and closes one
+/// anywhere") caused a regression of its own: ids 49, 369 and 420 on dev are genuine
+/// TipTap output — a leading sentence of bare text (`"yay -S naps2-bin"`) followed by real
+/// `<div><br></div>` blocks, the shape pasting from Google Keep into TipTap produces — and
+/// none of them *opens* on `<`, so anchoring the closing-tag check to "starts with `<`"
+/// routed all three away from HTML they genuinely are.
 ///
-/// That "some kind" is deliberately not narrowed to `HTML_BLOCKS`: id 27 and 116 on dev
-/// are genuine TipTap output shaped `<img …><p></p>` — an image TipTap left outside any
-/// paragraph, followed by the empty paragraph it leaves behind (see
-/// `an_image_only_description_renders_nothing`) — and neither starts with a recognised
-/// *block* tag. What every one of them shares with a `<div>`/`<p>`-first document, and
-/// what no prose sentence shares with either, is that the trimmed description's very
-/// first character is `<`: TipTap never emits free text before its first tag, however
-/// that first tag is spelled, and prose never opens on `<` at all — `"<pre-release
-/// plan>"` and `"<http://…>"` both fail this today for the unrelated reason that they
-/// contain no closing tag to find.
+/// **The discriminating fact is not position, it is the pair.** A genuine TipTap document
+/// carries both halves of at least one element — `<div>` and `</div>`, or `<p>` and
+/// `</p>` — because TipTap always closes what it opens, wherever in the string that
+/// happens to fall. Prose that merely mentions markup supplies at most one half at a
+/// time: `"Wrap it in a <div> and add the class."` has the open with no close;
+/// `"Remember to close the </div> tag at the end."` has the close with no open. Neither
+/// sentence needs the other half to make its point, and neither one accidentally has it.
+/// So the rule drops the "starts with `<`" anchor entirely and asks a stronger question
+/// instead: does the string contain *both* an opening tag and *its own* matching closing
+/// tag, for the same element, anywhere?
 ///
-/// So the rule is: starts with a recognised block tag (covers the common case and every
-/// row that has no closing tag to check, such as a bare `<p>` with no `</p>` yet typed),
-/// or starts with `<` at all *and* closes a recognised tag somewhere in the body.
+/// A leading block tag is still checked on its own (`starts_with_block_tag`), because a
+/// document can open on `<p>` with no `</p>` yet typed — mid-edit, or truncated — and that
+/// is still real HTML with nothing to pair against.
 ///
-/// Validated against the 487 real descriptions on dev: the previous rule counted 112 as
-/// HTML. The new rule counts 108, and every one of the four rows that moved is prose with
-/// real `<div>`/`<br>` markup pasted in *after* a leading sentence of free text — e.g. id
-/// 49, `"yay -S naps2-bin<div><br></div>…"` — which is exactly the shape a genuine TipTap
-/// document cannot produce and exactly the shape that lets a closing-tag mention hide
-/// inside plain prose. None of the six genuine-HTML rows the block-tag list names (`<p>`,
-/// `<h1>`…`<h6>`, `<ul>`, `<ol>`, `<pre>`, `<table>`, `<div>`, `<blockquote>`) changed, and
-/// id 27/116's `<img>`-first shape stays HTML because it still opens on `<`.
+/// The pairing subsumes the old `<img>`-first case for free: ids 27 and 116
+/// (`<img …><p></p>`, see `an_image_only_description_renders_nothing`) don't open on a
+/// recognised block tag, but they carry a bare `<p>` immediately followed by `</p>`, which
+/// the pairing check finds regardless of what came before it.
+///
+/// **Known residual, accepted rather than chased:** a sentence that names *both* halves —
+/// `"use <div> and close with </div>"` — still misroutes to HTML and loses both words.
+/// Nothing short of parsing the sentence tells that apart from a real TipTap paste of an
+/// empty `<div></div>`, and the two previous rounds already show where chasing an ever
+/// narrower discriminator on string shape alone leads.
+///
+/// Validated against the 487 real descriptions on dev: the previous rule counted 108 as
+/// HTML; this rule counts 112. Four rows moved, all from Markdown to HTML: ids 49, 369 and
+/// 420 (the regression this fix targets), plus id 1842, not previously known — free-form
+/// notes with a genuine `<p>…</p>` fragment (and several `<br />`) pasted into the middle
+/// of otherwise plain text. That row does carry a real matching pair, so the rule is
+/// working as specified; it was not one of the cases this fix was written against. Row
+/// 417 (`"...waits<br>...drifts...<br>..."`, no wrapping element, `<br>` has no closing
+/// tag to pair) stays Markdown, as before.
 pub(crate) fn looks_like_html(description: &str) -> bool {
     let trimmed = description.trim();
     let lower = trimmed.to_ascii_lowercase();
-    starts_with_block_tag(&lower)
-        || (lower.starts_with('<') && HTML_CLOSING_TAGS.iter().any(|tag| lower.contains(tag)))
+    starts_with_block_tag(&lower) || contains_matching_pair(&lower)
 }
 
 /// Whether `lower` (already trimmed and lowercased) opens with a recognised block tag.
@@ -117,6 +125,29 @@ fn starts_with_block_tag(lower: &str) -> bool {
                 .next()
                 .is_none_or(|c| c == '>' || c == '/' || c.is_whitespace())
         })
+    })
+}
+
+/// Whether `lower` contains, anywhere, both an opening tag from `HTML_BLOCKS` and the
+/// matching closing tag from `HTML_CLOSING_TAGS` for the *same* element. `<br>` has no
+/// closing form and is excluded by `zip` stopping at the shorter list.
+fn contains_matching_pair(lower: &str) -> bool {
+    HTML_BLOCKS
+        .iter()
+        .zip(HTML_CLOSING_TAGS.iter())
+        .any(|(open, close)| contains_tag_open(lower, open) && lower.contains(close))
+}
+
+/// Whether `lower` contains an opening `tag` (e.g. `"<div"`) anywhere, not just at the
+/// front — unlike `starts_with_block_tag`, this looks for a pasted block that follows a
+/// leading sentence of prose. The same trailing-character guard applies at each
+/// occurrence: `<div-shaped>` does not count, wherever it falls.
+fn contains_tag_open(lower: &str, tag: &str) -> bool {
+    lower.match_indices(tag).any(|(start, _)| {
+        lower[start + tag.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == '>' || c == '/' || c.is_whitespace())
     })
 }
 
@@ -415,9 +446,9 @@ mod tests {
     fn prose_that_merely_mentions_a_block_tag_is_not_html() {
         // FIX 1: the pre-fix rule matched a bare mention of a tag anywhere in the string,
         // which routed every one of these to the HTML branch and deleted the bracketed
-        // word -- `html5ever` reads `<div>` as a real, empty element. None of these opens
-        // with the tag it mentions or closes one anywhere, which is what now tells them
-        // apart from genuine TipTap output.
+        // word -- `html5ever` reads `<div>` as a real, empty element. Each of these has
+        // the opening half of a tag and not the matching close, which is what now tells
+        // them apart from genuine TipTap output -- see `contains_matching_pair`.
         assert!(!looks_like_html("Wrap it in a <div> and add the class."));
         assert!(!looks_like_html("Add an <li> element for each row."));
         assert!(!looks_like_html("Use a <table> to lay it out."));
@@ -426,11 +457,10 @@ mod tests {
 
     #[test]
     fn prose_that_describes_closing_a_tag_is_not_html() {
-        // FIX 3: the "starts with a block tag OR closes one anywhere" rule from the
-        // previous fix only anchored the opening half. The closing half still matched a
-        // bare mention anywhere in the string, so a sentence describing HTML -- not
-        // containing any -- was still misrouted and lost the bracketed word. None of
-        // these opens on `<`, which is what now tells them apart from genuine HTML.
+        // FIX 3, still true under the pairing rule (FIX 4): a sentence that only
+        // describes closing a tag has the closing half with no matching open, so it
+        // fails `contains_matching_pair` exactly as the opening-only case above does.
+        // None of these carries both halves of the same element.
         assert!(!looks_like_html(
             "Remember to close the </div> tag at the end."
         ));
@@ -471,6 +501,21 @@ mod tests {
         // the one row in the 487-description corpus whose routing changed.
         assert!(!looks_like_html(
             "Empty inbox waits<br>A test task drifts into view<br>Proof the pipe still flows"
+        ));
+    }
+
+    #[test]
+    fn a_pasted_div_block_after_leading_text_is_html() {
+        // FIX 4: ids 49, 369 and 420 on dev are this exact shape -- a leading sentence of
+        // bare text (e.g. `"yay -S naps2-bin"`) followed by real `<div><br></div>` blocks,
+        // the shape pasting from Google Keep into TipTap produces. The FIX-3 rule anchored
+        // the closing-tag search to "starts with `<`", which these don't, and misrouted
+        // all three to Markdown -- a regression, since they used to render properly as
+        // HTML. `<div>` and `</div>` both appear here, which is what the pairing rule
+        // looks for regardless of what came before them.
+        assert!(looks_like_html("yay -S naps2-bin<div><br></div>"));
+        assert!(looks_like_html(
+            "Some notes here first.<div>then a block</div><div><br></div>"
         ));
     }
 
