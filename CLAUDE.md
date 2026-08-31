@@ -451,16 +451,16 @@ report it still broken. Build release before saying a fix is ready to try.
 Workspace lints deny `unwrap`, `panic`, `todo`, `dbg!` and forbid `unsafe`. Tests may
 `allow` them at module level; production code may not.
 
-## The rename
+## Where tui-do keeps things
 
-The project was called `criax` until 2026-08-27. Everything in the repository moved in
-one commit; what did not, because a commit cannot reach into a home directory, is the
-config at `~/.config/tui-do/`, the store at `~/.local/share/tui-do/tui-do.db`, and the
-symlink on `PATH`. `deploy/adopt-new-name.sh` moves those, refuses while an instance is
-running (the store is SQLite in WAL mode), and is safe to re-run.
+The config is at `~/.config/tui-do/config.yaml`, the store at
+`~/.local/share/tui-do/tui-do.db`, and `~/.local/bin/tui-do` is a symlink to
+`target/release/tui-do`. None of the three is inside the repository, so a change here does
+not reach them — which is why a fix has to be built with `--release` before it can be
+tried.
 
-`cria` — no `x` — is the *predecessor*, still checked out at `../cria`. It was never part
-of the rename and every mention of it is deliberate.
+`cria` is the *predecessor*, still checked out at `../cria`. Every mention of it is
+deliberate.
 
 ## Reference material
 

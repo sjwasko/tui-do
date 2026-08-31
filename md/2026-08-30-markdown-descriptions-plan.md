@@ -63,8 +63,7 @@ was measured and why each option was rejected; this plan does not repeat the arg
 - Consumes: nothing.
 - Produces: the crates `comrak` and `html2text` available to `tui-do-ui`.
 
-`pulldown-cmark` was declared by the first scaffold commit (`d63357f`, when the project was
-called `criax`) in anticipation of this feature and no source file has ever imported it.
+`pulldown-cmark` was declared by the first scaffold commit (`d63357f`) in anticipation of this feature and no source file has ever imported it.
 comrak replaces it, so it goes.
 
 - [ ] **Step 1: Confirm `pulldown-cmark` really is unused**
