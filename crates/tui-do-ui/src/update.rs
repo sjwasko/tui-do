@@ -71,8 +71,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::ProjectsLoaded(projects) => {
             model.data.projects = projects;
+            let effects = settle_sidebar_selection(model);
             keep_sidebar_visible(model);
-            Vec::new()
+            effects
         }
         Msg::LabelsLoaded(labels) => absorb_labels(model, labels),
         Msg::CountsLoaded(counts) => {
@@ -824,9 +825,14 @@ fn step(model: &mut Model, delta: isize) -> Vec<Effect> {
                 &model.data.counts,
                 &model.sidebar,
             ));
-            let Some(current) = targets.iter().position(|t| *t == model.sidebar.selected) else {
-                return Vec::new();
-            };
+            // A selection naming a row that is no longer drawn used to return here, which
+            // left every arrow key doing nothing at all and no way out but `g p` or a
+            // restart. Moving from the top instead is always better than not moving: the
+            // keyboard stays alive even when the model and the tree disagree.
+            let current = targets
+                .iter()
+                .position(|t| *t == model.sidebar.selected)
+                .unwrap_or(0);
             let last = targets.len().saturating_sub(1);
             let next = (current as isize + delta).clamp(0, last as isize) as usize;
             match targets.get(next) {
@@ -2504,6 +2510,37 @@ fn settle_focus(model: &mut Model) {
 /// selection walked on into rows nobody could see. The task list had the same fault and
 /// was fixed; this is the same fix, and it is simpler because sidebar rows are one line
 /// each.
+/// Put the sidebar back on a row that exists, when a pull has removed the one it was on.
+///
+/// A project archived in another client leaves the tree — `sidebar::rows` filters archived
+/// projects out — while `sidebar.selected` and `query.scope` go on naming it. The result is
+/// a breadcrumb for a project that appears nowhere, a list of its tasks with no way back to
+/// them once you leave, and a sidebar whose arrow keys do nothing because the selection
+/// cannot be found among the rows.
+///
+/// Falling back to All Tasks is the honest answer: the project really is gone from the
+/// places you could navigate to it, so pretending otherwise strands the cursor. The toast
+/// says which project and why, because it happened somewhere else and there is nothing on
+/// screen to explain it.
+fn settle_sidebar_selection(model: &mut Model) -> Vec<Effect> {
+    let SidebarTarget::Project(id) = model.sidebar.selected else {
+        return Vec::new();
+    };
+    let visible = sidebar::rows(&model.data.projects, &model.data.counts, &model.sidebar)
+        .iter()
+        .any(|row| row.target() == Some(model.sidebar.selected));
+    if visible {
+        return Vec::new();
+    }
+    let name = model
+        .project(id)
+        .map_or_else(|| format!("Project {}", id.get()), |p| p.title.clone());
+    model.toast(Toast::warning(format!(
+        "{name} was archived or removed elsewhere — showing all tasks"
+    )));
+    select_target(model, SidebarTarget::AllTasks)
+}
+
 fn keep_sidebar_visible(model: &mut Model) {
     let Some(area) = model.frames().sidebar else {
         return;

@@ -578,6 +578,46 @@ If `labels_with_negative_ids` does not exist, the same check is one `SELECT id F
 WHERE id < 0` in a test helper. The row it finds will never settle and never sync, which is
 what makes it a phantom rather than merely stale.
 
+### ~~BUG-17~~ — FIXED — archiving the project you are viewing wedges the sidebar
+
+`crates/tui-do-ui/src/update.rs:827` (movement) and `Msg::ProjectsLoaded` (the cause), with
+`crates/tui-do-ui/src/sidebar.rs:98` (the filter).
+
+**Found in use on 2026-08-31**, on the first day of driving it: five tasks added to
+`Retirement` in the web UI, `R` in tui-do, navigate into the project, archive it in the web
+UI, `R` again. The project left the sidebar — and then:
+
+- the breadcrumb still read `Retirement › List`, naming a project that appeared nowhere;
+- its five tasks were still listed, with no way back to them after navigating away;
+- **the sidebar's arrow keys stopped working entirely**, with no way out but `g p` or a
+  restart. Confirmed live: `g p` restored navigation.
+
+**Two faults, one cause.** `sidebar::rows` filters archived projects out of the tree, but
+nothing re-checked `sidebar.selected` after a pull. Movement then did:
+
+```rust
+let Some(current) = targets.iter().position(|t| *t == model.sidebar.selected) else {
+    return Vec::new();          // <- every arrow key, forever
+};
+```
+
+A selection naming a row that is no longer drawn returned without moving.
+
+**Note this only became visible today.** Before the BUG-15 fix those five tasks were deleted
+on the pull, so the stranded scope had nothing in it and the wedge was harder to notice.
+Fixing the data loss surfaced the navigation bug behind it.
+
+**Fixed in two places.** `settle_sidebar_selection` runs on every `ProjectsLoaded`: if the
+selected project is no longer in the tree it falls back to All Tasks and toasts *"Retirement
+was archived or removed elsewhere — showing all tasks"* — it happened on another machine and
+nothing on screen would otherwise explain it. And movement now starts from the top rather
+than returning, so the keyboard stays alive even if the model and the tree ever disagree
+again.
+
+Two tests, both verified non-vacuous: `a_project_archived_elsewhere_does_not_strand_the_sidebar`
+drives the reported sequence, and `the_sidebar_arrows_never_dead_end` forces the wedged state
+directly.
+
 ### BUG-16 — an error you must act on is truncated with no way to read the rest
 
 `crates/tui-do-ui/src/view.rs:498` — `let text = rows::truncate(&toast.text, area.width);`

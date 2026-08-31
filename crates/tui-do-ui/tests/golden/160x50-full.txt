@@ -1,4 +1,4 @@
-tui-do  Work › List  Table  Kanban                                                                                                              ⟳ synced 2m ago
+tui-do  Work › List  Table (soon)  Kanban (soon)                                                                                                ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   All tasks                  4 │ Title                           Project         Labels        Due         │ Fix the token refresh that drops the cookie
   Favorites                  2 │ !!!!! Fix the token refresh th… Work             urgent …     2 days ago  │ ───────────────────────────────────────────────────
