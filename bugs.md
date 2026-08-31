@@ -57,7 +57,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-4, BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-4, BUG-7, BUG-9, BUG-16 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -577,6 +577,46 @@ assert!(orphans.is_empty(), "a provisional label was resurrected: {orphans:?}");
 If `labels_with_negative_ids` does not exist, the same check is one `SELECT id FROM labels
 WHERE id < 0` in a test helper. The row it finds will never settle and never sync, which is
 what makes it a phantom rather than merely stale.
+
+### BUG-16 — an error you must act on is truncated with no way to read the rest
+
+`crates/tui-do-ui/src/view.rs:498` — `let text = rows::truncate(&toast.text, area.width);`
+
+The status line is one row and a toast is cut to fit it. There is no wrapping, no scrollback
+and no second surface, so a message longer than the terminal is simply unreadable.
+
+**Found in use on 2026-08-31**, setting up a new machine. The toast was:
+
+```
+⚠ offline — not authorized: missing, malf…
+```
+
+The full text is Vikunja's own: *"not authorized: missing, malformed, expired or otherwise
+invalid token provided"* — about a third of it visible. The cause turned out to be a token
+copied from the production instance instead of dev, which is well-formed and simply unknown
+to the other server. Nothing in the visible third could have led anybody there.
+
+**Why it matters more than it looks.** Toasts carry the failures a user has to act on —
+a rejected write, a credential that does not work, a queue that is stuck. Those are exactly
+the messages that are long, and exactly the ones where the tail carries the diagnosis.
+
+**Suggested fix.** Any of: wrap a toast onto a second row when it does not fit and the
+terminal has room; keep the last error somewhere `?` or a key can show in full; or shorten
+what tui-do prepends so more of the server's own words survive. The first is probably
+right — the status line already knows the width, and an error is worth a row.
+
+**Worth considering alongside it:** a `401` toast could name the server it was talking to.
+*"not authorized against dev-box.example.net"* would have made the wrong-instance
+token obvious immediately, in fewer characters than the message it replaces.
+
+**Suggested test.** Drive it: make the toast longer than the terminal is wide.
+
+1. Set `server.token_file` to a file containing a token from a *different* Vikunja instance,
+   or any 43-character string beginning `tk_`.
+2. Start `tui-do` in an 80-column terminal and press `R`.
+
+**Pass:** the whole message is readable, whether by wrapping or by a key that shows it.
+**Fail:** it ends in `…` and the rest is unreachable.
 
 ### ~~BUG-15~~ — CONFIRMED AND FIXED — tasks in archived projects were deleted on every full pull
 
