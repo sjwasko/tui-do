@@ -962,6 +962,36 @@ fn a_clipped_modal_scrolls_to_its_highlight_rather_than_truncating() {
 }
 
 #[test]
+fn the_description_is_inset_to_match_the_fields_above_it() {
+    // The pane insets everything by one column -- `width` passed to `markdown::render` is
+    // already `inner.width - 1` to pay for it, so `view` has to add the column back onto
+    // every rendered line itself. Losing that `Span::raw(" ")` would leave the description
+    // sitting one column left of the title and the fields drawn above it.
+    let model = fixture((160, 50));
+    let drawn = draw(&model);
+    let title_col = drawn
+        .lines()
+        .find_map(|line| line.find("Fix the token refresh"))
+        .expect("the title is drawn");
+    let field_col = drawn
+        .lines()
+        .find_map(|line| line.find("Project  Work"))
+        .expect("the project field is drawn");
+    let description_col = drawn
+        .lines()
+        .find_map(|line| line.find("The refresh call needs"))
+        .expect("the description is drawn");
+    assert_eq!(
+        description_col, title_col,
+        "the description should line up with the title:\n{drawn}"
+    );
+    assert_eq!(
+        description_col, field_col,
+        "and with the fields above it:\n{drawn}"
+    );
+}
+
+#[test]
 fn a_short_sidebar_draws_the_window_the_selection_is_in() {
     let mut model = fixture((120, 12));
     // More projects than the pane has rows, which is the only case that scrolls.
