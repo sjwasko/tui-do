@@ -11,13 +11,15 @@
 
 /// Elements that only appear in generated HTML, never in prose.
 ///
-/// The test is deliberately *block* tags and not "contains a `<`". Real descriptions say
-/// `Use Vec<String> here` and `# - CAM_<CAMERA_MAC>_NAME=fr`, and sending those down the
-/// HTML branch deletes the bracketed word — `html5ever` reads it as an unknown element and
-/// drops it. TipTap always wraps its content in at least one of these.
+/// One entry per tag, not `"<p>"` and `"<p "` as two: the trailing-character guard below
+/// already tells `<p>` and `<p dir="ltr">` from `<pre-release plan>`, so a tag needs only
+/// its opening form. `"<p "` was dead code before this list was trimmed to one entry each
+/// — it can only match two literal spaces — and its absence let `<p dir="ltr">…</p>`
+/// (TipTap's text-align extension emits `<p style="text-align: center">`) fall through to
+/// the markdown branch and show literal tags on screen. Nothing else in the list carried
+/// the same trailing-character mistake; only `<p>`/`<p ` was ever split in two.
 const HTML_BLOCKS: &[&str] = &[
-    "<p>",
-    "<p ",
+    "<p",
     "<h1",
     "<h2",
     "<h3",
@@ -34,19 +36,68 @@ const HTML_BLOCKS: &[&str] = &[
     "<br",
 ];
 
+/// The closing form of each `HTML_BLOCKS` entry that has one.
+///
+/// `<br>` is void and closes nothing, so it is the one tag missing here. Everything else
+/// pairs an opening and a closing tag because TipTap always emits both: it wraps its whole
+/// document in block elements, it never emits an unclosed one, and prose that merely
+/// mentions a tag supplies neither half at once. See `looks_like_html`.
+const HTML_CLOSING_TAGS: &[&str] = &[
+    "</p>",
+    "</h1>",
+    "</h2>",
+    "</h3>",
+    "</h4>",
+    "</h5>",
+    "</h6>",
+    "</ul>",
+    "</ol>",
+    "</li>",
+    "</pre>",
+    "</table>",
+    "</div>",
+    "</blockquote>",
+];
+
 /// Whether this description came out of the web editor rather than a keyboard.
+///
+/// The test used to be "contains a recognised block tag anywhere", and that is not strong
+/// enough: `"Wrap it in a <div> and add the class."` contains `<div>` and is prose, and
+/// routing it to the HTML branch silently deleted the word — `html5ever` reads `<div>` as
+/// a real element and the surrounding text as its (empty) content. The same happened with
+/// `<li>`, `<table>` and `<pre>` mentioned in a sentence.
+///
+/// What tells genuine web-editor HTML apart from prose that mentions a tag is that TipTap
+/// always wraps its whole output in block elements: real HTML both *begins* with one of
+/// them and *closes* one somewhere in the document, where prose supplies at most a bare
+/// opening tag and never a matching close. So this checks the trimmed description's start
+/// against `HTML_BLOCKS` and its full text against `HTML_CLOSING_TAGS`, and either is
+/// enough.
+///
+/// Validated against the 487 real descriptions on dev: the old rule counted 113 as HTML,
+/// one more than the 112 the design doc's own survey names (108 genuine TipTap + 1
+/// markdown wrapped in `<pre>` + 3 containing `<table>`). The extra one was id 417, whose
+/// description is `Empty inbox waits<br>A test task drifts into view<br>Proof the pipe
+/// still flows` — three lines joined by bare `<br>` with no wrapping element, not
+/// TipTap's output (title: "test task", a manually-inserted fixture). This rule answers
+/// 112, matching the design doc's tally exactly, and reclassifies nothing else: every
+/// genuine HTML row still starts with a block tag, and the four prose-mentions-a-tag
+/// examples above now correctly answer `false`.
 pub(crate) fn looks_like_html(description: &str) -> bool {
-    let lower = description.to_ascii_lowercase();
+    let trimmed = description.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    starts_with_block_tag(&lower) || HTML_CLOSING_TAGS.iter().any(|tag| lower.contains(tag))
+}
+
+/// Whether `lower` (already trimmed and lowercased) opens with a recognised block tag.
+fn starts_with_block_tag(lower: &str) -> bool {
     HTML_BLOCKS.iter().any(|tag| {
-        lower.match_indices(tag).any(|(at, _)| {
+        lower.strip_prefix(tag).is_some_and(|rest| {
             // `<pre-release plan>` starts with `<pre`, and is prose. A real tag is
             // followed by `>`, whitespace, or `/`; a hyphenated word is not.
-            let after = at + tag.len();
-            tag.ends_with('>')
-                || lower[after..]
-                    .chars()
-                    .next()
-                    .is_none_or(|c| c == '>' || c == '/' || c.is_whitespace())
+            rest.chars()
+                .next()
+                .is_none_or(|c| c == '>' || c == '/' || c.is_whitespace())
         })
     })
 }
@@ -197,6 +248,13 @@ fn agent_css(theme: Theme) -> String {
 }
 
 /// The RGB of a style's foreground, when it has one that CSS can name.
+///
+/// Only `Color::Rgb` matches. `Shade::at` (theme.rs) answers `Color::Blue` at Ansi16 and
+/// `Color::Indexed` at Ansi256, and CSS has no way to name either, so `agent_css` falls
+/// back to an empty stylesheet and a heading keeps `header_prefix`'s `#` with no colour.
+/// Deliberate: a non-TrueColor terminal already renders every other themed element in its
+/// approximation of the theme, and an uncoloured heading is the honest result of asking a
+/// hex-only stylesheet to describe a 16- or 256-colour one, not a bug to chase.
 fn style_rgb(style: Style) -> Option<(u8, u8, u8)> {
     match style.fg {
         Some(ratatui::style::Color::Rgb(r, g, b)) => Some((r, g, b)),
@@ -220,8 +278,8 @@ pub fn render(description: &str, width: u16, theme: Theme) -> Vec<Line<'static>>
     } else {
         let mut options = comrak::Options::default();
         // A single newline is a line break. Deliberately not CommonMark: roughly 350 of
-        // the 487 descriptions on dev carry their structure in single newlines, and
-        // conforming here runs an address block together into one line.
+        // the 367 tag-free descriptions on dev carry their structure in single newlines,
+        // and conforming here runs an address block together into one line.
         options.render.hardbreaks = true;
         // Text that looks like a tag stays text. Without this `<String>` in
         // `Use Vec<String> here` is read as raw HTML and dropped, silently.
@@ -312,6 +370,14 @@ mod tests {
         assert!(looks_like_html(
             "<p><a target=\"_blank\" rel=\"noopener\" href=\"http://x\">POST /login</a></p>"
         ));
+        // FIX 2: `<p dir="ltr">` and `<p style="text-align: center">` (TipTap's
+        // text-align extension) both open with `<p` followed by whitespace, not `>` or a
+        // second space -- the dead `"<p "` entry this list used to carry never matched
+        // either shape.
+        assert!(looks_like_html("<p dir=\"ltr\">left to right</p>"));
+        assert!(looks_like_html(
+            "<p style=\"text-align: center\">centered</p>"
+        ));
     }
 
     #[test]
@@ -325,6 +391,32 @@ mod tests {
         assert!(!looks_like_html("a <b"));
         assert!(!looks_like_html("<pre-release plan>"));
         assert!(!looks_like_html("<http://Www.ftc.gov> Report fraud"));
+    }
+
+    #[test]
+    fn prose_that_merely_mentions_a_block_tag_is_not_html() {
+        // FIX 1: the pre-fix rule matched a bare mention of a tag anywhere in the string,
+        // which routed every one of these to the HTML branch and deleted the bracketed
+        // word -- `html5ever` reads `<div>` as a real, empty element. None of these opens
+        // with the tag it mentions or closes one anywhere, which is what now tells them
+        // apart from genuine TipTap output.
+        assert!(!looks_like_html("Wrap it in a <div> and add the class."));
+        assert!(!looks_like_html("Add an <li> element for each row."));
+        assert!(!looks_like_html("Use a <table> to lay it out."));
+        assert!(!looks_like_html("A <pre> block preserves whitespace."));
+    }
+
+    #[test]
+    fn bare_br_with_no_wrapping_element_is_not_html() {
+        // Description id 417 on dev, title "test task": three lines joined by `<br>`
+        // with no surrounding block element. Not TipTap's output -- the web editor always
+        // wraps -- so it is treated as text and the literal `<br>` stays visible rather
+        // than being read as three real line breaks. Recorded because the pre-fix rule
+        // got this one right by the accident of matching `<br>` on its own, and this is
+        // the one row in the 487-description corpus whose routing changed.
+        assert!(!looks_like_html(
+            "Empty inbox waits<br>A test task drifts into view<br>Proof the pipe still flows"
+        ));
     }
 
     #[test]
@@ -600,5 +692,16 @@ mod tests {
             row.contains('│'),
             "html table cells had no visible separator: {html_lines:?}"
         );
+    }
+
+    #[test]
+    fn an_image_only_description_renders_nothing() {
+        // Store ids 27 and 116 on dev, both this exact shape: an `<img>` TipTap left
+        // outside any paragraph, followed by the empty paragraph it leaves behind. Not a
+        // regression -- `rows::plain_text` showed nothing for these two either -- and not
+        // fixed here: what an image should look like in a terminal is its own question.
+        let html = "<img data-src=\"https://example/attachments/1\" src=\"#\" \
+                    id=\"tiptap-image-1\"><p></p>";
+        assert!(rendered(html, 60).is_empty());
     }
 }
