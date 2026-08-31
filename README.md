@@ -215,8 +215,15 @@ tui-do add "Water the plants every 3 days"
 ```
 
 `tui-do add` applies locally and queues for the server exactly as the interface does, so it
-works on a plane. `--offline` skips the send entirely; `--create-labels` creates any label
-the line names that does not exist yet, which the interface asks about instead.
+works on a plane. `--create-labels` creates any label the line names that does not exist
+yet, which the interface asks about instead.
+
+`--offline` skips the send entirely — **but it needs a store that already knows your
+projects.** A task has to be filed somewhere, and on a machine that has never synced there
+is nothing to file it into: you get *"no project to add to — tui-do knows of no projects at
+all"*. Without the flag `tui-do add` fixes that itself, fetching the project list before it
+gives up, so **on a new machine run it once without `--offline`** (or start `tui-do`, which
+syncs at launch). After that, `--offline` works on a plane as advertised.
 
 ## What is not there yet
 
