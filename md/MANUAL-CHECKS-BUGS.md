@@ -189,7 +189,13 @@ code test, and it needs you because it writes to dev.
 project. That means the full pull's listing did not mention them and the retain step deleted
 them locally — the same shape as a bug that already destroyed archived projects once.
 
-**Either answer is worth recording**, and a pass closes the finding.
+**Driven 2026-08-31: it FAILED.** All four tasks vanished locally while the server still
+had them, and an unfiltered `GET /tasks` was confirmed to omit them entirely. Fixed the same
+day; this is now the regression check.
+
+**Also expect a `412` if you edit a task in an archived project** — *"This project is
+archived"*. That is the server refusing, correctly, and the edit rolls back. It is a
+separate, smaller finding and is recorded in `bugs.md`.
 
 6. Un-archive the project in the web UI, or `deploy/reset-dev.sh`.
 
