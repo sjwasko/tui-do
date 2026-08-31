@@ -21,11 +21,12 @@ use crate::modal::{
     LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, PriorityState,
     QuickActionsState, SearchState, Submission, TextInput,
 };
-use crate::model::{Focus, Model, SyncStatus, Toast};
+use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
 use crate::query::{Scope, TASK_LIMIT};
 use crate::rows;
 use crate::sidebar::{self, SidebarTarget};
+use crate::urls;
 
 /// Apply a message.
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
@@ -142,6 +143,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Reload => reload_everything(model),
+        Msg::EffectFailed(message) => {
+            model.toast(Toast::error(message));
+            Vec::new()
+        }
         Msg::StoreFailed(message) => {
             model.data.loading = false;
             model.data.error = Some(message.clone());
@@ -357,6 +362,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
         Submission::Picked(Pick::MoveTo(id)) => move_task(model, id),
+        Submission::Picked(Pick::Url(url)) => follow_link(model, url),
         // A command chosen by name does exactly what its key does. One implementation,
         // so the two can never disagree about what "toggle the sidebar" means.
         Submission::Picked(Pick::Command(action)) => act(model, action),
@@ -550,6 +556,46 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                     .unwrap_or_default();
                 model.modals.push(Modal::Due(DueState::new(&current)));
                 Vec::new()
+            }
+            None => nothing_selected(model),
+        },
+        Action::OpenUrl => match model.selected_task() {
+            Some(task) => {
+                let links = urls::extract(task);
+                match links.len() {
+                    // Said plainly rather than silently: `o` on a task with no link
+                    // would otherwise look like the key was swallowed.
+                    0 => {
+                        model.toast(Toast::info("No link in this task"));
+                        Vec::new()
+                    }
+                    // 547 of the store's 576 linked tasks carry exactly one. Asking
+                    // "which?" about a list of one is ceremony.
+                    1 => match links.into_iter().next() {
+                        Some(link) => follow_link(model, link.url),
+                        None => Vec::new(),
+                    },
+                    _ => {
+                        let candidates = links
+                            .into_iter()
+                            .map(|link| {
+                                // Matched against the URL, because that is what the user
+                                // recognises and types at. A Markdown link's text is
+                                // worth showing but is not what they aim with.
+                                let hint =
+                                    link.label.unwrap_or_else(|| link.source.hint().to_string());
+                                Candidate::hinted(Pick::Url(link.url.clone()), &link.url, &hint)
+                            })
+                            .collect();
+                        // Deliberately unsorted: the order links appear in the task is
+                        // information -- title first, then down the description -- and
+                        // alphabetising a list of URLs destroys it.
+                        model
+                            .modals
+                            .push(Modal::Picker(PickerState::new(PickerKind::Url, candidates)));
+                        Vec::new()
+                    }
+                }
             }
             None => nothing_selected(model),
         },
@@ -1903,6 +1949,31 @@ fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String
 ///
 /// It does nothing for a good reason -- an empty list, or a filter that matched none --
 /// but a key press that produces no response at all reads as a broken binding.
+/// Open a link, or copy it when this box has nowhere to open it.
+///
+/// Which of the two is [`Model::url_action`], set once by the runtime at startup. `update`
+/// stays pure: it reads a field rather than sniffing the environment, exactly as it does
+/// for the theme.
+fn follow_link(model: &mut Model, url: String) -> Vec<Effect> {
+    // A real URL in this store runs to 700 characters. The toast says enough to recognise
+    // which link was taken and no more.
+    let shown = rows::truncate(&url, 60);
+    match model.url_action {
+        UrlAction::Open => {
+            model.toast(Toast::info(format!("Opening {shown}")));
+            vec![Effect::OpenUrl(url)]
+        }
+        // Says *why* it copied rather than opened. Without that this reads as the key
+        // doing the wrong thing, on the boxes where it is the only useful thing to do.
+        UrlAction::Copy => {
+            model.toast(Toast::info(format!(
+                "Copied {shown} — no display on this box"
+            )));
+            vec![Effect::CopyToClipboard(url)]
+        }
+    }
+}
+
 fn nothing_selected(model: &mut Model) -> Vec<Effect> {
     model.toast(Toast::info("No task selected"));
     Vec::new()

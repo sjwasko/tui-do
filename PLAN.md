@@ -266,10 +266,17 @@ of `md/MANUAL-CHECKS2.md`.
   Design and measurements in `md/2026-08-30-markdown-descriptions-design.md`.
 - Task detail pane — fields and the rendered description, done. It may later carry a count of comments and
   attachments; `comment_count` is already in the store and neither needs a download path.
-- **URL extraction and opening.** The last code item in this phase, and the first real user of the platform
-  trait the macOS port depends on — which is why its shape matters more than its size. `o` opens the URL
-  under the selected task, picking from a list when there is more than one. 576 of 3,878 tasks carry a URL
-  and 245 of those are in the *title*, so extraction reads both.
+- **URL extraction and opening — done 2026-08-31.** `o` opens the link in the selected task, and asks which
+  when there is more than one. Extraction reads the title as well as the description, because 245 of the
+  576 linked tasks carry their URL in the title; it scans for the scheme rather than parsing three grammars,
+  which works because Markdown closes a link with `)` and HTML with `"`. Validated over the whole store: 576
+  tasks, 676 links, no mis-extraction.
+  **On a box with no display it copies instead of opening, and says so.** `xdg-open` over SSH either fails or
+  opens a browser at the far end of the connection, which is not where the person is — and a fleet over
+  Tailscale makes that the ordinary case. The copy goes out as OSC 52, so it lands in the clipboard of the
+  machine the *user* is at rather than the one tui-do runs on. Which of the two `o` does is
+  `Model::url_action`, set once by the runtime beside the theme, so `update` reads a field instead of
+  sniffing the environment and rule 1 holds.
 - **Comments are deferred, decided 2026-08-31.** Deferred, not dropped: revisit if there is real interest
   after launch. No task on this instance has ever had one — 0 of 3,878, measured against `comment_count`,
   which the store already keeps — and the interface work is a thread view plus multi-line prose entry, which

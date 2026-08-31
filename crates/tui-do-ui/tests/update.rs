@@ -1714,7 +1714,7 @@ fn the_picker_opens_the_same_form_over_the_same_label() {
     };
     assert_eq!(picker.candidates[1].title, "critical");
     assert_eq!(
-        picker.current().map(|c| c.pick),
+        picker.current().map(|c| c.pick.clone()),
         Some(Pick::Label(LabelId(1)))
     );
 }
@@ -3822,4 +3822,102 @@ fn one_rejected_create_of_two_still_lands_the_task_with_the_other() {
         "and both names it went out without: {}",
         toast.text
     );
+}
+
+/// A model whose selected task carries these links in title and description.
+fn with_links(title: &str, description: &str) -> Model {
+    let mut model = loaded();
+    answer(
+        &mut model,
+        vec![Task {
+            id: TaskId(1),
+            project_id: ProjectId(1),
+            title: title.to_string(),
+            description: description.to_string(),
+            ..Task::default()
+        }],
+    );
+    model
+}
+
+#[test]
+fn o_on_a_task_with_no_link_says_so_rather_than_doing_nothing() {
+    let mut model = with_links("Call the VA", "about the case number");
+    let effects = press(&mut model, 'o');
+    assert!(effects.is_empty());
+    assert!(model.modals.is_empty(), "a picker opened for no links");
+    assert_eq!(
+        model.status.toast.as_ref().map(|t| t.text.as_str()),
+        Some("No link in this task")
+    );
+}
+
+#[test]
+fn o_on_a_task_with_one_link_opens_it_without_asking() {
+    // 547 of the store's 576 linked tasks are this case; a picker over one item is
+    // ceremony, and the keystroke it costs is paid on nearly every use.
+    let mut model = with_links("Read this https://example.com/a", "");
+    let effects = press(&mut model, 'o');
+    assert!(model.modals.is_empty(), "a picker opened for a single link");
+    assert_eq!(
+        effects,
+        vec![Effect::OpenUrl("https://example.com/a".into())]
+    );
+}
+
+#[test]
+fn o_on_a_task_with_several_links_asks_which() {
+    let mut model = with_links(
+        "https://one.test",
+        "and https://two.test and https://three.test",
+    );
+    let effects = press(&mut model, 'o');
+    assert!(effects.is_empty(), "a link was opened before being chosen");
+    let Some(Modal::Picker(picker)) = model.modals.last() else {
+        panic!("no picker: {:?}", model.modals);
+    };
+    assert_eq!(picker.kind, PickerKind::Url);
+    // Order is information -- title first, then down the description -- so the picker
+    // does not sort, unlike the project and label ones.
+    let titles: Vec<&str> = picker.candidates.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        vec!["https://one.test", "https://two.test", "https://three.test"]
+    );
+}
+
+#[test]
+fn choosing_a_link_from_the_picker_opens_that_one() {
+    let mut model = with_links("https://one.test", "and https://two.test");
+    press(&mut model, 'o');
+    press_code(&mut model, KeyCode::Down);
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert_eq!(effects, vec![Effect::OpenUrl("https://two.test".into())]);
+    assert!(model.modals.is_empty(), "the picker stayed open");
+}
+
+#[test]
+fn a_box_with_no_display_copies_the_link_and_says_why() {
+    // The fleet case: xdg-open over SSH either fails or opens a browser at the far end of
+    // the connection, which is not where the person is sitting.
+    let mut model = with_links("https://example.com/a", "");
+    model.url_action = tui_do_ui::model::UrlAction::Copy;
+    let effects = press(&mut model, 'o');
+    assert_eq!(
+        effects,
+        vec![Effect::CopyToClipboard("https://example.com/a".into())]
+    );
+    let toast = model.status.toast.as_ref().map(|t| t.text.as_str());
+    assert!(
+        toast.is_some_and(|t| t.contains("Copied") && t.contains("no display")),
+        "the toast does not say why it copied: {toast:?}"
+    );
+}
+
+#[test]
+fn o_with_nothing_selected_does_not_panic() {
+    let mut model = loaded();
+    answer(&mut model, Vec::new());
+    let effects = press(&mut model, 'o');
+    assert!(effects.is_empty());
 }

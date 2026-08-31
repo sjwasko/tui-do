@@ -332,6 +332,33 @@ as "Tomorrow" and then flipped to "Today" at midnight UTC. This is the bug cria 
 correct, and only the wiring was wrong. Anything asking "what day is it" converts into
 `now.timezone()` first. Anything asking "has this instant passed" does not need to.
 
+**Opening a link is the runtime's job, and whether to open at all is the environment's.**
+`o` reaches `markdown`-adjacent `urls::extract`, which is pure string work over the task's
+title *and* description — 245 of the 576 linked tasks on dev carry their URL in the title,
+so reading only the description misses nearly half of them. It scans for the scheme and
+reads to the first character that cannot be in a URL, which terminates all three shapes at
+once: bare text, Markdown's `)`, and HTML's `"`. No second grammar is parsed.
+
+Two things about it are easy to get wrong and are pinned by tests. `)` is **not** a
+terminator — it appears inside real addresses (`…/wiki/Rust_(programming_language)`) and a
+terminator can only cut a URL short, never restore it — so parens are counted afterwards
+instead. And `&amp;` in an `href` is `&`; a query string carrying the entity is not the
+address anyone copied.
+
+**`xdg-open` is wrong on most of the fleet.** Over SSH it either fails or opens a browser
+on the machine at the far end of the connection, which is not where the person is sitting,
+and tui-do is used across boxes over Tailscale. So `Model::url_action` — set once by
+`runtime::url_action()` beside the theme, never sniffed in `tui-do-ui` — says whether `o`
+opens or copies, and the copy goes out as **OSC 52** so it lands in the clipboard of the
+terminal the *user* is at. `wl-copy` would have put it on the wrong machine's clipboard,
+which is the whole reason a local clipboard tool is not used. A terminal that ignores OSC
+52 leaves the clipboard untouched and reports nothing, which is why the toast names what
+it copied rather than merely saying "copied".
+
+**This is the platform seam the macOS port fills in**, and the reason Phase 5's
+`MarkdownRenderer` trait was dropped rather than built: rendering turned out to need no
+platform knowledge at all, and URL opening genuinely does.
+
 ## tui-do is multi-instance
 
 A developer with a fleet of boxes, tui-do on each, all against one Vikunja. Each box has

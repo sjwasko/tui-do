@@ -38,6 +38,9 @@ fuzzy-matcher = "0.3"
 # The same version ratatui measures with, so the width this crate computes for a column
 # and the width ratatui draws it at cannot disagree.
 unicode-width = "0.2"
+# OSC 52 carries the clipboard payload base64-encoded. Already in the tree by way of
+# the HTTP stack, so declaring it directly costs nothing new.
+base64 = "0.22"
 dirs = "6.0"
 # Markdown -> HTML. `default-features = false` drops the CLI-only extras; the parser and
 # `markdown_to_html` are in the default-off set.

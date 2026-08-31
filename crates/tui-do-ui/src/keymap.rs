@@ -230,6 +230,8 @@ pub enum Action {
     SyncNow,
     /// Sync now, fetching everything, so that deletions made elsewhere are noticed.
     SyncFull,
+    /// Open a link found in the selected task.
+    OpenUrl,
     /// Show the help modal.
     Help,
     /// Run a command by name.
@@ -492,6 +494,13 @@ pub const KEYMAP: &[Binding] = &[
         context: Context::Global,
         group: Group::Task,
         doc: "Set the due date",
+    },
+    Binding {
+        keys: &[chord![Key::char('o')]],
+        action: Action::OpenUrl,
+        context: Context::Global,
+        group: Group::Task,
+        doc: "Open a link in the selected task",
     },
     Binding {
         keys: &[chord![Key::char('m')]],

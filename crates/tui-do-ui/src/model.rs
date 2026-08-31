@@ -249,6 +249,22 @@ pub enum Screen {
     Tasks,
 }
 
+/// What `o` can usefully do with a link on this box.
+///
+/// `xdg-open` is only useful where there is a display to open onto. Over SSH it either
+/// fails or -- worse -- opens a browser on the machine at the *other* end of the
+/// connection, which is not where the person is sitting. tui-do is used across a fleet of
+/// boxes over Tailscale, so that is the ordinary case rather than the exotic one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UrlAction {
+    /// Hand the URL to the desktop, which is what a local session wants.
+    #[default]
+    Open,
+    /// Copy it instead, and say so. On a terminal that honours OSC 52 the text lands in
+    /// the clipboard of the machine the *user* is at, not the one tui-do is running on.
+    Copy,
+}
+
 /// Everything the interface knows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
@@ -281,6 +297,10 @@ pub struct Model {
     /// The colours. Set once by the runtime, which is what knows how much colour the
     /// terminal can show; `tui-do-ui` never sniffs a variable.
     pub theme: Theme,
+    /// What `o` can usefully do with a link on this box. Set once by the runtime, for the
+    /// same reason `theme` is: whether there is a browser to open is something the
+    /// environment knows and `update` must be told.
+    pub url_action: UrlAction,
     /// Terminal size, as columns by rows.
     pub size: (u16, u16),
     /// The last time the runtime told us about. `update` never reads a clock.
@@ -374,6 +394,7 @@ impl Model {
             layout_ix,
             status: Status::default(),
             theme: Theme::default(),
+            url_action: UrlAction::default(),
             size,
             now,
             undo: Vec::new(),

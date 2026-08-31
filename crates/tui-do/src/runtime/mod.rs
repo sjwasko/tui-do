@@ -24,6 +24,7 @@ use tui_do_core::store::{LabelFilter, LabelSort, ProjectFilter, ProjectSort, LAS
 use tui_do_core::sync::Reach;
 use tui_do_core::{Config, Store, Sync};
 use tui_do_ui::model::landing_scope;
+use tui_do_ui::model::UrlAction;
 use tui_do_ui::theme::{ColorDepth, Theme};
 use tui_do_ui::update::reload_everything;
 use tui_do_ui::{update, view, Effect, Model, Msg};
@@ -109,6 +110,7 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
 
     let mut model = Model::new(&config, scope, now(), size);
     model.theme = Theme::new(color_depth());
+    model.url_action = url_action();
     if let Some(problem) = credential_problem {
         model.status.sync = tui_do_ui::model::SyncStatus::Failed {
             message: problem.clone(),
@@ -279,6 +281,35 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         // The loop notices `model.running` rather than being killed from here, so the
         // terminal is restored on the way out of `run` in every case.
+        Effect::OpenUrl(url) => {
+            let tx = tx.clone();
+            // `spawn_blocking` rather than `tokio::process`, which would need another
+            // tokio feature for one call. `xdg-open` hands the URL to a handler and exits
+            // immediately, so this waits on a fork-exec and not on a browser.
+            tokio::task::spawn_blocking(move || {
+                let result = std::process::Command::new("xdg-open")
+                    .arg(&url)
+                    // Inherited handles would let the handler write over the alternate
+                    // screen -- the interface owns this terminal.
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                let failure = match result {
+                    Ok(status) if status.success() => None,
+                    Ok(status) => Some(format!("xdg-open exited with {status}")),
+                    Err(error) => Some(format!("could not run xdg-open: {error}")),
+                };
+                if let Some(message) = failure {
+                    let _ = tx.send(Msg::EffectFailed(message));
+                }
+            });
+        }
+        Effect::CopyToClipboard(text) => {
+            if let Err(error) = osc52(&text) {
+                let _ = tx.send(Msg::EffectFailed(format!("could not copy: {error}")));
+            }
+        }
         Effect::Quit => {}
         // `Effect` is `non_exhaustive` so Phase 4 can add write effects without breaking
         // this crate. An effect this build does not know about is not silently dropped.
@@ -606,6 +637,46 @@ fn spawn_sync_timer(
             );
         }
     });
+}
+
+/// What `o` can usefully do with a link on this box.
+///
+/// Read once, here, for the same reason [`color_depth`] is: `tui-do-ui` is a pure function
+/// of what it is told, and "is there a browser to open onto" is something only the runtime
+/// can ask.
+///
+/// `xdg-open` over SSH is worse than useless -- it either fails or opens a browser on the
+/// machine at the far end, which is not where the person is. tui-do is used across a fleet
+/// of boxes over Tailscale, so that is the ordinary case here, not the exotic one.
+fn url_action() -> UrlAction {
+    if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
+        return UrlAction::Copy;
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
+        return UrlAction::Copy;
+    }
+    UrlAction::Open
+}
+
+/// Put text in the clipboard with OSC 52.
+///
+/// Chosen over `wl-copy`/`xclip` precisely because it is *not* a local subprocess: the
+/// escape sequence travels back through the SSH connection and the terminal emulator at
+/// the user's end puts it on **their** clipboard. That is the whole point on a fleet.
+///
+/// Not universally supported, and some terminals ship with it off. A terminal that ignores
+/// it leaves the clipboard untouched with nothing to report -- the sequence is consumed
+/// either way -- which is why the toast says what was copied rather than merely "copied".
+fn osc52(text: &str) -> std::io::Result<()> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let mut out = std::io::stdout();
+    // `]52;c;<base64>`. Written outside the draw cycle, which is safe: OSC 52
+    // moves no cursor and paints no cell, so it cannot disturb the frame on screen.
+    write!(out, "\x1b]52;c;{encoded}\x07")?;
+    out.flush()
 }
 
 /// How much colour this terminal can show.

@@ -145,7 +145,10 @@ impl TextInput {
 /// The payload rather than a bare id, so a command picker cannot submit a project and a
 /// project picker cannot submit an action. The alternative -- an `i64` plus the picker's
 /// kind to interpret it -- makes that mistake a runtime possibility for no gain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Not `Copy`: `Pick::Url` carries the URL by value. Cloning a pick happens once, when a
+// picker submits, and paying that is better than the alternative -- an index into the
+// task's links, which a reload can invalidate under an open picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
     /// Show this project.
     Project(ProjectId),
@@ -153,6 +156,12 @@ pub enum Pick {
     Label(LabelId),
     /// Run this action, exactly as its key would.
     Command(Action),
+    /// Open this link.
+    ///
+    /// Carries the URL by value rather than an index into the task, because the task can
+    /// be reloaded out from under an open picker and an index would then name a different
+    /// link -- or none.
+    Url(String),
     /// Move the selected task into this project.
     ///
     /// Distinct from [`Pick::Project`], which *shows* one. Both carry a `ProjectId` and
@@ -206,6 +215,8 @@ pub enum PickerKind {
     Command,
     /// A project to move the selected task into.
     MoveProject,
+    /// A link to open, when the task holds more than one.
+    Url,
 }
 
 impl PickerKind {
@@ -220,6 +231,7 @@ impl PickerKind {
             Self::Label => "Go to label  —  C-e edits",
             Self::Command => "Run a command",
             Self::MoveProject => "Move to project",
+            Self::Url => "Open which link?",
         }
     }
 }
@@ -1618,7 +1630,7 @@ impl ModalView for PickerState {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,
             KeyCode::Enter => match self.current() {
-                Some(candidate) => Outcome::Submit(Submission::Picked(candidate.pick)),
+                Some(candidate) => Outcome::Submit(Submission::Picked(candidate.pick.clone())),
                 // Nothing matched what they typed; closing silently would look like the
                 // key was swallowed.
                 None => Outcome::Consumed,
@@ -1631,8 +1643,8 @@ impl ModalView for PickerState {
             // title, because a picker has no footer and this one is worth naming whether
             // or not anything is highlighted.
             KeyCode::Char('e') if key.mods.contains(KeyModifiers::CONTROL) => {
-                match self.current().map(|candidate| candidate.pick) {
-                    Some(Pick::Label(id)) => Outcome::Update(Submission::EditLabel(id)),
+                match self.current().map(|candidate| &candidate.pick) {
+                    Some(Pick::Label(id)) => Outcome::Update(Submission::EditLabel(*id)),
                     _ => Outcome::Consumed,
                 }
             }

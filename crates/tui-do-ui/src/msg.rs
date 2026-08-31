@@ -57,6 +57,13 @@ pub enum Msg {
     /// A store read failed. The interface stays usable and says so.
     StoreFailed(String),
 
+    /// An effect the runtime performed could not be done, in words for the user.
+    ///
+    /// Distinct from [`Self::StoreFailed`], which is a banner about the data being stale.
+    /// This is a toast about one action the user just asked for -- opening a link on a box
+    /// with no handler for it, say -- and nothing about the interface is wrong afterwards.
+    EffectFailed(String),
+
     /// The sync engine reported something.
     Sync(SyncEvent),
 }
