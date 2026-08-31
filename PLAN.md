@@ -264,8 +264,36 @@ of `md/MANUAL-CHECKS2.md`.
   particular to `glow`, so `markdown_renderer: glow | builtin | auto` and `doctor`'s
   markdown line are dropped with it: there is no external binary left to choose between.
   Design and measurements in `md/2026-08-30-markdown-descriptions-design.md`.
-- Task detail pane, comments, subtasks and relations — cria has relations half-built and disabled; do it
-  properly or not at all — and URL extraction/opening.
+- Task detail pane — fields and the rendered description, done. It may later carry a count of comments and
+  attachments; `comment_count` is already in the store and neither needs a download path.
+- **URL extraction and opening.** The last code item in this phase, and the first real user of the platform
+  trait the macOS port depends on — which is why its shape matters more than its size. `o` opens the URL
+  under the selected task, picking from a list when there is more than one. 576 of 3,878 tasks carry a URL
+  and 245 of those are in the *title*, so extraction reads both.
+- **Comments are deferred, decided 2026-08-31.** Deferred, not dropped: revisit if there is real interest
+  after launch. No task on this instance has ever had one — 0 of 3,878, measured against `comment_count`,
+  which the store already keeps — and the interface work is a thread view plus multi-line prose entry, which
+  drags in the `$EDITOR` question that `C-n`'s "cannot type a space" already foreshadows. That is real work
+  for a feature with no demonstrated demand. The client half exists (`task_comments`, `update_comment`,
+  `delete_comment`) and has never been tested against a real server.
+  **Measure before building:** `Task` serialises `comments` and the store has no column for them, which is
+  the exact shape of the reminders bug — a field the store cannot hold goes back to the server as `[]`.
+  `merge_onto` looks like it protects them, but that is inference, not measurement, and this file has
+  already deleted one general rule that was "both unfounded and false".
+- **Subtasks and relations are deferred, decided 2026-08-31.** Deferred, not dropped, on the same terms.
+  A relation is any typed link between two tasks — subtask/parent, blocking/blocked, precedes/follows,
+  duplicates, copied-from, or loosely related — and cria has them half-built and disabled, which is the
+  warning: do it properly or not at all.
+  Deferring is cheap and was reasoned about rather than assumed. The store is a *cache*, not the system of
+  record, so the worst case of any later migration is deleting the file and re-syncing; migrations are
+  additive and each runs inside its own transaction with `user_version` stamped in the same transaction, so
+  there is no half-migrated state to land in. Crucially the urgency that forced reminders to schema v3 does
+  **not** apply: `related_tasks` is measured as *not* replaced from an update body, pinned by
+  `a_task_update_leaves_relations_alone`, so nothing is silently lost while this waits.
+  What it will cost when it is built is not the `CREATE TABLE`. It is the retain and delete-cascade rules —
+  the one place this project has actually lost data — the outbox `Subject` model, which schema v5 already
+  showed is easy to get wrong, and the unsolved display question of what a subtask looks like in a flat,
+  sorted, filtered list.
 - **Attachments are out of scope, decided 2026-08-30.** Not deferred with a plan to return: dropped. Reading
   them needs a download path and a place to put files; writing them needs multipart upload, which nothing in
   `tui-do-api` does; and showing them in a terminal needs image-protocol negotiation per terminal. That is
