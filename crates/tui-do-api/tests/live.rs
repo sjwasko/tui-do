@@ -48,6 +48,14 @@ const DEFAULT_DEV_HOST: &str = "dev-box.example.net";
 /// set.
 const FORBIDDEN_HOSTS: &[&str] = &["prod-box"];
 
+/// The same machine, by address. A name is not the only way to reach it.
+///
+/// The binary's own guard had this hole and was fixed on 2026-08-31 (BUG-6): a URL naming
+/// production by IP passed a check that only looked for the hostname. This guard is the
+/// same shape and had the same hole, and a live *test* suite pointed at production is the
+/// worse of the two, because it writes without anybody watching.
+const FORBIDDEN_ADDRS: &[&str] = &["203.0.113.7", "192.0.2.19"];
+
 /// Projects the round-trip test creates, and the title it sweeps up before starting.
 const FIXTURE_PROJECT_TITLE: &str = "tui-do live test";
 
@@ -64,7 +72,7 @@ fn target() -> Option<String> {
         return None;
     }
 
-    for forbidden in FORBIDDEN_HOSTS {
+    for forbidden in FORBIDDEN_HOSTS.iter().chain(FORBIDDEN_ADDRS) {
         assert!(
             !url.contains(forbidden),
             "TUI_DO_TEST_URL points at {url}, which is production. There is no way to \
