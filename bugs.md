@@ -298,6 +298,9 @@ aborted, and a plain store-false at the end of `push_with` would never execute. 
   *"Still sending; leaving the rest queued for next time."* and walks away **without
   pushing**. A change that arrives late beats a task that exists twice.
 
+**Fix confirmed by hand on 2026-08-31**, by re-driving the same paused-container procedure
+that produced 3889 and 3891: one task, not two.
+
 Guarded by `an_aborted_push_reports_that_it_is_no_longer_pushing` in
 `crates/tui-do-core/tests/sync.rs`, verified non-vacuous: emptying the `Drop` body alone
 fails it with *"the flag survived an abort"*.
