@@ -4,6 +4,9 @@ Written 2026-08-30 at the end of the session that finished the label lifecycle a
 `md/MANUAL-CHECKS2.md` section F. Read `CLAUDE.md` first; this only covers what that file
 does not, which is *what to do next* rather than what is true.
 
+**Superseded by `md/2026-09-01-handoff.md`.** Phase 5 is code-complete and most of what
+follows is out of date. Kept as a dated record of where things stood.
+
 **Correction, later the same day.** Everything below that names `glow` as the plan for
 markdown descriptions is superseded: `glow` was measured and rejected, and the plan of
 record is now comrak + html2text, built and shipped. See
