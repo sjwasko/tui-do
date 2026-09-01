@@ -700,18 +700,58 @@ fn an_unreachable_server_is_a_status_line_not_a_dead_screen() {
     golden("80x24-offline.txt", &draw(&model));
 }
 
+/// The last `n` rows of a drawn screen, top to bottom.
+fn tail(drawn: &str, n: usize) -> Vec<String> {
+    let lines: Vec<&str> = drawn.lines().collect();
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect()
+}
+
 #[test]
-fn a_long_message_is_cut_to_the_line_rather_than_corrupting_it() {
+fn a_long_message_wraps_rather_than_losing_its_tail() {
+    // BUG-16. The status line was one row and a toast was cut to fit it, so the part of a
+    // message that says what to do about it was the part that disappeared. This one is
+    // 155 characters and the diagnosis -- the path, and "No such file or directory" -- is
+    // entirely in the third of it that used to be off the end.
+    const MESSAGE: &str = "Not syncing: config error in /home/swasko/.config/tui-do/token: \
+                           could not read the API token file: No such file or directory \
+                           (os error 2)";
     let mut model = fixture((80, 24));
+    model.status.toast = Some(Toast::error(MESSAGE));
+    let drawn = draw(&model);
+    let shown = tail(&drawn, 3).join(" ");
+    for word in MESSAGE.split_whitespace() {
+        assert!(shown.contains(word), "`{word}` is not on screen:\n{shown}");
+    }
+    assert!(
+        !shown.contains('…'),
+        "nothing was cut, so nothing should say it was:\n{shown}"
+    );
+    golden("80x24-long-message.txt", &draw(&model));
+}
+
+#[test]
+fn a_toast_never_swallows_the_list_it_is_reporting_on() {
+    // A toast grows upward over the list, so on a short terminal the cap has to yield to
+    // the room there actually is. Six rows leaves three for the body: the column headings
+    // and one task survive, and the header is never drawn over.
+    let mut model = fixture((40, 6));
     model.status.toast = Some(Toast::error(
         "Not syncing: config error in /home/swasko/.config/tui-do/token: could not read \
          the API token file: No such file or directory (os error 2)",
     ));
     let drawn = draw(&model);
-    let status = drawn.lines().last().unwrap_or_default();
-    assert!(status.chars().count() <= 80, "{status}");
-    assert!(status.ends_with('…'), "{status}");
-    golden("80x24-long-message.txt", &draw(&model));
+    let lines: Vec<&str> = drawn.lines().collect();
+    assert!(lines[0].starts_with("tui-do"), "the header: {:?}", lines[0]);
+    assert!(lines[1].starts_with('─'), "the rule: {:?}", lines[1]);
+    assert!(lines[2].contains("Title"), "the headings: {:?}", lines[2]);
+    assert!(
+        lines[3].contains("Fix the token"),
+        "one task at least: {:?}",
+        lines[3]
+    );
 }
 
 #[test]
