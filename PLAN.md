@@ -324,7 +324,88 @@ tui-do is GA when, on **both** Omarchy Quattro and Ubuntu 26.04 LTS:
 5. README documents the WSL answer for Windows and states macOS as post-GA.
 
 **Post-GA, in order:** macOS port (fill in the platform traits, fix whatever the `cargo check` cell has been
-quietly warning about, test on `sw-mba`), then reassess whether anything else is worth supporting.
+quietly warning about, test on `sw-mba`), and standalone mode with a first-run setup (below). The two are
+independent and the order between them is not decided. Then reassess whether anything else is worth
+supporting.
+
+## Post-GA — standalone mode and first-run setup
+
+**Decided 2026-09-01: build it, after launch.** tui-do runs local-only against its own SQLite store and
+never speaks to a Vikunja server, and a first-run setup asks which of the two the user wants. Not a
+separate build or a feature flag — one binary, one question at first run.
+
+**They are one feature, not two.** The setup script's first question *is* the mode: answer "no server" and
+the URL, the token and the sync interval all disappear. Built separately, the wizard is a form that can only
+be filled in one way and standalone mode is reachable only by hand-editing YAML. The README already carries
+an honest note that there is no first-run wizard; this closes that too.
+
+### What already holds — surveyed 2026-09-01, not built
+
+Most of this is done, as a consequence of rule 1 rather than by intent:
+
+- **The interface never speaks to the server.** `update` is synchronous and reads the store through
+  effects, so everything on screen is a function of local SQLite. Nothing in the render path has a server
+  to lose.
+- **"No server" is already a designed state, not an error path.** `runtime::build_sync` returns
+  `Option<Arc<Sync>>` and answers `None` with *"No API token configured — showing the local cache only."*
+  Every `spawn_sync` site already handles that `None`. `run()`'s own comment: *"an offline start that
+  renders the cached list is the whole thesis of the rewrite."*
+- **`sync.enabled: false` already skips the timer** — `spawn_sync_timer` returns before spawning.
+- **Writes are already local-first.** The mutation lands in the store immediately; the outbox entry is a
+  separate concern. Provisional ids are already negative and allocated locally, and never need a server to
+  answer. Undo is a stack of `Mutation`s in the model, independent of anything draining.
+
+### The blocker: no project can be created
+
+`Mutation` has seven variants — `CreateTask`, `UpdateTask`, `DeleteTask`, `AttachLabel`, `DetachLabel`,
+`CreateLabel`, `UpdateLabel`. **Nothing for projects.** They only ever arrive from a pull, so a standalone
+install starts empty and stays empty. Verified against a never-synced store on 2026-09-01:
+
+```
+Error: no project to add to — tui-do knows of no projects at all;
+run tui-do once to sync, or check the server is reachable
+```
+
+`Store::upsert_projects` is already generic rather than `_from_server`-shaped, so the store layer is ready.
+The gap is a mutation, the interface to drive it, and a third `Subject` kind. **That last part is the
+dangerous one:** `subject_kind` filtering has already been got wrong twice across seven SQL sites, and
+schema v5's own history is the warning.
+
+### Decide this before writing any code: does the outbox stay armed?
+
+**What happens when a local-only user later gets a server.** Not hypothetical — it is the likely path for
+exactly the users standalone mode widens to: try it local, like it, stand up Vikunja six months later.
+
+- **Keep queuing.** Every local write already produces an outbox entry with a provisional negative id. If
+  those accumulate, "connect a server" is letting the drain run, and `settle_create` already knows how to
+  swap a provisional id for a server-assigned one across every table referencing it. **The first-connect
+  pass must reconcile, not pull-then-retain** — the retain step would delete every local task the empty
+  server never mentioned, which is BUG-15's shape exactly and the one place this project has lost data.
+- **Or do not queue at all**, and accept that connecting later leaves the local history local, or needs an
+  export/import.
+
+The first is more work and much better. It is listed first here because it decides whether standalone
+writes go through the outbox *at all*, and retrofitting "those should have been queued" onto six months of
+someone's data is not a migration worth writing.
+
+### Smaller, and consequent
+
+- **The outbox would otherwise grow forever with nothing to drain it.** `queue_health` would count up and
+  the status line would say `N queued` permanently. There is deliberately no attempt cap and no
+  dead-letter, and that stays right — so standalone mode either does not queue or settles entries locally.
+  Falls out of the fork above.
+- **`server` becomes `Option<ServerConfig>`.** It is a required, non-defaulted field today, so a stub
+  config works only by writing a dummy URL — a lie in the file rather than an honest mode. Making it
+  optional later is backward-compatible for existing configs, so **there is no deadline here and no reason
+  to rush the config shape before GA.**
+- **The sync surface goes honestly absent** rather than permanently failing: no `⟳` indicator saying "not
+  synced yet" forever, and `r`/`R` are not keys that do nothing.
+
+### Not checked
+
+The survey read the main paths only. `saved_filters`, `project_views`, quick-add's `+project` resolution
+and `CreateLabel`'s `GET /labels?s=` reconciliation were **not** examined for server assumptions. On this
+project's record, driving it will find something reading it did not.
 
 ## Harvest manifest
 
