@@ -311,6 +311,23 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             reload_everything(model)
         }
         SyncEvent::Failed { message, .. } => {
+            // BUG-16's other half. The header indicator has room for about thirty columns
+            // of this and was the *only* place it appeared, so the tail -- which is where
+            // the diagnosis lives -- reached nobody. "not authorized: missing, malformed,
+            // expired or otherwise invalid token provided" arrived as "missing, malf…"
+            // and cost two misdiagnoses in two days. The status line has room for it.
+            //
+            // Only when the words change, though. The timer keeps trying while a box is
+            // offline and every pass fails identically; re-raising each time would park a
+            // three-row toast over the list and the key hints until the network came
+            // back. Saying "still offline" is the indicator's job, and it does it.
+            let news = !matches!(
+                &model.status.sync,
+                SyncStatus::Failed { message: seen } if *seen == message
+            );
+            if news {
+                model.status.toast = Some(Toast::error(message.clone()));
+            }
             model.status.sync = SyncStatus::Failed { message };
             Vec::new()
         }

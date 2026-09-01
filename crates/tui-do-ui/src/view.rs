@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::geometry;
 use crate::keymap::{help_rows, HelpRow};
 use crate::markdown;
 use crate::modal::{
@@ -488,6 +489,37 @@ fn field(name: &str, value: &str, theme: Theme) -> Line<'static> {
     ])
 }
 
+/// The most rows a toast may take, counting the status line itself.
+///
+/// A message worth reading is a long one -- a rejected write, a credential the server does
+/// not accept -- and those were exactly the ones being cut. Three rows is 240 characters at
+/// 80 columns and 135 at the 45 a phone terminal gives, which covers every message tui-do
+/// or the server has produced so far. It is a cap rather than "however many it takes"
+/// because a toast draws over the task list, and five seconds of message should not take
+/// the screen.
+const TOAST_MAX_ROWS: u16 = 3;
+
+/// The rectangle a toast may draw in, given the status line.
+///
+/// It grows *upward*, over the bottom of the list, rather than making the list shorter.
+/// `model.list.offset` is chosen in `update` and would not hear about a window that had
+/// shrunk, so a shorter list would slide the selected task off the screen for as long as
+/// the toast lived. Overdrawing costs a task row for five seconds and nothing else.
+///
+/// The column headings and at least one task row are always left visible, so the message
+/// cannot swallow the pane it is reporting on.
+fn toast_area(status: Rect) -> Rect {
+    let headroom = status
+        .y
+        .saturating_sub(geometry::HEADER_HEIGHT + geometry::LIST_HEADING_HEIGHT + 1);
+    let height = TOAST_MAX_ROWS.min(status.height.saturating_add(headroom));
+    Rect {
+        y: status.bottom().saturating_sub(height),
+        height,
+        ..status
+    }
+}
+
 /// Counts, queued changes and the key hints.
 fn status(model: &Model, frame: &mut Frame, area: Rect) {
     let theme = model.theme;
@@ -503,8 +535,31 @@ fn status(model: &Model, frame: &mut Frame, area: Rect) {
             Level::Warning => theme.warning(),
             Level::Error => theme.error(),
         };
-        let text = rows::truncate(&toast.text, area.width);
-        frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), area);
+        let rect = toast_area(area);
+        let lines = rows::wrap(&toast.text, rect.width, rect.height);
+        let rect = Rect {
+            // Only as tall as the message actually needs. `wrap` never answers with more
+            // lines than it was allowed, so this only ever shrinks the rectangle.
+            height: u16::try_from(lines.len())
+                .unwrap_or(1)
+                .clamp(1, rect.height),
+            ..rect
+        };
+        let rect = Rect {
+            y: area.bottom().saturating_sub(rect.height),
+            ..rect
+        };
+        // The rows above the status line belong to the list, which drew first.
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .into_iter()
+                    .map(|line| Line::from(Span::styled(line, style)))
+                    .collect::<Vec<_>>(),
+            ),
+            rect,
+        );
         return;
     }
 

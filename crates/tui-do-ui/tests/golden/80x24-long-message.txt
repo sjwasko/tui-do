@@ -20,5 +20,5 @@ tui-do  Work › List  Table (soon)  Kanban (soon)                ⟳ synced 2m 
 
 
 
-
-Not syncing: config error in /home/swasko/.config/tui-do/token: could not read …
+Not syncing: config error in /home/swasko/.config/tui-do/token: could not read
+the API token file: No such file or directory (os error 2)

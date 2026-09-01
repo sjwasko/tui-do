@@ -14,7 +14,7 @@ use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
 use tui_do_core::{Config, SyncEvent};
 use tui_do_ui::keymap::Key;
 use tui_do_ui::modal::{Candidate, LabelsState, Modal, ModalView, Pick, PickerKind, PickerState};
-use tui_do_ui::model::{Focus, PaneState, SyncStatus};
+use tui_do_ui::model::{Focus, Level, PaneState, SyncStatus};
 use tui_do_ui::query::Scope;
 use tui_do_ui::sidebar::SidebarTarget;
 use tui_do_ui::update::{reload_everything, update};
@@ -2089,6 +2089,69 @@ fn a_failed_sync_says_so_without_taking_the_interface_away() {
 
     press(&mut model, 'j');
     assert_eq!(selected_title(&model), "second");
+}
+
+/// What the token error actually says, in full.
+const AUTH_FAILURE: &str =
+    "not authorized: missing, malformed, expired or otherwise invalid token provided";
+
+#[test]
+fn a_sync_failure_says_the_whole_thing_somewhere() {
+    // BUG-16, the half the filed bug missed. The header indicator cuts the message to a
+    // hardcoded 30 columns, and nothing else showed it *at all* -- so the message above
+    // reached the user as "not authorized: missing, malf…". The cause was a production
+    // token on a dev box, and nothing in the visible third could have led anybody there.
+    // Two misdiagnoses in two days. The status line is the surface with room for it.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Failed {
+            phase: Phase::Pull,
+            message: AUTH_FAILURE.to_string(),
+        }),
+    );
+    let toast = model
+        .status
+        .toast
+        .as_ref()
+        .expect("a failure the user has to act on is worth a toast");
+    assert_eq!(toast.text, AUTH_FAILURE);
+    assert_eq!(toast.level, Level::Error);
+}
+
+#[test]
+fn the_same_failure_twice_does_not_reopen_the_toast() {
+    // The timer keeps trying while a box is offline, so every pass fails with the same
+    // words. Re-raising on each one would park the toast over the list and the key hints
+    // for as long as the network was down -- and the toast now takes up to three rows.
+    // The header indicator is the surface for "still offline"; the toast is for news.
+    let mut model = loaded();
+    let failure = || {
+        Msg::Sync(SyncEvent::Failed {
+            phase: Phase::Pull,
+            message: AUTH_FAILURE.to_string(),
+        })
+    };
+    update(&mut model, failure());
+    model.status.toast = None;
+    update(&mut model, failure());
+    assert!(
+        model.status.toast.is_none(),
+        "the same failure said twice is not twice the news"
+    );
+
+    // A *different* failure is news, and says so.
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Failed {
+            phase: Phase::Pull,
+            message: "connection refused".to_string(),
+        }),
+    );
+    assert_eq!(
+        model.status.toast.as_ref().map(|t| t.text.as_str()),
+        Some("connection refused")
+    );
 }
 
 #[test]
