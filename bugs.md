@@ -57,7 +57,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-4, BUG-7, BUG-9, BUG-16 |
+| **Decide, then fix** | BUG-4, BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -73,12 +73,12 @@ mechanical — that was the point of the 2026-08-31 pass.
 | UI state machine | **1** | 1 → 0 | 2 |
 | Sync engine | 0 | 4 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
-| Rendering | 0 | 3 → 2 | 2 |
+| Rendering | 0 | 3 → 1 | 2 |
 | Runtime and CLI | 0 | 3 → 2 | 3 |
 | API client | 0 | 1 → 0 | 1 |
 | **found** | **1** | **14** | **15** |
-| **fixed** | **1** | **7** | **2** |
-| **open** | **0** | **7** | **13** |
+| **fixed** | **1** | **8** | **2** |
+| **open** | **0** | **6** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -618,7 +618,10 @@ Two tests, both verified non-vacuous: `a_project_archived_elsewhere_does_not_str
 drives the reported sequence, and `the_sidebar_arrows_never_dead_end` forces the wedged state
 directly.
 
-### BUG-16 — an error you must act on is truncated with no way to read the rest
+### ~~BUG-16~~ — FIXED — an error you must act on is truncated with no way to read the rest
+
+**Fixed 2026-09-01, and the filing named the wrong surface.** Read the correction below
+before trusting anything else in this entry.
 
 `crates/tui-do-ui/src/view.rs:498` — `let text = rows::truncate(&toast.text, area.width);`
 
@@ -657,6 +660,53 @@ token obvious immediately, in fewer characters than the message it replaces.
 
 **Pass:** the whole message is readable, whether by wrapping or by a key that shows it.
 **Fail:** it ends in `…` and the rest is unreachable.
+
+#### The correction — this entry named a surface that was not the one failing
+
+The fix was taken on 2026-09-01 and immediately found that **`view.rs:498` is not where the
+quoted message was cut.** The string in this entry — `⚠ offline — not authorized: missing,
+malf…` — carries the `⚠ offline — ` prefix, and that prefix appears in exactly one place:
+`view.rs:157`, the header's **sync indicator**, which truncates to a hardcoded **30
+columns** rather than to the terminal width.
+
+Worse, `update::on_sync`'s `SyncEvent::Failed` arm set the header indicator and **raised no
+toast at all**. So the full message reached *no* surface. Fixing the status line alone would
+have left the reported symptom exactly as it was, and the bug would have been closed on a
+green test suite.
+
+Both halves are now fixed:
+
+- **The status line grows upward.** A toast that does not fit takes up to three rows,
+  drawn over the bottom of the list via `view::toast_area`. It grows *upward* rather than
+  shortening the list because `model.list.offset` is chosen in `update` and would not hear
+  about a shrunken window — the selected task would slide off screen for as long as the
+  toast lived. The column headings and at least one task row are always left visible.
+  Three rows is 240 columns at 80 and 135 at a phone terminal's 45.
+- **A sync failure raises a toast**, carrying the server's words in full — but only when
+  those words *change*. The timer keeps retrying while a box is offline and every pass
+  fails identically; re-raising each time would park a three-row toast over the list and
+  the key hints until the network came back. "Still offline" is the indicator's job.
+
+Tests: `a_long_message_wraps_rather_than_losing_its_tail` and
+`a_toast_never_swallows_the_list_it_is_reporting_on` in `tui-do-ui/tests/render.rs`,
+`a_sync_failure_says_the_whole_thing_somewhere` and
+`the_same_failure_twice_does_not_reopen_the_toast` in `tests/update.rs`. The clamp test was
+checked by breaking the clamp and watching it fail, not only by watching it pass.
+
+The old test `a_long_message_is_cut_to_the_line_rather_than_corrupting_it` asserted the
+truncation, so it *passed* throughout the bug's life. It has been replaced rather than
+added to: a test that pins the broken behaviour is worse than no test, because it argues
+against the fix.
+
+**Not done:** naming the server in a `401`, suggested above. It needs the base URL threaded
+into `ApiError::from_status`, which every test constructing one would have to follow. Still
+worth doing; now merely an improvement rather than the difference between diagnosable and
+not.
+
+**The general lesson, which is this document's own:** the entry was written from the code
+and the symptom was matched to the nearest plausible line. The prefix in the quoted string
+was the evidence that would have settled it, and it was sitting in the entry the whole time.
+Grep the *exact string a user saw* before naming the line that produced it.
 
 ### ~~BUG-15~~ — CONFIRMED AND FIXED — tasks in archived projects were deleted on every full pull
 
