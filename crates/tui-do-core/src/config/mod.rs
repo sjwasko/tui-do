@@ -466,7 +466,7 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// Silent on failure: this hardens a path that has already been written, and a filesystem
 /// that cannot express the mode is not a reason to fail the write.
 #[cfg(unix)]
-fn restrict_to_owner(path: &Path) {
+pub(crate) fn restrict_to_owner(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
     let Ok(metadata) = std::fs::metadata(path) else {
@@ -484,7 +484,7 @@ fn restrict_to_owner(path: &Path) {
 
 /// No-op on platforms without Unix permission bits.
 #[cfg(not(unix))]
-fn restrict_to_owner(_path: &Path) {}
+pub(crate) fn restrict_to_owner(_path: &Path) {}
 
 /// Say something when a credential file is readable by more than its owner.
 ///

@@ -838,6 +838,31 @@ assert!(toast.text.contains("queued"), "must say the edits are safe: {:?}", toas
 
 Plus one asserting `Rejected` still *is* an error, so the two never collapse into one voice.
 
+### ~~SEC-1~~ — FIXED — the store was readable by every account on the machine
+
+Found by the 2026-09-05 `md/ruflo-audit` pass — the one finding in it that was new, and it
+was verified before it was believed: `755` on `~/.local/share/tui-do/` and `644` on
+`tui-do.db`, `-wal` and `-shm`. That is every task title, every description and every queued
+mutation, readable by any unprivileged account or unconfined service on the box.
+
+**The argument is the inconsistency, not the mode.** `config::write_private` sets `0o600` at
+creation and `restrict_to_owner` tightens afterwards, and the API token gets both. The
+database got neither: `open_blocking` called `create_dir_all` and `Connection::open`, each at
+the process umask. The codebase already knew how; the store just never asked.
+
+**The directory is the durable half, and the audit's own remediation got this wrong.** It
+proposed `options.mode(0o600)` on database creation, which is not implementable —
+`rusqlite::Connection::open` takes a path, not `OpenOptions` — and a mode on the database
+file alone would not have held anyway, because **SQLite recreates `-wal` and `-shm` itself,
+at umask, on every open**. Only a directory no other account can traverse survives that.
+
+**Fixed 2026-09-05**, test-first, reusing `restrict_to_owner` rather than growing a second
+way to do it: the parent directory is tightened immediately after `create_dir_all`, and the
+database and its two sidecars afterwards as belt and braces — which also tightens a store an
+older version left permissive. `the_store_is_not_readable_by_other_accounts` failed with
+`0o055` on the directory before the change, and asserts every entry in the directory rather
+than only the database, so restricting the file alone would not satisfy it.
+
 ---
 
 ## Minor
