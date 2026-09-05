@@ -4052,3 +4052,68 @@ fn the_sidebar_arrows_never_dead_end() {
         "the sidebar is wedged: j did nothing and there is no way out but a restart"
     );
 }
+
+/// What being offline actually says, in full.
+const OFFLINE: &str = "could not reach the Vikunja server at https://10.255.255.1:8443";
+
+#[test]
+fn a_failure_with_work_queued_says_the_work_is_safe() {
+    // BUG-18. `Toast::error` is the register a *rejection* uses, and a rejection has
+    // thrown the user's edit away. A push that could not reach the server has thrown
+    // nothing away: the entries are in the outbox and go when the network comes back.
+    // Said in the same voice, the two are indistinguishable -- and on 2026-09-05 someone
+    // driving the offline check read this toast, saw no change in a list whose layout has
+    // no priority column, and reported that priority cannot be set offline. It could. All
+    // four presses were queued, written to the store, and landed on the server intact.
+    let mut model = loaded();
+    model.status.queued = 3;
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Failed {
+            phase: Phase::Push,
+            message: OFFLINE.to_string(),
+        }),
+    );
+    let toast = model
+        .status
+        .toast
+        .as_ref()
+        .expect("a failed pass is still worth saying");
+
+    assert_ne!(
+        toast.level,
+        Level::Error,
+        "nothing was lost, so the loudest register is the wrong one"
+    );
+    assert!(
+        toast.text.contains("3") && toast.text.contains("queued"),
+        "must say how much work is safe: {:?}",
+        toast.text
+    );
+    // BUG-16's lesson, which this must not undo: the diagnosis stays readable in full.
+    assert!(
+        toast.text.contains(OFFLINE),
+        "the whole diagnosis must survive: {:?}",
+        toast.text
+    );
+}
+
+#[test]
+fn a_failure_with_nothing_queued_is_still_an_error() {
+    // The other half, and what stops the fix above from muffling everything. With no
+    // queued work there is nothing to reassure anyone about -- an expired token or an
+    // unreachable server is simply bad news, and BUG-16 is the record of what it costs
+    // when that news is hard to read.
+    let mut model = loaded();
+    model.status.queued = 0;
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Failed {
+            phase: Phase::Pull,
+            message: AUTH_FAILURE.to_string(),
+        }),
+    );
+    let toast = model.status.toast.as_ref().expect("bad news is still news");
+    assert_eq!(toast.level, Level::Error);
+    assert_eq!(toast.text, AUTH_FAILURE);
+}
