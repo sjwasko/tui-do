@@ -946,11 +946,24 @@ impl Sync {
 ///
 /// 4xx only. A rate limit, a 5xx, a dropped connection or an unreadable body all leave
 /// the entry queued -- see the module note on why the unreadable one goes this way.
+///
+/// **Two 4xx are not answers at all.** `408 Request Timeout` and `425 Too Early` are what
+/// a reverse proxy in front of Vikunja says when it gave up waiting or thinks we were
+/// early -- neither is Vikunja deciding anything about the request. Treating them as final
+/// rolled the user's edit back and toasted "the server refused" over a question nobody had
+/// answered, and dev reaches Vikunja directly while prod is the deployment likely to sit
+/// behind a proxy: the one that loses work is the one carrying the real tasks.
+///
+/// `Forbidden` stays permanent deliberately. A detach the server has already honoured
+/// answers `403`, and [`is_already_done`] catches that before this is asked.
 fn is_permanent(error: &ApiError) -> bool {
-    matches!(
-        error,
-        ApiError::Rejected { .. } | ApiError::Forbidden { .. }
-    )
+    match error {
+        ApiError::Rejected {
+            status: 408 | 425, ..
+        } => false,
+        ApiError::Rejected { .. } | ApiError::Forbidden { .. } => true,
+        _ => false,
+    }
 }
 
 /// Whether this mutation would send an id that a `CreateLabel` was going to define.
@@ -1115,4 +1128,47 @@ fn is_already_done(mutation: &Mutation, error: &ApiError) -> bool {
 fn with_labels(mut task: Task, intended: &Task) -> Task {
     task.labels = intended.labels.clone();
     task
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejected(status: u16) -> ApiError {
+        ApiError::Rejected {
+            status,
+            code: None,
+            message: String::new(),
+        }
+    }
+
+    /// A timeout is the server declining to say, and the entry must stay queued.
+    ///
+    /// `408` comes from a reverse proxy in front of Vikunja rather than from Vikunja, and
+    /// `425` says "you were early" -- neither decided anything about the request, so
+    /// rolling the user's edit back discards work over a question nobody answered.
+    #[test]
+    fn a_timeout_is_not_the_servers_final_answer() {
+        for status in [408, 425] {
+            assert!(
+                !is_permanent(&rejected(status)),
+                "{status} decided nothing, so the edit must stay queued"
+            );
+        }
+    }
+
+    /// The refusals that *are* final still are, including the 403 that reaches here.
+    ///
+    /// `Forbidden` is deliberately permanent: a detach the server has already honoured
+    /// answers `403`, and `is_already_done` catches that case before this one is asked.
+    #[test]
+    fn a_refusal_is_the_servers_final_answer() {
+        for status in [400, 404, 422] {
+            assert!(is_permanent(&rejected(status)), "{status} is a refusal");
+        }
+        assert!(is_permanent(&ApiError::Forbidden {
+            code: None,
+            message: String::new(),
+        }));
+    }
 }

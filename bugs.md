@@ -332,12 +332,28 @@ can still be re-sent on the next launch. Closing that needs the outbox to record
 was handed to the server" durably — a schema change — and is worth doing only if it is ever
 seen.
 
-### BUG-4 — a 408 or 425 discards the user's edit
+### ~~BUG-4~~ — FIXED — a 408 or 425 discards the user's edit
 
-`crates/tui-do-core/src/sync/mod.rs:901`. `is_permanent` treats every 4xx except 401/403/429
-as the server's final answer, so a proxy's **408 Request Timeout** (or 425 Too Early) rolls
-back the edit and toasts "the server refused" when nothing was decided. 401 and 429 are
-handled correctly.
+`crates/tui-do-core/src/sync/mod.rs:949`. `is_permanent` treated every 4xx reaching it as
+the server's final answer, so a proxy's **408 Request Timeout** (or 425 Too Early) rolled
+back the edit and toasted "the server refused" when nothing had been decided.
+
+**This entry's own description of 403 was wrong**, and the code settles it: `403` arrives as
+`ApiError::Forbidden`, which **is** permanent and deliberately so — a detach the server has
+already honoured answers `403`, and `is_already_done` catches that before `is_permanent` is
+asked. Only `401` (`Unauthorized`) and `429` (`RateLimited`) were ever exempt. The original
+sentence listed 403 among the exceptions and then said "401 and 429 are handled correctly"
+two lines later, contradicting itself.
+
+**Fixed 2026-09-05**, test-first: `a_timeout_is_not_the_servers_final_answer` failed on 408
+before the change and passes after, and `a_refusal_is_the_servers_final_answer` passed
+throughout — pinning 400/404/422 and the deliberate `Forbidden` so the fix cannot widen into
+them. They are the first unit tests `sync/mod.rs` has had; it had no `mod tests` at all,
+which is why GAP-1 in the 2026-09-05 audit found zero coverage here.
+
+**Why it mattered more than the severity suggested:** dev reaches Vikunja directly, so this
+was invisible on the instance everything is tested against. Prod is the deployment likely to
+sit behind a proxy — the one carrying real tasks is the one that would have lost work.
 
 **Suggested test — two levels, both deterministic.** A unit test on the classifier, which is
 the cheap half and pins the decision once it is made:
