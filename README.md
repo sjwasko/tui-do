@@ -244,6 +244,39 @@ all"*. Without the flag `tui-do add` fixes that itself, fetching the project lis
 gives up, so **on a new machine run it once without `--offline`** (or start `tui-do`, which
 syncs at launch). After that, `--offline` works on a plane as advertised.
 
+## Using it from an agent
+
+`tui-do add` is scriptable, and it is a good target for one. A single line resolves a
+label, a priority, a project and a due date:
+
+```sh
+tui-do add "Chase the Telnyx DID *urgent !4 +Infra tomorrow"
+```
+
+Constructing the equivalent Vikunja request means knowing a project id, a label id, and
+that "unset" on the wire is Go's zero time rather than `null`.
+
+It is also the right surface rather than merely a convenient one. The write lands in the
+local store first, so the command returns whether or not the server is reachable, and an
+unreachable server queues the task instead of losing it. It takes **the same path the
+interface does** — the same outbox, the same backoff, and the same three-way merge that
+replays your change onto the server's current copy. Something calling the Vikunja API
+directly is a second writer with none of that.
+
+**`skills/tui-do/SKILL.md`** documents this for agents, and is installable as a skill by
+tools that support them. It is plain Markdown, so anything else can simply read it.
+
+One flag deserves care when nobody is watching: **`--create-labels` is off by default and
+should usually stay off.** Labels are one global pool shared by every project, so a typo in
+a generated line becomes a permanent entry that pollutes completion everywhere. Pass it only
+where the label vocabulary is yours rather than a model's.
+
+**Today `add` is the whole agent surface.** Reading, completing and moving tasks from the
+command line are planned and not in this release. If you want to drive more of tui-do from
+an agent, [open a feature request](https://github.com/sjwasko/tui-do/issues) and say what
+you were trying to automate — which verbs get built first is being decided by what people
+ask for.
+
 ## What is not there yet
 
 Stated plainly, because the alternative is discovering it:
