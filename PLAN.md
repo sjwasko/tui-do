@@ -407,6 +407,49 @@ The survey read the main paths only. `saved_filters`, `project_views`, quick-add
 and `CreateLabel`'s `GET /labels?s=` reconciliation were **not** examined for server assumptions. On this
 project's record, driving it will find something reading it did not.
 
+## Post-GA — the CLI as the agent surface
+
+**Proposed 2026-09-05.** Add the verbs the CLI does not have — `tui-do ls --filter 'done = false' --json`
+and `tui-do done <id>` — so that an agent on this fleet drives *tui-do* rather than driving Vikunja.
+
+**The argument is that every caller should take the same path.** Today `add` is the only mutation the CLI
+offers, so anything else an agent wants to do it must do against the Vikunja API directly — and that route
+misses everything this project spent Phases 2 and 4 building. Going through the CLI instead puts an agent
+through the **same optimistic write, the same outbox, the same `Task::merge_onto` conflict replay** the TUI
+uses, and gives it the local store's instant reads rather than a round trip and 78 pages. An agent that
+writes directly is a second client with none of that, against a server with no conditional write to ask
+for — which is exactly the concurrency the "tui-do is multi-instance" note in `CLAUDE.md` is about.
+
+**It is small, which is the other half of the case.** The query and mutation logic already exists in
+`tui-do-core`; it simply has no CLI surface. `ls` is a `TaskQuery` and a serialiser, and `done` is the
+`UpdateTask` the `d` key already queues. Neither needs a new idea, and neither touches `tui-do-ui`.
+
+**The quick-add parser is the underrated piece.** An agent emitting
+
+```sh
+tui-do add "Chase the Telnyx DID *urgent !4 +Infra tomorrow"
+```
+
+instead of constructing Vikunja JSON is a real reduction in agent-side complexity — the label, the
+priority, the project and the date are all resolved by a parser that already exists, is already tested, and
+already handles the local-timezone rule that cria got wrong. Every one of those tokens is documented
+quick-add syntax today. The agent does not need to know a project id, a label id, or that "unset" on the
+wire is Go's zero time.
+
+**So the conclusion is to widen the CLI rather than to route agents around it.** The alternative — agents
+talking to Vikunja directly — is more work at every call site and gives up the outbox, the merge and the
+cache to get there.
+
+**Open before it is built**, none of them blocking:
+
+- **What `--json` promises.** A stable shape is an API, and it is the first thing here that another program
+  would depend on. Worth deciding whether it is versioned or explicitly unstable.
+- **Whether `ls` pulls first.** Instant reads are the point, so probably not — but then a stale store
+  answers, and an agent has no way to ask for freshness without a flag that costs 78 pages.
+- **Which other verbs follow.** `done` is the obvious one; `rm`, `label` and `move` are the same shape and
+  the same argument. Adding them piecemeal is fine; adding them all before deciding the `--json` contract is
+  not.
+
 ## Harvest manifest
 
 **Port (rewrite, keep the behavior):**
