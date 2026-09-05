@@ -28,6 +28,8 @@ of them.
 | **F5, F6** | asking first | **2026-08-30 — pass**, on the rewrite; the first draft could not be followed |
 | **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
 | **F3** | the adoption | **2026-09-05 — pass**, on the corrected check; the first draft asked for a key the form cannot receive. Smoked in `crates/tui-do-smoke` |
+| **H1** | offline start, edit, reconnect | **2026-09-05 — pass** on Arch against dev, verified server-side. GA bar item 4. Cost one wrong step in its own first draft and found BUG-18 |
+| **H2** | reconnect without a URL change | the realistic case; **never driven** |
 
 Section F was driven on 2026-08-30, the day after it was written, and cost three changes
 to the thing it was checking rather than to itself: `C-n` could not make a label with a
@@ -532,3 +534,71 @@ them bites, it will look like a bug in the checks above.
 - **Cosmetic, unfixed:** the undo toast writes label titles unquoted where a task's title
   is quoted (`Undone — errands`), and the `l` form's footer reserves a separator's width
   even when it is showing only one hint, costing about one character of title.
+
+---
+
+## H. Offline, and coming back — GA bar item 4
+
+Lettered `H` rather than `G`, which `md/MANUAL-CHECKS-BUGS.md` already uses.
+
+**This is a GA bar item that had no written check until it was driven**, which is most of
+why it had never been driven. `PLAN.md`'s non-negotiable check #1 is here too: *"with the
+server unreachable, tui-do starts instantly, renders cached tasks, accepts edits into the
+outbox, and never freezes. That's the whole thesis of the rewrite."*
+
+**H1 — offline start, offline edit, reconnect and drain.**
+
+1. `q` first. Item 4 needs an offline *start*, so tui-do has to be down before you begin.
+2. `test-scripts/go-offline.sh` — points `server.url` at `10.255.255.1`, which is
+   unroutable rather than refused. That distinction is the whole point: a refused connection
+   fails in milliseconds and proves nothing, and a hanging connect is what froze cria.
+3. `time tui-do`. **Pass:** the cached tasks paint immediately. **Fail:** any pause before
+   first paint, a blank list, or a freeze.
+4. Make two or three edits — `a` for a new task, `p` on some existing ones. **Pass:** each
+   appears at once, the status line counts them, and the interface never stops responding.
+   It settles on `N queued (N failing)` once the hanging connects time out; that is correct.
+5. `test-scripts/restore-config.sh`.
+6. **`q` and restart.** Not optional — see below.
+7. **`R`.** The queue drains to zero.
+
+**Step 6 is the one that will catch you, and it caught the author of this check.**
+`build_sync` runs once, at `runtime/mod.rs:90`, and hands `Sync` a `Client` built from
+`config.server.url` *at that moment*. Nothing re-reads the config while running, so a
+running tui-do is pinned to the URL it started with: rewriting the file cannot reach it, and
+`R` will cheerfully retry against `10.255.255.1` for as long as you press it. The check
+originally said "don't restart, press `R`", which is wrong.
+
+F7's line *"Restoring the URL does not reach the queue, and neither does restarting"* is
+about the **backoff**, not the URL, and is easy to misread as "restarting will not help".
+Both are true and they are about different things: the restart is what changes the URL, and
+the `R` is what overrides `next_attempt_at`. You need both, in that order.
+
+**Step 7 matters for the same reason F7 records.** A failed entry carries `next_attempt_at`
+and *every* scheduled pass skips it until then, including the one startup runs. Only `r`/`R`
+pass `Backoff::Ignore`. Without step 7 you may sit watching a stale `N queued (N failing)`
+for five minutes and conclude reconnect is broken.
+
+**Pass for the whole item:** the queue reaches zero *and the server actually has the
+changes*. Check the server, not the client that just told you it worked — a client
+reporting its own success is not evidence.
+
+**Driven 2026-09-05 on Arch against dev — pass, verified server-side.** Nine entries: a
+create plus four priority updates stacked on its provisional id `-117`, and four more on
+real tasks. The create adopted id `3889` and all four stacked updates replayed onto it, and
+every priority matched on the server. **Exactly one** `offline probe one` existed afterwards,
+though its create had failed eight times before draining — BUG-3's replay guard holding
+under real conditions rather than a mock.
+
+**What this check does *not* cover, and it is the more realistic case.**
+`go-offline.sh` simulates being offline by **changing the URL**, which is not what going
+offline looks like. When Wi-Fi drops and returns, the address never changes and recovery
+needs no restart at all — the client simply starts succeeding again. So H1 exercises "you
+edited your config", and the restart in step 6 is an artefact of the tool rather than
+something a real reconnect requires.
+
+**H2 — the truer reconnect, same URL, broken route.** Not yet driven. Leave `server.url`
+alone and break reachability underneath it — pause the dev container
+(`docker pause tui-do-vikunja` on the dev host, as G1 does), or drop the tailnet route.
+Then restore it **without restarting tui-do**. **Pass:** the queue drains on the next `R`,
+with no restart at any point. **Fail:** it needs a restart, which would mean something
+other than the URL is being cached across the outage.
