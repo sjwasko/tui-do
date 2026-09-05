@@ -31,6 +31,15 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# ...except between the crates of this workspace, which depend on each other by path and
+# carry no version because there is nothing to resolve: they are built from the tree in
+# front of you, not fetched. cargo-deny reads a versionless path dependency as `*` and the
+# rule above then rejects all five of them.
+#
+# What `wildcards = "deny"` is for is a *registry* dependency pinned to nothing, where any
+# published version could arrive; that is still denied, which is the half worth keeping.
+# Failing since before 2026-08-27 and unseen until the push mirror was fixed.
+allow-wildcard-paths = true
 
 [advisories]
 version = 2
