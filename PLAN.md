@@ -450,6 +450,51 @@ cache to get there.
   the same argument. Adding them piecemeal is fine; adding them all before deciding the `--json` contract is
   not.
 
+## Post-GA — a Kanban board as the run surface for a multi-agent process
+
+**Proposed 2026-09-05, and the continuation of the section above rather than a separate idea.** Take a
+complex multi-agent process, write it into a board as tasks, give different agents different tasks, and
+watch the cards move through the columns as the run happens. The board stops being a to-do list and becomes
+the run's live status display.
+
+**The observability half is free, and that is what makes this cheap.** Nothing has to be built to *watch* —
+Vikunja's web UI already renders the board, on any screen, for anyone who wants to look, with no agent
+dashboard to write and nothing to keep running. tui-do only needs the **write** side: a verb that moves a
+task from one bucket to the next. Everything a human wants — where the run is, what is stuck, who holds
+what — is then a page that already exists.
+
+**The server supports it in one call**, checked against `spec/vikunja.json` rather than assumed:
+
+```
+POST /projects/{project}/views/{view}/buckets/{bucket}/tasks    # move a task into a bucket
+GET|PUT /projects/{id}/views/{view}/buckets                     # list, create
+```
+
+**And more of the groundwork is in place than the Phase 6 entry suggests.** The `project_views` table
+already stores every view with its kind and position; `ViewKind` already has the bucketed-board variant;
+and `Task` already carries the bucket it sits in when fetched through a Kanban view. What is missing is
+narrow: **`tui-do-api` has no bucket calls at all** — the word appears only in doc comments and a field —
+so this is a client method, a `Mutation`, and a CLI verb, not a new subsystem.
+
+**It should go through the outbox like every other write**, for the reason the section above gives: several
+agents moving cards on one board at once is precisely the concurrent-writer case, and a move that bypassed
+the queue would be a second client with no replay and no rollback.
+
+**Open before it is built:**
+
+- **A bucket is per view, not per project.** So a move has to name a view, and a project with a List view
+  and a Kanban view has a task in a bucket in only one of them. The CLI shape has to make that unmissable
+  or someone will move a card on a board nobody is looking at.
+- **Agent identity.** "Assign different agents different tasks" wants each agent to be somebody —
+  quick-add's `@user` already exists, but it resolves to Vikunja users, so either each agent gets an
+  account or assignment is carried by a label instead. The first is more honest and costs more.
+- **What a stuck run looks like.** A card that stops moving is the failure mode this design is meant to
+  make visible, and nothing yet distinguishes "still working" from "the agent died holding it". A
+  last-touched time or a heartbeat label is the smallest thing that would.
+- **Whether tui-do needs to render the board at all.** Phase 6 plans one, but for this use the web UI is
+  the display and tui-do is the actuator. Worth knowing that the write side alone delivers most of the
+  value, and can ship first.
+
 ## Harvest manifest
 
 **Port (rewrite, keep the behavior):**
