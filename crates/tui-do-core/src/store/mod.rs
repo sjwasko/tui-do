@@ -127,11 +127,32 @@ impl Store {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
+                // SEC-1. The store holds every task title, description and queued
+                // mutation, and `create_dir_all` uses the process umask -- so this was
+                // `0755` around a `0644` database, readable by every account on the
+                // machine, while the API token beside it was `0600`.
+                //
+                // **The directory is the durable half.** SQLite creates `-wal` and `-shm`
+                // itself, at umask, on every open, so a mode set on the database file is
+                // undone by the next one. A directory nobody else can traverse holds
+                // whatever SQLite puts inside it, now and later.
+                crate::config::restrict_to_owner(parent);
             }
         }
         let mut connection = Connection::open(&path)?;
         configure(&connection)?;
         schema::migrate(&mut connection)?;
+        // Belt to the directory's braces, and it also tightens a database that an older
+        // version created permissive. `configure` has run, so the WAL exists by now.
+        crate::config::restrict_to_owner(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                crate::config::restrict_to_owner(&sidecar);
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: StorePath::File(path),
@@ -228,6 +249,51 @@ fn join_error(error: tokio::task::JoinError) -> CoreError {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// SEC-1. The store holds every task title, every description and every queued
+    /// mutation, and it was created at the process umask -- `0644` inside a `0755`
+    /// directory, readable by any account on the machine. The API token beside it is
+    /// `0600`, via `config::write_private`: the codebase already knew how, and the store
+    /// simply never did it.
+    ///
+    /// **The directory is the assertion that matters.** SQLite creates `-wal` and `-shm`
+    /// itself, at umask, every time the store is opened -- so a mode set on the database
+    /// file alone is undone by the next open, and the only thing that holds across all of
+    /// them is a directory no other account can traverse.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_store_is_not_readable_by_other_accounts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("tui-do-perms-{}", std::process::id()));
+        let path = dir.join("tui-do.db");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(
+            store.schema_version().await.unwrap(),
+            schema::target_version()
+        );
+
+        let shared =
+            |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o077;
+        assert_eq!(
+            shared(&dir),
+            0,
+            "another account can traverse the store directory"
+        );
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            assert_eq!(
+                shared(&entry.path()),
+                0,
+                "another account can read {:?}",
+                entry.file_name()
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn an_in_memory_store_is_migrated_on_creation() {
