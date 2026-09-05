@@ -11,9 +11,18 @@ repository = "https://github.com/sjwasko/tui-do"
 authors = ["Steve Wasko"]
 
 [workspace.dependencies]
-tui-do-api = { path = "crates/tui-do-api" }
-tui-do-core = { path = "crates/tui-do-core" }
-tui-do-ui = { path = "crates/tui-do-ui" }
+# Carrying a version as well as a path, which cargo needs only if these are ever
+# published -- it builds from the path either way -- but which `cargo deny` needs now: a
+# versionless path dependency reads as `*`, and `bans.wildcards = "deny"` rejects it.
+# `allow-wildcard-paths` does not help, because it exempts only `publish = false` crates
+# and these three are publishable.
+#
+# The alternative was to mark them unpublishable, which would have answered a question
+# nobody has asked yet. This keeps that open. **The version here must match
+# `workspace.package.version` above** -- bump both together.
+tui-do-api = { path = "crates/tui-do-api", version = "0.1.0" }
+tui-do-core = { path = "crates/tui-do-core", version = "0.1.0" }
+tui-do-ui = { path = "crates/tui-do-ui", version = "0.1.0" }
 
 ratatui = "0.30"
 crossterm = "0.29"
