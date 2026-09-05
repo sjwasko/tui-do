@@ -27,7 +27,7 @@ of them.
 | **F1, F2, F4** | the form, `C-n`, `C-e` | **2026-08-30 — all pass** |
 | **F5, F6** | asking first | **2026-08-30 — pass**, on the rewrite; the first draft could not be followed |
 | **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
-| **F3** | the adoption | **2026-09-05 — attempted, and the check was wrong**; still not driven to a result. Smoked in `crates/tui-do-smoke` |
+| **F3** | the adoption | **2026-09-05 — pass**, on the corrected check; the first draft asked for a key the form cannot receive. Smoked in `crates/tui-do-smoke` |
 
 Section F was driven on 2026-08-30, the day after it was written, and cost three changes
 to the thing it was checking rather than to itself: `C-n` could not make a label with a
