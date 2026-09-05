@@ -27,7 +27,7 @@ of them.
 | **F1, F2, F4** | the form, `C-n`, `C-e` | **2026-08-30 — all pass** |
 | **F5, F6** | asking first | **2026-08-30 — pass**, on the rewrite; the first draft could not be followed |
 | **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
-| **F3** | the adoption | the one nobody has driven; smoked in `crates/tui-do-smoke` instead |
+| **F3** | the adoption | **2026-09-05 — attempted, and the check was wrong**; still not driven to a result. Smoked in `crates/tui-do-smoke` |
 
 Section F was driven on 2026-08-30, the day after it was written, and cost three changes
 to the thing it was checking rather than to itself: `C-n` could not make a label with a
@@ -327,10 +327,27 @@ Note what does *not* create: Enter, which applies ticks and nothing else. Adding
 every project shares never shares a key with a reflex — the same rule `y` follows in F5.
 
 **F3 — the adoption reaches the form that is still open. The one that matters.** Do F2 and
-then, *without closing the form*, press `r`. (A write starts a push by itself, so this may
-already have happened; watch the queue count reach zero.) The label must keep its name and
-its tick **in the form you are looking at**, and Enter must still attach it — check the
-web UI shows it on the task.
+then **press nothing at all**. `Ctrl-N` starts the push by itself, so the adoption is
+already on its way; what you are checking is what arrives while you sit still. Watch the
+`N queued` on the status line — visible under the form, which is a centred box — go to
+zero. The label must keep its name and its tick **in the form you are looking at**, and
+Enter must still attach it — check the web UI shows it on the task.
+
+**Do not try to press `r` here, and this check used to tell you to.** You cannot: the
+modal takes every key before the keymap is consulted, and every key the form does not
+handle itself goes into the box at the top, so `r` types the letter `r` into the label
+name. That is by design and it is the same reason `Ctrl-N` and `Ctrl-E` are handled inside
+the form rather than in `KEYMAP` — a keymap row would be a row nobody could reach. The
+keys the form answers are Esc, Enter, Space, `Ctrl-N`, `Ctrl-E` and the arrows; there is
+no key that forces a sync from inside it, and none is needed.
+
+*This instruction was wrong from the day it was written and was found on 2026-09-05, by
+someone driving it and getting an `r` in the name box.* The check had never been driven —
+which is exactly the gap the "what has been driven" table exists to make visible.
+
+**If the queue count does not fall, that is its own finding, not a stuck check.** You have
+no way to retry from inside the form, so note what the status line says, then Esc and press
+`r` from the list. A create that needed a manual retry is worth writing down.
 
 A created label carries a provisional negative id until the server names it, and every
 holder of that id has to move at the same moment: the store rows, the queued attach,
