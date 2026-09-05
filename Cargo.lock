@@ -303,16 +303,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono-english"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0109374710d4c8d90b396d8eb5b9fad262861595ae2d078f91321e32c9e8acc"
-dependencies = [
- "chrono",
- "scanlex",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2520,12 +2510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scanlex"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1ccd92ba75bf41b8f357c0ed1c74c64d6361a3b22303872d89197cda291e42"
-
-[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3263,7 +3247,6 @@ version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "chrono",
- "chrono-english",
  "dirs",
  "regex",
  "rusqlite",
