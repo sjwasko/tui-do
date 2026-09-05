@@ -15,7 +15,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 chrono.workspace = true
-chrono-english.workspace = true
 regex.workspace = true
 aho-corasick.workspace = true
 dirs.workspace = true

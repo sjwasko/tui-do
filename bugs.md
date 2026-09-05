@@ -863,6 +863,31 @@ older version left permissive. `the_store_is_not_readable_by_other_accounts` fai
 `0o055` on the directory before the change, and asserts every entry in the directory rather
 than only the database, so restricting the file alone would not satisfy it.
 
+### ~~DEP-1~~ — FIXED — the only live advisory was against a dependency nothing used
+
+`RUSTSEC-2024-0395`: `chrono-english` is unmaintained. It was the sole failing job in CI and
+the last thing between the workspace and a green `cargo-deny`.
+
+**The fix was deletion, not migration.** The 2026-09-05 audit recommended moving to the
+maintained fork `interim`, which would have added a dependency to replace one that was never
+called. `chrono-english` appeared in exactly two places — the workspace manifest and
+`tui-do-core`'s — and in no line of Rust anywhere: no `chrono_english`, no
+`parse_date_string`, no `Dialect`.
+
+It is a leftover from the design this project set out to replace. `quickadd/dates.rs` says
+so in its own opening comment: cria "hands `tomorrow about the invoice` to a natural-language
+date parser and takes whatever comes back", where tui-do matches phrases against a known
+vocabulary. The custom parser was written, and the crate it displaced stayed in the manifest.
+
+**Removed 2026-09-05.** `chrono-english` and its own dependency `scanlex` leave the lockfile,
+703 tests pass unchanged, clippy is clean. No behaviour changed, so **B1–B9 did not need
+re-driving** — which they would have, and against a live server, had this actually been a
+parser swap.
+
+**The lesson for the next advisory:** ask whether the crate is *used* before deciding how to
+replace it. The advisory was real, the severity assessment was right, and the recommended
+remedy would have left the tree larger than deleting four lines did.
+
 ---
 
 ## Minor
