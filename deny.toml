@@ -12,6 +12,16 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
+    # The 2016 Unicode data licence, and the predecessor of `Unicode-3.0` above rather
+    # than something new: permissive, OSI-approved, and an attribution requirement rather
+    # than a reciprocal one, so it does not touch the promise the comment above makes.
+    #
+    # It arrives through `finl_unicode`, whose licence is
+    # `(MIT OR Apache-2.0) AND Unicode-DFS-2016` -- the `AND` is why allowing MIT was not
+    # enough -- and which comes in under `comrak`, so it is here for as long as
+    # descriptions render. Added 2026-09-05, when CI ran for the first time since comrak
+    # was taken in Phase 5 and rejected it.
+    "Unicode-DFS-2016",
     "Zlib",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
