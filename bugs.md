@@ -763,6 +763,56 @@ the server's answer rather than observing it — it proved the handling and not 
   than "this project is archived", and the user loses what they typed with no warning that
   it could never have been saved.
 
+### BUG-18 — an edit that is safely queued is announced as an error
+
+`crates/tui-do-ui/src/update.rs:313-333`. `SyncEvent::Failed` becomes
+`Toast::error(message)` carrying the raw transport error — *"could not reach the Vikunja
+server at https://…"*. That is the same `Toast::error` a `Rejected` uses, and `Rejected` is
+the case where the edit **has been rolled back and is gone**. So the two outcomes a user
+most needs to tell apart look identical:
+
+| what happened | what the edit is | what the toast says |
+|---|---|---|
+| `Rejected` | rolled back, lost | an error |
+| `Failed` (offline) | **queued, safe, will retry** | an error |
+
+**The type already knows the reassuring half and the toast throws it away.**
+`SyncEvent::Failed`'s own doc comment at `sync/mod.rs:266` reads *"A pass could not
+complete. Queued changes are still queued."* None of that reaches the user.
+
+**Found on 2026-09-05, driving GA bar item 4, and it produced a false bug report** — "priority
+cannot be set when offline". It could be set. Every press was queued with correct
+before/after and written to the local store, and all four landed on the server the moment
+the queue drained. Two things combined to hide it: the `default` layout has no `Pri`
+column, so the list showed no change; and this toast then said, in red, that something had
+gone wrong.
+
+That matters more than a normal cosmetic finding because of *which* claim it undermines.
+`PLAN.md`'s non-negotiable manual check #1 is that tui-do "accepts edits into the outbox,
+and never freezes — that's the whole thesis of the rewrite." The mechanism did exactly
+that. The message defeated it, and the person driving the check concluded the feature was
+broken. Same family as BUG-16, and the same cost: human time and a wrong diagnosis.
+
+**The fix is a wording decision, not a mechanism change.** When a push fails and its entries
+remain queued, say so — *"3 changes queued — cannot reach the server, will retry"* — and
+keep the raw transport detail for the status line, which already carries it. Distinguish it
+from `Rejected` in severity too: nothing was lost, so an error is the wrong register.
+
+**Suggested test.** `update` is pure, so this is a unit test:
+
+```rust
+// Failed must not be phrased as a loss, and must say the edits are still queued.
+let effects = update(&mut model, Msg::Sync(SyncEvent::Failed {
+    phase: Phase::Push,
+    message: "could not reach the Vikunja server at https://10.255.255.1:8443".into(),
+}));
+let toast = model.status.toast.expect("the user is owed a message");
+assert_ne!(toast.level, ToastLevel::Error, "nothing was lost; error is the wrong register");
+assert!(toast.text.contains("queued"), "must say the edits are safe: {:?}", toast.text);
+```
+
+Plus one asserting `Rejected` still *is* an error, so the two never collapse into one voice.
+
 ---
 
 ## Minor
