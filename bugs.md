@@ -779,7 +779,7 @@ the server's answer rather than observing it — it proved the handling and not 
   than "this project is archived", and the user loses what they typed with no warning that
   it could never have been saved.
 
-### BUG-18 — an edit that is safely queued is announced as an error
+### ~~BUG-18~~ — FIXED — an edit that is safely queued is announced as an error
 
 `crates/tui-do-ui/src/update.rs:313-333`. `SyncEvent::Failed` becomes
 `Toast::error(message)` carrying the raw transport error — *"could not reach the Vikunja
@@ -809,7 +809,16 @@ and never freezes — that's the whole thesis of the rewrite." The mechanism did
 that. The message defeated it, and the person driving the check concluded the feature was
 broken. Same family as BUG-16, and the same cost: human time and a wrong diagnosis.
 
-**The fix is a wording decision, not a mechanism change.** When a push fails and its entries
+**Fixed 2026-09-05**, test-first. With work queued the toast is a `Warning` reading
+*"3 queued — will retry"* followed by the whole transport message; with nothing queued
+it is unchanged, because there is then nothing to reassure anyone about and an expired
+token is simply bad news. `a_failure_with_work_queued_says_the_work_is_safe` failed on
+the level before the change; `a_failure_with_nothing_queued_is_still_an_error` passed
+throughout and stops the fix muffling everything. BUG-16's two regression tests still
+pass — the diagnosis is still readable in full, which is why it trails the reassurance
+rather than being replaced by it.
+
+**The original fix note, kept because it was right:** When a push fails and its entries
 remain queued, say so — *"3 changes queued — cannot reach the server, will retry"* — and
 keep the raw transport detail for the status line, which already carries it. Distinguish it
 from `Rejected` in severity too: nothing was lost, so an error is the wrong register.

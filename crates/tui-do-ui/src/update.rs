@@ -326,7 +326,27 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
                 SyncStatus::Failed { message: seen } if *seen == message
             );
             if news {
-                model.status.toast = Some(Toast::error(message.clone()));
+                // BUG-18. `Toast::error` is the register a *rejection* uses, and a
+                // rejection has thrown the user's edit away. A pass that could not reach
+                // the server has thrown nothing away -- the entries are in the outbox and
+                // go when the network comes back -- so said in the same voice the two are
+                // indistinguishable. On 2026-09-05 that cost a false bug report during
+                // the offline check itself: four priority presses were queued, stored and
+                // later landed intact, and this toast said, in red, that something had
+                // gone wrong.
+                //
+                // The reassurance leads and the diagnosis follows, because BUG-16 is the
+                // record of what it costs when the diagnosis is not readable in full.
+                // With nothing queued there is nothing to reassure anyone about, and an
+                // unreachable server or an expired token is simply bad news.
+                model.status.toast = Some(if model.status.queued > 0 {
+                    Toast::warning(format!(
+                        "{} queued — will retry. {message}",
+                        model.status.queued
+                    ))
+                } else {
+                    Toast::error(message.clone())
+                });
             }
             model.status.sync = SyncStatus::Failed { message };
             Vec::new()
