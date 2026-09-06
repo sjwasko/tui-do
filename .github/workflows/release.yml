@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# The release job creates a Release, which needs more than the default read token.
+permissions:
+  contents: write
+
+jobs:
+  # A tag can be pushed from any commit, including one CI has never seen. Without this
+  # a release is an untested binary wearing a version number.
+  gate:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: gate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            cross: false
+          - target: aarch64-unknown-linux-musl
+            cross: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: musl C toolchain, for the bundled SQLite
+        if: ${{ !matrix.cross }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: build (native musl)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --bin tui-do --target ${{ matrix.target }}
+
+      - name: build (cross)
+        if: ${{ matrix.cross }}
+        run: |
+          cargo install cross --locked
+          cross build --release --bin tui-do --target ${{ matrix.target }}
+
+      # A build that silently went dynamic must fail the release rather than ship: the
+      # failure it causes lands on the user's machine, at startup, as a linker error.
+      - name: refuse to ship anything that is not static
+        run: |
+          f=target/${{ matrix.target }}/release/tui-do
+          file "$f"
+          # The property that matters is "no dynamic interpreter", not which static
+          # variant: a musl build may report `static-pie linked` or plain
+          # `statically linked` depending on the target and the tool. Both pass;
+          # anything dynamic fails, because that failure otherwise lands on the
+          # user's machine at startup as a linker error.
+          file "$f" | grep -q 'dynamically linked' \
+            && { echo "DYNAMIC -- refusing to publish"; exit 1; }
+          file "$f" | grep -Eq 'static-pie linked|statically linked' \
+            || { echo "NOT STATIC -- refusing to publish"; exit 1; }
+
+      - name: third-party licences
+        run: |
+          cargo install cargo-about --locked --features=cli
+          cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
+          test -s THIRD-PARTY-LICENSES.md
+
+      - name: stage the tarball
+        run: |
+          name="tui-do-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/${{ matrix.target }}/release/tui-do "dist/$name/"
+          cp README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          ls -l "dist/$name.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      # A tag containing a hyphen is a pre-release by semver convention -- v1.0.0-rc.1
+      # publishes as one, v1.0.0 does not.
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $prerelease \
+            dist/*.tar.gz dist/SHA256SUMS
