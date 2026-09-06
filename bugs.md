@@ -933,6 +933,70 @@ been the place where an exposure is noticed casually rather than acted on. The a
 now the one that reports the full list, which is the right split — it is also the path a
 script or an agent runs, where the output is read rather than glanced at.
 
+### ~~SEC-3~~ — FIXED — Medium — a project title could carry an escape sequence into the terminal
+
+Found 2026-09-06 by the first full `/security-review` pass, which is GA bar item 1. Filed
+beside the other two because it is the same shape as SEC-2 — the interface path is guarded
+and the `tui-do add` path is not.
+
+**The interface is safe and that is why this hid.** Everything drawn in the TUI goes through
+ratatui, which skips zero-width graphemes, and a C0 control measures zero width — so a title
+carrying an ESC renders harmlessly inside the app. `run_add` (`main.rs:280`) never touches
+`runtime/terminal.rs`, so it never enters raw mode or the alternate screen: it prints with
+`println!` to a terminal in normal mode, with nothing between the bytes and the emulator.
+
+Three sites printed a project title verbatim: `runtime/mod.rs:864`, the ambiguous-project
+variant at `:858`, and the `did you mean +[{full}]?` suggestion at `:834` — which prints the
+*whole* title after matching only its first word. ESC survives the entire path unaltered: it
+is legal in JSON as `\u001b`, `serde_json` decodes it to a raw byte, and `store/projects.rs`
+binds and reads `title` as a plain SQLite TEXT value. The only `is_control` call in the
+workspace was `tui-do-ui/src/urls.rs:102`, scanning for URL terminators, unrelated.
+
+**The obvious reading of this is wrong, and worth writing down.** `+Name` resolves through
+`matches_by_name` (`tui-do-ui/src/update.rs:1077`), which requires
+`title.eq_ignore_ascii_case(name.trim())` — so the title printed back is the user's own text
+modulo ASCII case. That path alone would make this a non-finding, and the first reviewer's
+write-up rested on it.
+
+What makes it reachable is `project_for` (`tui-do-ui/src/update.rs:1930`). The CLI always
+passes `showing: None`, so with no `+project` and no configured default it falls through to
+`real().find(|p| p.title.eq_ignore_ascii_case("inbox")).or_else(|| real().next())` — the
+first real project in store order — and prints **its** title. A bare
+`tui-do add "buy milk"` names a project the user never typed. `+#12` resolves by id and does
+the same.
+
+**Impact is OSC 52.** On a shared Vikunja instance, a project shared onto the reader's
+account arrives through `GET /projects` into their store. `\x1b]52;c;<base64>\x07` then
+writes the sender's chosen text into the reader's clipboard on any terminal that honours
+clipboard writes — the Omarchy stack included — ready for their next paste into a shell. A
+newline in a title forges a whole line of output that reads as tui-do's own, which is how
+`Sent.` gets spoofed. **The `CSI 21 t` title-report-echo escalation was investigated and
+dropped**: it is off by default in xterm and unimplemented in most modern emulators.
+
+**A second candidate was raised and disproved.** Server error messages reaching the
+`println!`s at `:586` and `:918` — `ApiError`'s `Display` does interpolate the server's
+`message` verbatim (`tui-do-api/src/error.rs:59`), and the 200-character truncation in
+`ErrorBody::parse` genuinely applies only to the non-JSON branch. But that text never gets
+there. `Sync::push_with` absorbs every server failure into its report: `deliver` returns
+`Result<Result<(), ApiError>>`, the inner error is consumed by the `is_already_done` /
+`is_permanent` / defer arms, and every `?` in that function is on a store call. The `Err`
+surfacing at those two lines can only be `CoreError::Store` or `CoreError::Encoding` —
+local, not server text. `SyncEvent::Rejected`'s message only ever reaches the TUI, where
+ratatui filters it.
+
+**Fixed 2026-09-06**, test-first. Two pure helpers in `runtime/mod.rs`: `printable` replaces
+every control character with U+FFFD, and `project_label` names the project through it. Both
+print sites route through `project_label`, and `longer_project` returns a printable title,
+so the suggestion is covered at its source rather than at its call site.
+
+**`\n` and `\t` go too**, unlike the generic form of this filter. Every caller interpolates
+into the middle of a sentence where neither is legitimate, and a newline is what forges the
+extra line of output. `a_suggested_project_title_cannot_carry_an_escape_sequence` failed
+against the tree before the change with the raw ESC in its message;
+`a_title_keeps_everything_that_is_not_a_control_character` pins the other side, because
+mangling `Café ☕ — 日本語` would be its own bug — the filter is C0, DEL and C1, not
+"anything unusual".
+
 ### ~~DEP-1~~ — FIXED — the only live advisory was against a dependency nothing used
 
 `RUSTSEC-2024-0395`: `chrono-english` is unmaintained. It was the sole failing job in CI and

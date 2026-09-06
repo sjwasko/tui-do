@@ -588,6 +588,38 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     }
 }
 
+/// Server-written text, made safe to print on one line of a terminal.
+///
+/// `tui-do add` prints project titles straight to stdout, and that terminal is in
+/// normal mode -- no raw mode, no alternate screen, and none of ratatui's filtering,
+/// which is what protects these same strings inside the interface. A title is written
+/// on the server and on a shared instance it is written by someone else, so it arrives
+/// as arbitrary bytes: an ESC opens OSC 52 and writes the sender's text into the
+/// reader's clipboard, ready for their next paste into a shell.
+///
+/// Every control character goes, `\n` and `\t` included, because every caller
+/// interpolates into the middle of a sentence where neither is legitimate -- and a
+/// newline forges a line of output that reads as tui-do's own.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
+}
+
+/// Name the project a task landed in.
+///
+/// By its id when the store has never heard of it, which is what `+#12` naming a
+/// project this box has not pulled yet leaves behind.
+fn project_label(
+    projects: &[tui_do_core::models::Project],
+    id: tui_do_core::models::ProjectId,
+) -> String {
+    projects
+        .iter()
+        .find(|project| project.id == id)
+        .map_or_else(|| id.to_string(), |project| printable(&project.title))
+}
+
 /// A project whose title begins with `name` and carries on, if exactly one does.
 ///
 /// Exactly one, because two would make the suggestion a guess; and the first *word* has
@@ -605,7 +637,7 @@ fn longer_project(projects: &[tui_do_core::models::Project], name: &str) -> Opti
             && !project.title.eq_ignore_ascii_case(name)
     });
     let first = found.next()?;
-    found.next().is_none().then(|| first.title.clone())
+    found.next().is_none().then(|| printable(&first.title))
 }
 
 /// Read terminal events on a blocking thread.
@@ -847,10 +879,7 @@ pub async fn add(
     })?;
 
     let project_id = built.task.project_id;
-    let project = projects
-        .iter()
-        .find(|project| project.id == project_id)
-        .map_or_else(|| project_id.to_string(), |project| project.title.clone());
+    let project = project_label(&projects, project_id);
     let queued = queue_add(&store, built, create_labels).await?;
 
     // Named with its id when the name is ambiguous, because a task added to the wrong
@@ -1042,6 +1071,48 @@ mod tests {
         // Nor is a name that simply does not exist -- suggesting `Life Admin` for `Lif`
         // would be a guess dressed up as an answer.
         assert_eq!(longer_project(&projects, "Lif"), None);
+    }
+
+    /// A project title is written on the server, and on a shared instance it may be
+    /// written by someone else. `tui-do add` prints it to a terminal in normal mode --
+    /// no raw mode, no alternate screen, and none of ratatui's filtering, which is what
+    /// protects the same string inside the interface.
+    #[test]
+    fn a_suggested_project_title_cannot_carry_an_escape_sequence() {
+        let projects = vec![a_project(1, "Work \u{1b}]52;c;cGF5bG9hZA==\u{7}Notes")];
+        let offered = longer_project(&projects, "Work").expect("the title is a truncation");
+        assert!(
+            !offered.chars().any(char::is_control),
+            "the suggestion carried a raw escape to the terminal: {offered:?}"
+        );
+    }
+
+    /// The other half of the same hazard: the line that reports where the task landed
+    /// names a project the user never typed. `+Name` matches case-insensitively and
+    /// exactly, so that form only ever echoes the user's own text back -- but a bare
+    /// `tui-do add "buy milk"` has no name to match, falls through to the first real
+    /// project in the store, and prints whatever that one is called.
+    #[test]
+    fn the_project_a_task_landed_in_is_named_without_its_control_characters() {
+        let projects = vec![a_project(7, "Inbox\u{1b}[2K\u{1b}[GSent.")];
+        assert_eq!(
+            project_label(&projects, tui_do_core::models::ProjectId(7)),
+            "Inbox\u{fffd}[2K\u{fffd}[GSent."
+        );
+        // A project the store has never heard of is still named by its id.
+        assert_eq!(
+            project_label(&projects, tui_do_core::models::ProjectId(9)),
+            "9"
+        );
+    }
+
+    #[test]
+    fn a_title_keeps_everything_that_is_not_a_control_character() {
+        // The filter is C0, DEL and C1 -- not "anything unusual". Mangling a legitimate
+        // title would be its own bug, and titles carry emoji and accents routinely.
+        assert_eq!(printable("Café ☕ — 日本語"), "Café ☕ — 日本語");
+        // C1: 0x9b is CSI on its own, and reaches here as a single char.
+        assert_eq!(printable("a\u{9b}2Kb"), "a\u{fffd}2Kb");
     }
 
     #[test]
