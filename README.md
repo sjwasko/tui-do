@@ -498,6 +498,33 @@ Every endpoint the client calls is checked against `spec/vikunja.json` — the O
 served by a live Vikunja at `/api/v1/docs.json` — by a conformance test, so an upstream API
 change surfaces as a failing test rather than a runtime 404.
 
+## Contributing
+
+**Issues are the way in. Please do not open a pull request without asking first.**
+
+This is not a formality, and it is not "PRs welcome" with extra steps — it is a fact about
+where the repository lives. GitHub is a **read-only mirror**. Development happens on a
+private Forgejo instance, and GitHub receives its commits by a push mirror, one direction
+only. A pull request opened here cannot be merged where the code actually lives, so a patch
+you spend an evening on would have to be re-applied by hand, and I would rather tell you
+that now than after you wrote it.
+
+So:
+
+- **Found a bug?** [Open an issue](https://github.com/sjwasko/tui-do/issues). Include your
+  distribution, your Vikunja version, and what you expected instead. If tui-do printed
+  something, paste it verbatim.
+- **Want a feature?** Open an issue describing the problem rather than the solution. What
+  gets built first is decided by what people say they were trying to do — see
+  [What the future holds](#what-the-future-holds), which is a genuine list of open
+  questions, not a roadmap already settled.
+- **Want to send code?** Open an issue first and say what you have in mind. If it is a fit,
+  I will tell you how to get it to me. Small fixes are easy; anything touching the
+  architecture is worth a conversation before you write it.
+
+Feedback is wanted much more than patches are. See
+[This is the part I most want to hear about](#this-is-the-part-i-most-want-to-hear-about).
+
 ## Relationship to cria
 
 tui-do began as a fork-in-spirit of [cria](https://github.com/frigidplatypus/cria) by
