@@ -29,7 +29,7 @@ of them.
 | **F7** | offline, then back | **2026-08-30 — pass**, after a wait the check did not warn about |
 | **F3** | the adoption | **2026-09-05 — pass**, on the corrected check; the first draft asked for a key the form cannot receive. Smoked in `crates/tui-do-smoke` |
 | **H1** | offline start, edit, reconnect | **2026-09-05 — pass** on Arch against dev, verified server-side. GA bar item 4. Cost one wrong step in its own first draft and found BUG-18 |
-| **H2** | reconnect without a URL change | the realistic case; **never driven** |
+| **H2** | reconnect without a URL change | **2026-09-06 — pass**, on the re-drive; the first run found BUG-19 and failed |
 
 Section F was driven on 2026-08-30, the day after it was written, and cost three changes
 to the thing it was checking rather than to itself: `C-n` could not make a label with a
@@ -596,7 +596,22 @@ needs no restart at all — the client simply starts succeeding again. So H1 exe
 edited your config", and the restart in step 6 is an artefact of the tool rather than
 something a real reconnect requires.
 
-**H2 — the truer reconnect, same URL, broken route.** Not yet driven. Leave `server.url`
+**H2 — the truer reconnect, same URL, broken route.** **Driven 2026-09-06: it failed, the
+bug was fixed, and the re-drive passed.** This is now BUG-19's regression check, and the
+reason to keep it: it is the only check that puts a create in flight against a server that
+answers *late* rather than not at all.
+
+**What it found.** Pausing the container does not drop the request — it freezes it. On
+unpause the server finishes the create it was holding, so the task exists; the client had
+already timed out and the retry created it a second time. Two tasks, six seconds apart,
+identical titles, one carrying the priority and label queued behind it and one carrying
+nothing. `CreateTask` had no read-before-retry reconcile where `CreateLabel` has had one all
+along. Written up as BUG-19.
+
+**So the pass condition has a second half now:** the queue drains with no restart, **and
+there is exactly one new task**. Look at the last two rows before calling it. A bare
+duplicate beside a decorated one is easy to skim past, and that is how this nearly passed.
+ Leave `server.url`
 alone and break reachability underneath it — pause the dev container
 (`docker pause tui-do-vikunja` on the dev host, as G1 does), or drop the tailnet route.
 Then restore it **without restarting tui-do**. **Pass:** the queue drains on the next `R`,
