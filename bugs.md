@@ -57,9 +57,9 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-4, BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-7, BUG-9, SEC-2 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
-| **Verify first** | BUG-14 |
+| **Verify first** | BUG-11, BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
@@ -862,6 +862,51 @@ database and its two sidecars afterwards as belt and braces — which also tight
 older version left permissive. `the_store_is_not_readable_by_other_accounts` failed with
 `0o055` on the directory before the change, and asserts every entry in the directory rather
 than only the database, so restricting the file alone would not satisfy it.
+
+### SEC-2 — Minor — `tui-do add` never says the API token is readable by other accounts
+
+Filed beside SEC-1 rather than under Minor because this is where anyone looking for a
+credential finding will look. **It is a missing warning, not an exposure tui-do creates**:
+`write_private` still writes `0o600` at creation and `restrict_to_owner` still tightens the
+config directory. What is unreported is a token that arrived on the box by some other
+route — `scp`, a dotfile repo, a restore — which is exactly how every host in the fleet
+gets one.
+
+**Two mechanisms exist and neither reaches a `tui-do add` user.**
+
+`Config::exposed_credential_files` is the visible one, and its own doc comment says why it
+returns a `Vec` instead of logging: *"a warning the user never sees is not a warning."* It
+has exactly one caller — `runtime/mod.rs:121`, on the path that starts the interface. The
+`Command::Add` arm of `main` loads the config, guards production, and goes straight to
+`runtime::add`. It never asks.
+
+`read_token_file`'s `tracing::warn!` is the other, and it is off unless asked for:
+`init_logging` returns `None` when `TUI_DO_LOG` is unset, so no subscriber is installed at
+all. Set it and the line goes to a *file*, deliberately — the interface owns the terminal
+and a log line written into the alternate screen corrupts the frame. Neither of those
+reasons applies to `tui-do add`, which never enters the alternate screen and has a perfectly
+good stderr.
+
+So a host driven entirely through `tui-do add` never learns. That is not a hypothetical
+shape: it is what the README's "Using it from an agent" section recommends, and it is the
+whole of the rc hardware check.
+
+**Found 2026-09-06 installing `v1.0.0-rc.1` on `arm-host-1`.** The token was copied with `scp`,
+which without `-p` creates the destination under the *receiving* account's umask rather than
+carrying `0o600` across. `tui-do add` then ran, reached the server, printed `Sent.` and said
+nothing about the mode. The `chmod 600` that fixed it was done by hand, from memory, because
+nothing in the tool would have raised it.
+
+**A second, smaller thing in the same line.** `runtime/mod.rs:121` takes `.first()` of the
+returned `Vec`. Two files can be exposed at once — a permissive config carrying an inline
+`server.token`, and a permissive `token_file` — and only one is ever shown. Being second in
+line behind `credential_problem` is commented and deliberate; discarding the rest of the
+list is not obviously either way.
+
+**Shape of a fix, not yet decided.** Call `exposed_credential_files` in `run_add` and print
+each entry to stderr before doing the work — stderr is free there, and `Sent.` stays on
+stdout so nothing piping the output changes meaning. A test would assert that a `0o644`
+token file produces a line on stderr from the add path, which fails today.
 
 ### ~~DEP-1~~ — FIXED — the only live advisory was against a dependency nothing used
 
