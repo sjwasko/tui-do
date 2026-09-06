@@ -59,7 +59,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
-| **Verify first** | BUG-11, BUG-14 |
+| **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
@@ -528,12 +528,28 @@ long-word-break loop emit blank rows and drop the title entirely, leaving only `
 non-percent path already used as its default — so the two agree rather than leaving the
 percentage to round itself away to nothing.
 
-### BUG-11 — the edit form can focus a field that is off-screen
+### ~~BUG-11~~ — NOT REPRODUCIBLE — the edit form can focus a field that is off-screen
 
 `crates/tui-do-ui/src/view.rs:1211-1289`. `edit_body` has no scroll or windowing logic,
 unlike every other multi-row modal. On a short terminal, `Tab` moves focus to a field that
 has been clipped away, and the user types into it with no visual feedback at all — caret
 placement is silently skipped when `y >= area.bottom()`.
+
+**Driven on the handheld on 2026-09-06 and it did not reproduce**: the edit screen worked
+with no issues. That is the device this was filed against, on the grounds that a small
+screen is where it would stop being theoretical.
+
+**Not fixed — bounded.** Nothing changed in the code, so the description above is still
+accurate; what was wrong was the assumption that a real terminal gets short enough to
+reach it. The modal is content-sized — `EditField::ALL.len() + EDIT_DESCRIPTION_LINES + 3`,
+which is **13 rows** — and measured at 100 columns it renders every field down to 12 rows.
+At 9 rows `Project` and `Labels` fall below the border and are unreachable, which is the
+filed behaviour, at a height no hardware here produces.
+
+So it is real below 12 rows and unreachable above. Left open rather than closed outright
+because the absence of windowing is still a difference from every other multi-row modal,
+and the fix — if the day comes that something renders in a 9-row pane — is the windowing
+those modals already have.
 
 ### ~~BUG-12~~ — FIXED — the local-day rule is broken in the backdate check
 
