@@ -28,11 +28,23 @@ Set Padding 18
 Set Theme { "name": "Osaka Jade", "background": "#111c18", "foreground": "#C1C497", "black": "#0c1512", "red": "#FF5345", "green": "#549e6a", "yellow": "#E5C736", "blue": "#509475", "magenta": "#D2689C", "cyan": "#2DD5B7", "white": "#C1C497", "brightBlack": "#53685B", "brightRed": "#db9f9c", "brightGreen": "#63b07a", "brightYellow": "#F7E8B2", "brightBlue": "#ACD4CF", "brightMagenta": "#75bbb3", "brightCyan": "#8CD3CB", "brightWhite": "#D6D5BC", "selection": "#32473B", "cursor": "#2DD5B7" }
 Set TypingSpeed 60ms
 
-# The demo profile. TUI_DO_DB keeps this away from the real store.
+# Two panes: the interface on the left, a shell on the right, so a task written from the
+# command line can be seen arriving in the interface without cutting away.
+#
+# The panes deliberately use *different* stores. The right-hand shell writes to the server
+# and the left-hand interface pulls it back with `r`, which is what actually happens when a
+# second machine or an agent files something -- and it keeps two processes off one SQLite
+# file.
 Hide
-Type "export TUI_DO_CONFIG=~/.config/tui-do/demo.yaml"  Enter
-Type "export TUI_DO_DB=~/.local/share/tui-do/demo.db"   Enter
-Type "clear"                                            Enter
+Type "tmux kill-session -t demo 2>/dev/null; tmux new-session -d -s demo"   Enter
+Type "tmux set -g status off"                                              Enter
+Type "tmux split-window -h -t demo -l 42%"                                 Enter
+Type "tmux send-keys -t demo:0.0 'export TUI_DO_CONFIG=~/.config/tui-do/demo.yaml TUI_DO_DB=~/.local/share/tui-do/demo.db; clear' Enter"  Enter
+Type "tmux send-keys -t demo:0.1 'export TUI_DO_CONFIG=~/.config/tui-do/demo.yaml TUI_DO_DB=/tmp/tui-do-agent.db; clear' Enter"           Enter
+Type "tmux select-pane -t demo:0.0"                                        Enter
+Type "clear"                                                               Enter
+Type "tmux attach -t demo"                                                 Enter
+Sleep 1s
 Show
 
 Type "tui-do"  Sleep 500ms  Enter
@@ -76,12 +88,49 @@ Sleep 1800ms
 Escape
 Sleep 700ms
 
-# --- jump to a project -------------------------------------------------------
+# --- the Agents project ------------------------------------------------------
 Type "gp"
 Sleep 1200ms
-Down@400ms 2
+Type@120ms "Agents"
+Sleep 800ms
 Enter
-Sleep 2500ms
+Sleep 7s
+
+# --- a task filed from the shell, arriving in the interface ------------------
+Ctrl+b
+Type "o"
+Sleep 1200ms
+Type@75ms 'tui-do add "Summarise the sync engine backoff policy +Agents *research !3 tomorrow"'
+Sleep 1200ms
+Enter
+Sleep 3s
+
+Ctrl+b
+Type "o"
+Sleep 1200ms
+# `r` pulls what changed. The new task appears without the interface being restarted.
+Type "r"
+Sleep 4s
+
+# --- back to All tasks, then the pane toggles -------------------------------
+# `z s` and `z p` are worth seeing on a full list rather than on an empty project.
+Tab
+Sleep 700ms
+Type "gg"
+Sleep 700ms
+Enter
+Sleep 1500ms
+Tab
+Sleep 1s
+
+Type "zp"
+Sleep 2s
+Type "zp"
+Sleep 1500ms
+Type "zs"
+Sleep 2s
+Type "zs"
+Sleep 1500ms
 
 # --- column layouts ----------------------------------------------------------
 Type "L"
@@ -97,3 +146,7 @@ Sleep 800ms
 
 Type "q"
 Sleep 1s
+
+Hide
+Type "tmux kill-session -t demo"  Enter
+Show
