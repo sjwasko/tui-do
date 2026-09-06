@@ -527,6 +527,38 @@ impl Client {
         self.send::<Label>(call).await.map(|(label, _)| label)
     }
 
+    /// `GET /tasks?s=` — every task whose title is exactly `title`.
+    ///
+    /// The task counterpart of [`Self::labels_named`], and it exists for the same reason:
+    /// a replayed create is otherwise undetectable. `PUT /projects/{id}/tasks` answers
+    /// `201` and a second task, with nothing in the response to say it has seen this body
+    /// before. Confirmed the expensive way on 2026-09-06 — a create that timed out against
+    /// a paused server, then retried, left ids 3915 and 3916 six seconds apart with the
+    /// same title, one carrying the priority and label queued behind it and one carrying
+    /// nothing.
+    ///
+    /// **Byte-exact, where `labels_named` folds case, and the difference is deliberate.** A
+    /// retry re-sends the identical title, so an exact match finds our own lost create
+    /// without help. Folding case would only widen this to titles *somebody else* wrote,
+    /// and adopting a stranger's task is worse than the duplicate it would avoid: a task
+    /// carries a description, a due date and a history, where a label carries a colour.
+    ///
+    /// The search parameter matches substrings and reads descriptions as well as titles,
+    /// so the comparison here is what keeps "Call Bob about the invoice" from being
+    /// adopted when the user asked for "Call Bob".
+    ///
+    /// # Errors
+    /// [`ApiError::NotAuthenticated`] if no credential is configured, or any failure from
+    /// any page.
+    pub async fn tasks_named(&self, title: &str) -> Result<Vec<Task>> {
+        Ok(self
+            .all_tasks(&TaskQuery::new().search(title))
+            .await?
+            .into_iter()
+            .filter(|task| task.title == title)
+            .collect())
+    }
+
     /// `GET /labels?s=` — every label whose title is exactly `title`.
     ///
     /// The search parameter matches *substrings*, so the exact comparison happens here: a
