@@ -692,25 +692,43 @@ gh release view v1.0.0 -R sjwasko/tui-do --json isPrerelease,assets \
 
 Expected: `false`, and three assets.
 
-- [ ] **Step 4: Make the repository public**
+- [x] **Step 4: Make the repository public** — **done 2026-09-06, deliberately early**
 
-This is the step that makes the README's download URLs work for anyone. Do it **only** after
-Task 6 passed and `v1.0.0` published — a public repo whose install instructions 404 is worse
-than a private one.
+The original wording said to do this *only* after Task 6 passed and `v1.0.0` published,
+because "a public repo whose install instructions 404 is worse than a private one". That
+reasoning was answered rather than ignored: `README.md:45` now names `v1.0.0-rc.1`, the tag
+that actually exists, so the instructions do not 404 — verified unauthenticated on all three
+release assets, and by running the README block verbatim end to end.
+
+Moving it earlier is what makes Task 6 worth anything. While the repo was private the release
+URL answered 404 to anyone unauthenticated and `gh` is on none of the test hosts, so the
+binary had to arrive by `scp` — which tests the artifact and not the instructions, and cost
+two false failures on `arm-host-1` on 2026-09-06.
+
+Taken with the knowledge that a public repo is crawled within hours whether or not it is
+announced, and after an audit of all 229 commits found no credential in any ref or
+unreachable object. The pre-cleanup homelab inventory remains readable in history; that was
+accepted knowingly rather than rewritten, because `v1.0.0-rc.1` points at a commit SHA and a
+rewrite would orphan the published release.
 
 ```bash
 gh repo edit sjwasko/tui-do --visibility public --accept-visibility-change-consequences
 ```
 
-- [ ] **Step 5: Verify a stranger's view**
+- [ ] **Step 5: Verify a stranger's view, and put the tag back**
+
+`README.md:45` must go back to `tag=v1.0.0` once that tag exists, and then be re-run once,
+verbatim and unauthenticated, on one host. Until that happens the README ships a release
+candidate to anyone who finds it.
 
 ```bash
-curl -fsSLI "https://github.com/sjwasko/tui-do/releases/download/v1.0.0/SHA256SUMS" \
-  | head -1
+curl -fsSL -o /dev/null -w '%{http_code}\n' \
+  "https://github.com/sjwasko/tui-do/releases/download/v1.0.0/SHA256SUMS"
 ```
 
-Expected: `HTTP/2 200`. Run it **unauthenticated** — an authenticated success proves nothing
-about the thing being fixed.
+Expected: `200`. Run it **unauthenticated** — an authenticated success proves nothing about
+the thing being fixed. Note `-I` alone answers `302`: that is the redirect to GitHub's asset
+CDN and is not a failure, which is why this follows redirects and reports the final code.
 
 ---
 
