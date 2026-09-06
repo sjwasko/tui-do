@@ -64,7 +64,7 @@ Linux kernel — and the same file runs on Arch, Ubuntu, Debian, Fedora and olde
 alike. [Building from source](#building-from-source) is only needed to modify tui-do.
 
 ```sh
-tag=v1.0.0-rc.2
+tag=v1.0.0-rc.3
 arch=$(uname -m)          # x86_64 or aarch64
 base=https://github.com/sjwasko/tui-do/releases/download/$tag
 
