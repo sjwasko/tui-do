@@ -86,9 +86,16 @@ has never seen**; without this a release is an untested binary wearing a version
 - `x86_64-unknown-linux-musl` — `apt-get install musl-tools`, then plain `cargo build
   --release --target …`. Proven today.
 - `aarch64-unknown-linux-musl` — needs a cross toolchain, because the bundled SQLite is C.
-  **Unproven, and the first implementation step is to probe it exactly as x86_64 was
-  probed.** Preferred order: `cross` (its images carry musl cross toolchains), falling back
-  to `cargo-zigbuild` if `cross` fights the `rusqlite` build script.
+  **Proven 2026-09-06** with a throwaway probe workflow (PR
+  [sjwasko/tui-do#2](https://github.com/sjwasko/tui-do/pull/2), CI run
+  [34030154453](https://github.com/sjwasko/tui-do/actions/runs/34030154453)): `cross build
+  --release --bin tui-do --target aarch64-unknown-linux-musl` succeeded on the first attempt,
+  no `cargo-zigbuild` fallback needed. `file` reported `ELF 64-bit LSB executable, ARM
+  aarch64, version 1 (SYSV), statically linked, stripped` — no dynamic interpreter, and
+  `cross`'s musl toolchain produced a plain statically linked binary rather than a
+  static-pie one (both are acceptable; only "dynamically linked" would have failed the
+  probe). 11,317,992 bytes, comparable to the x86_64 build's ~14.2 MB. `cross` is the tool
+  Stage 2 uses for this target.
 
 **Stage 3 — prove, then publish.** For each artifact, assert it runs (`--version`) and that
 it is *actually* static — `file` must say `static-pie` and `ldd` must not report a dynamic
@@ -168,8 +175,6 @@ a real download, on a real machine, against a real server.
 
 ## Open questions
 
-- **Does `cross` build `rusqlite`'s bundled SQLite for `aarch64-unknown-linux-musl` cleanly?**
-  The first implementation task, and the answer decides between `cross` and `cargo-zigbuild`.
 - **Does `cargo-about` need a config file to satisfy every licence in the tree**, given
   `deny.toml` already enumerates the allowed set? Likely a small `about.toml`.
 - **Which release does `jetson-box` care about?** It is arm64 like `arm-host-1`, so the same
