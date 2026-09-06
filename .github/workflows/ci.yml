@@ -57,3 +57,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # about.toml's `accepted` list duplicates deny.toml's `allow` by hand, with nothing
+  # enforcing agreement -- a new transitive licence used to fail `cargo about generate`
+  # only at tag time, after the gate had already gone green. Running it here fails a PR
+  # instead of a release.
+  licenses:
+    name: cargo-about (third-party licences)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo-about
+        # Pinned to the same version release.yml installs, so a break shows up in
+        # exactly one place, not two disagreeing ones.
+        run: cargo install cargo-about --version 0.9.2 --locked --features=cli
+      - run: cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
+      - run: test -s THIRD-PARTY-LICENSES.md
