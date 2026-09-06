@@ -13,7 +13,12 @@ Output docs/demo/tui-do.gif
 
 Set Shell bash
 Set FontSize 15
-Set Width 1440
+# The interface hides its sidebar below about 110 columns, so the pane it lives in has to
+# be wider than that. Measured rather than calculated, twice, because the arithmetic was
+# wrong both times: 1800px is 173 columns at this font size, a 30% shell pane leaves the
+# interface 121, and the sidebar renders. 1440 gave it 93 and the sidebar was simply
+# absent -- which is why `z s` looked like it did nothing.
+Set Width 1800
 Set Height 810
 Set Padding 18
 # Osaka Jade, the Omarchy theme, transcribed from
@@ -36,15 +41,33 @@ Set TypingSpeed 60ms
 # second machine or an agent files something -- and it keeps two processes off one SQLite
 # file.
 Hide
-Type "tmux kill-session -t demo 2>/dev/null; tmux new-session -d -s demo"   Enter
-Type "tmux set -g status off"                                              Enter
-Type "tmux split-window -h -t demo -l 42%"                                 Enter
-Type "tmux send-keys -t demo:0.0 'export TUI_DO_CONFIG=~/.config/tui-do/demo.yaml TUI_DO_DB=~/.local/share/tui-do/demo.db; clear' Enter"  Enter
-Type "tmux send-keys -t demo:0.1 'export TUI_DO_CONFIG=~/.config/tui-do/demo.yaml TUI_DO_DB=/tmp/tui-do-agent.db; clear' Enter"           Enter
-Type "tmux select-pane -t demo:0.0"                                        Enter
-Type "clear"                                                               Enter
-Type "tmux attach -t demo"                                                 Enter
-Sleep 1s
+# Panes get their environment from tmux itself rather than from typed exports, so nothing
+# has to be cleared off screen afterwards.
+Type "tmux kill-session -t demo 2>/dev/null; tmux new-session -d -s demo -e TUI_DO_CONFIG=$HOME/.config/tui-do/demo.yaml -e TUI_DO_DB=$HOME/.local/share/tui-do/demo.db"  Enter
+Type "tmux set -g status off"  Enter
+Type "tmux split-window -h -t demo -l 30% -e TUI_DO_CONFIG=$HOME/.config/tui-do/demo.yaml -e TUI_DO_DB=/tmp/tui-do-agent.db"  Enter
+# `-L` rather than a pane index: tmux may be configured with base-index 1, and hardcoding
+# 0.0 put the interface in the narrow pane on the first take.
+Type "tmux select-pane -t demo -L"  Enter
+Type "clear"  Enter
+Type "tmux attach -t demo"  Enter
+
+# Every new interactive shell runs the login greeting, which on this desktop prints the
+# hostname, the LAN address and the tailnet address. That is not going in a public GIF.
+# Both panes are cleared here, after the greeting has finished drawing -- the first take
+# cleared too early and filmed all of it. This whole block is inside Hide, so none of it
+# is captured either way.
+Sleep 3s
+Type "clear"  Enter
+Sleep 500ms
+Ctrl+b
+Type "o"
+Sleep 500ms
+Type "clear"  Enter
+Sleep 500ms
+Ctrl+b
+Type "o"
+Sleep 700ms
 Show
 
 Type "tui-do"  Sleep 500ms  Enter
@@ -114,12 +137,16 @@ Sleep 4s
 
 # --- back to All tasks, then the pane toggles -------------------------------
 # `z s` and `z p` are worth seeing on a full list rather than on an empty project.
+# Two tabs, not one: focus cycles list -> preview -> sidebar, and the first Tab lands on
+# the preview pane. Measured; one Tab left the scope on Agents.
+Tab
+Sleep 400ms
 Tab
 Sleep 700ms
 Type "gg"
 Sleep 700ms
 Enter
-Sleep 1500ms
+Sleep 1800ms
 Tab
 Sleep 1s
 
