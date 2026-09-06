@@ -1,5 +1,8 @@
 # tui-do
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/sjwasko)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/sutibu)
+
 A fast, local-first terminal client for [Vikunja](https://vikunja.io).
 
 tui-do keeps your tasks in a local SQLite store and reconciles with the server in the
