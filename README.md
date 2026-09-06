@@ -14,6 +14,12 @@ on a network call.
 > [what the future holds](#what-the-future-holds) is set out rather than left to be
 > discovered.
 
+![tui-do: an agent files a task from the shell while the interface is open beside it, and picks it up on the next sync](docs/demo/tui-do-agent.gif)
+
+*The right-hand pane is a scripted stand-in for an agent, not a live model — but the
+`tui-do add` it runs is real, and the task it files is the one the interface pulls in.
+Regenerate it with [`docs/demo/tui-do-agent.tape`](docs/demo/tui-do-agent.tape).*
+
 > [!WARNING]
 > **Back up your Vikunja data before you use this.** tui-do is a release candidate and it
 > writes to your real server: it creates, edits, completes and **deletes** tasks, and every

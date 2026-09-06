@@ -62,3 +62,7 @@ __pycache__/
 /docs/demo/*.mp4
 /docs/demo/*.webm
 /docs/demo/*-agent.gif
+# ...except the one the README embeds. Committed deliberately and knowingly: a GIF in
+# git history cannot be removed later without rewriting it, and a README image hosted
+# anywhere else breaks the day that host or release is deleted.
+!/docs/demo/tui-do-agent.gif
