@@ -213,11 +213,25 @@ Labels are one global pool shared by every project, so a typo in a generated lin
 permanent entry that pollutes completion everywhere. Pass it only where the label vocabulary
 is yours rather than a model's.
 
+### This is the part I most want to hear about
+
 **Today `add` is the whole agent surface.** Reading, completing and moving tasks from the
-command line are planned and not in this release. If you want to drive more of tui-do from an
-agent, [open a feature request](https://github.com/sjwasko/tui-do/issues) and say what you
-were trying to automate — which verbs get built first is being decided by what people ask
-for.
+command line are planned and not in this release, and which verbs get built first is being
+decided by what people ask for. If you are driving tui-do from an agent,
+[open an issue](https://github.com/sjwasko/tui-do/issues) and say what you were trying to
+automate — that is worth more to me than a feature request in the abstract.
+
+**Kanban is the open design question.** The list view is the only view today, and boards are
+planned. What an agent should *say* to move a task across a board — name a bucket, set a
+status, ask for "the next column" — is genuinely undecided, and it is the kind of thing that
+is easy to get wrong in a way you only notice after people depend on it. If you work in
+Vikunja's board views, I would like your opinion before it is built rather than after.
+
+**Contributors and testers are welcome, and specifically wanted here.** This surface is small
+enough to be a reasonable first contribution and is not yet load-bearing for anyone, which
+makes it the safest place in the project to try something. Testing counts as much as code:
+running it against your own Vikunja, on your own hardware, and reporting what broke is the
+work that most needs doing.
 
 ## Configuration reference
 

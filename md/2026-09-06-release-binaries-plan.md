@@ -558,25 +558,27 @@ The whole reason musl was chosen. A binary that has only been built is a claim.
 - Consumes: the pre-release from Task 5.
 - Produces: the evidence GA bar item 2 needs, recorded in `md/MANUAL-CHECKS2.md`.
 
-- [ ] **Step 1: Check the PocketTerm35's userland before trusting the arm artifact**
+- [x] **Step 1: Check every host's userland before trusting the artifact** — **done 2026-09-06**
 
-On the PocketTerm35:
+All three hosts are 64-bit, confirmed by the user: `laptop` x86_64, `arm-host-1` and
+`arm-host-2` aarch64. The two published targets cover the fleet and no third one is needed.
 
-```bash
-uname -m
-```
-
-Expected: `aarch64`. **If it answers `armv7l`**, Raspberry Pi OS is running a 32-bit
-userland and it cannot execute the arm64 binary at all. Stop, and record it — serving that
-device needs a third target, `armv7-unknown-linux-musleabihf`, which is a scope decision for
-the spec, not a flag.
+This step existed because a 32-bit userland — `uname -m` answering `armv7l` — cannot execute
+the arm64 binary at all, and serving such a device would need
+`armv7-unknown-linux-musleabihf`, a scope decision rather than a flag. That question is now
+closed. Re-ask it only when a new device joins the fleet.
 
 - [ ] **Step 2: Install the rc on each host**
 
 Run the README's install block **verbatim, with nothing edited**, on **`laptop`**
-(x86_64), **`arm-host-1`** (aarch64), and **`arm-host-2`** (aarch64, believed to be the
-PocketTerm35). Using the README's commands rather than a scratch script is deliberate: it
-checks the instructions, not just the artifact.
+(x86_64), **`arm-host-1`** (aarch64), and **`arm-host-2`** (aarch64). Using the README's commands
+rather than a scratch script is deliberate: it checks the instructions, not just the
+artifact.
+
+`laptop` was wiped back to nothing on 2026-09-06 — binary, config, token, store and the
+leftover `/tmp` downloads — because it had been installed the old way, before the repo was
+public. Its outbox was empty first, so nothing queued was lost. It is a clean host again and
+should be driven from the README top to bottom.
 
 This became possible on 2026-09-06, when the repository was made public and `README.md:45`
 was set to `tag=v1.0.0-rc.1` — the tag that actually exists. Before that the release URL
