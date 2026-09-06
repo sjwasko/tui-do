@@ -100,7 +100,7 @@ Sleep 7s
 Ctrl+b
 Type "o"
 Sleep 1200ms
-Type@75ms 'tui-do add "Summarise the sync engine backoff policy +Agents *research !3 tomorrow"'
+Type@75ms "tui-do add 'Summarise the sync engine backoff policy +Agents *research !3 tomorrow'"
 Sleep 1200ms
 Enter
 Sleep 3s

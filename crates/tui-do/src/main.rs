@@ -100,18 +100,18 @@ enum Command {
     /// Wrap the value in brackets or quotes, which is what keeps the second word from
     /// falling back into the title:
     ///
-    ///   tui-do add "+[Dinner Places] Book a table"
+    ///   tui-do add '+[Dinner Places] Book a table'
     ///   tui-do add '+"Dinner Places" Book a table'
-    ///   tui-do add "*[needs review] Draft the memo"
+    ///   tui-do add '*[needs review] Draft the memo'
     ///
     /// Brackets are usually the easier of the two from a shell, because the shell strips
     /// quotes before tui-do ever sees them.
     ///
     /// EXAMPLES
     ///
-    ///   tui-do add "Call the VA *urgent !3 +Legal tomorrow"
-    ///   tui-do add "Renew the passport +[Life Admin] 27aug26"
-    ///   tui-do add "Water the plants every 3 days"
+    ///   tui-do add 'Renew the domain *urgent !3 +Admin tomorrow'
+    ///   tui-do add 'File the quarterly return +[Life Admin] 27aug26'
+    ///   tui-do add 'Water the plants every 3 days'
     // Verbatim, because the syntax above is a table and clap reflows a doc comment into
     // one paragraph by default -- which turns the whole of it into an unreadable run-on.
     #[command(verbatim_doc_comment)]

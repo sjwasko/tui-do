@@ -9,7 +9,7 @@ description: Create tasks in Vikunja from the shell with `tui-do add`, using qui
 server. One line in, no JSON, no ids to look up.
 
 ```sh
-tui-do add "Chase the Telnyx DID *urgent !4 +Infra tomorrow"
+tui-do add 'Chase the upstream ticket *urgent !4 +Infra tomorrow'
 ```
 
 That single call resolves a label, a priority, a project and a due date. Constructing the
@@ -41,7 +41,11 @@ Tokens may appear anywhere in the line and are removed from the title.
 | `due <date>` / `start <date>` | the same, said explicitly |
 | `every <n> <unit>` | repeat: `every 2 weeks`, `every month` |
 
-**Names with spaces go in brackets:** `tui-do add "+[Dinner Places] Book a table"`.
+**Quote with single quotes.** At an interactive bash prompt `!3` is history expansion,
+including inside double quotes, so the priority is eaten before tui-do sees it. Scripts and
+agents run non-interactively, where this is off, but single quotes are correct everywhere.
+
+**Names with spaces go in brackets:** `tui-do add '+[Dinner Places] Book a table'`.
 Brackets beat quotes from a shell, because the shell strips quotes before tui-do sees them.
 
 ## Flags that matter when nobody is watching

@@ -242,10 +242,19 @@ Wrap a name containing spaces in brackets or quotes — brackets are usually eas
 shell, which strips quotes before tui-do sees them:
 
 ```sh
-tui-do add "Renew the domain *urgent !3 +Admin tomorrow"
-tui-do add "File the quarterly return +[Life Admin] 27aug26"
-tui-do add "Water the plants every 3 days"
+tui-do add 'Renew the domain *urgent !3 +Admin tomorrow'
+tui-do add 'File the quarterly return +[Life Admin] 27aug26'
+tui-do add 'Water the plants every 3 days'
 ```
+
+**Use single quotes, not double.** At an interactive `bash` prompt, `!3` is history
+expansion — the shell replaces it with an earlier command *before* tui-do sees the line,
+inside double quotes as readily as outside them. The task is then created with no priority
+and a stray word in its title, and nothing reports an error, because as far as tui-do is
+concerned that is what you typed. Measured: `tui-do add "… !3 tomorrow"` at a bash prompt
+became `… exit tomorrow`. `zsh` expands `!` history references by default too. Single quotes
+suppress it, `fish` does not do this at all, and a non-interactive shell — a script, or an
+agent — has history expansion off regardless.
 
 ## From the shell
 
@@ -274,7 +283,7 @@ tui-do completions bash > ~/.local/share/bash-completion/completions/tui-do
 project and a due date:
 
 ```sh
-tui-do add "Chase the upstream ticket *urgent !4 +Infra tomorrow"
+tui-do add 'Chase the upstream ticket *urgent !4 +Infra tomorrow'
 ```
 
 Constructing the equivalent Vikunja request means knowing a project id, a label id, and that
