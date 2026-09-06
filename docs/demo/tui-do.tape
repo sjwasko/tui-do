@@ -16,7 +16,16 @@ Set FontSize 15
 Set Width 1440
 Set Height 810
 Set Padding 18
-Set Theme "Catppuccin Mocha"
+# Osaka Jade, the Omarchy theme, transcribed from
+# ~/.local/share/omarchy/themes/osaka-jade/colors.toml. VHS has no built-in for it, so the
+# palette is given inline. Verified by rendering and sampling the background pixel: #101c18
+# against the theme's #111c18, a one-step shift from GIF's 256-colour quantisation.
+#
+# One deliberate substitution: the theme's own `yellow` is #459451, which is a green. Using
+# it as ANSI yellow would render an overdue date and a high priority in green, which is the
+# opposite of what those colours are for -- so ANSI yellow takes the theme's `bright_yellow`
+# instead, and brightYellow takes `bright_foreground`. Every value is still Osaka Jade's.
+Set Theme { "name": "Osaka Jade", "background": "#111c18", "foreground": "#C1C497", "black": "#0c1512", "red": "#FF5345", "green": "#549e6a", "yellow": "#E5C736", "blue": "#509475", "magenta": "#D2689C", "cyan": "#2DD5B7", "white": "#C1C497", "brightBlack": "#53685B", "brightRed": "#db9f9c", "brightGreen": "#63b07a", "brightYellow": "#F7E8B2", "brightBlue": "#ACD4CF", "brightMagenta": "#75bbb3", "brightCyan": "#8CD3CB", "brightWhite": "#D6D5BC", "selection": "#32473B", "cursor": "#2DD5B7" }
 Set TypingSpeed 60ms
 
 # The demo profile. TUI_DO_DB keeps this away from the real store.
