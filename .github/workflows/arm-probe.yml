@@ -1,0 +1,30 @@
+# THROWAWAY. Probe only: can this tree cross-build for aarch64 musl?
+# Delete with the branch.
+name: arm probe
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  cross:
+    name: cross build (aarch64-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: install cross
+        run: cargo install cross --locked
+      - name: build
+        run: cross build --release --bin tui-do --target aarch64-unknown-linux-musl
+      - name: is it static, and is it arm?
+        run: |
+          f=target/aarch64-unknown-linux-musl/release/tui-do
+          ls -l "$f"
+          file "$f"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tui-do-arm-probe
+          path: target/aarch64-unknown-linux-musl/release/tui-do
