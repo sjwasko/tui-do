@@ -9,7 +9,7 @@ tui-do keeps your tasks in a local SQLite store and reconciles with the server i
 background. It starts instantly, works with the server unreachable, and never blocks a frame
 on a network call.
 
-> **Status: 1.0 release candidate.** `v1.0.0-rc.1` is published and is what the commands
+> **Status: 1.0 release candidate.** `v1.0.0-rc.2` is published and is what the commands
 > below install. Everything documented here works and is used daily against a real Vikunja;
 > [what the future holds](#what-the-future-holds) is set out rather than left to be
 > discovered.
@@ -58,7 +58,7 @@ Linux kernel — and the same file runs on Arch, Ubuntu, Debian, Fedora and olde
 alike. [Building from source](#building-from-source) is only needed to modify tui-do.
 
 ```sh
-tag=v1.0.0-rc.1
+tag=v1.0.0-rc.2
 arch=$(uname -m)          # x86_64 or aarch64
 base=https://github.com/sjwasko/tui-do/releases/download/$tag
 
