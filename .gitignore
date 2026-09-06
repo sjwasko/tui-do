@@ -25,3 +25,10 @@
 
 # Generated at release time by `cargo about`; never committed.
 THIRD-PARTY-LICENSES.md
+
+# Scratch analyses under md/. Not documentation -- tool output kept for reference,
+# and `md/ruflo-audit/` contains a live dev API token in plaintext. These were
+# ignored only by never being added, which a single `git add -A` would undo.
+/md/bloat-detector/
+/md/minify/
+/md/ruflo-audit/
