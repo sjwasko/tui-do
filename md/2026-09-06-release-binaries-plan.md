@@ -573,9 +573,20 @@ the spec, not a flag.
 
 - [ ] **Step 2: Install the rc on each host**
 
-Run the README's own install commands from Task 4, with `tag=v1.0.0-rc.1`, on **`laptop`**
-(x86_64), **`arm-host-1`** (aarch64), and the **PocketTerm35**. Using the README's commands rather
-than a scratch script is deliberate: it checks the instructions, not just the artifact.
+Run the README's install block **verbatim, with nothing edited**, on **`laptop`**
+(x86_64), **`arm-host-1`** (aarch64), and **`arm-host-2`** (aarch64, believed to be the
+PocketTerm35). Using the README's commands rather than a scratch script is deliberate: it
+checks the instructions, not just the artifact.
+
+This became possible on 2026-09-06, when the repository was made public and `README.md:45`
+was set to `tag=v1.0.0-rc.1` — the tag that actually exists. Before that the release URL
+answered 404 to anyone unauthenticated and `gh` is on none of these hosts, so the binary had
+to arrive by `scp`, which proved the artifact and not the instructions. **If you find
+yourself reaching for `scp` here, something has regressed** — the whole point of this step is
+that a stranger's commands work.
+
+`arm-host-1` was installed by `scp` on 2026-09-06 before the flip. Re-run it the proper way so all
+three hosts are evidence of the same thing.
 
 - [ ] **Step 3: Give each host a config before expecting it to reach anything**
 

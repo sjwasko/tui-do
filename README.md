@@ -6,10 +6,11 @@ tui-do keeps your tasks in a local SQLite store and reconciles with the server i
 background. It starts instantly, works with the server unreachable, and never blocks a
 frame on a network call.
 
-> **Status: usable, pre-1.0.** Everything documented below works and is used against a real
-> Vikunja daily. What it does not yet have is the full release checklist — a soak on each
-> supported distribution and a packaged build — and the feature gaps are listed under
-> [What is not there yet](#what-is-not-there-yet) rather than left to be discovered.
+> **Status: 1.0 release candidate.** Everything documented below works and is used against a
+> real Vikunja daily. `v1.0.0-rc.1` is published and is what the install commands below
+> fetch; 1.0.0 follows once it has been driven on each supported architecture. Feature gaps
+> are listed under [What is not there yet](#what-is-not-there-yet) rather than left to be
+> discovered.
 
 ## What it does
 
@@ -42,7 +43,7 @@ and older LTS releases alike, because it depends on no system libc.
 Pick the one matching `uname -m`: `x86_64` or `aarch64`.
 
 ```sh
-tag=v1.0.0
+tag=v1.0.0-rc.1
 arch=$(uname -m)          # x86_64 or aarch64
 base=https://github.com/sjwasko/tui-do/releases/download/$tag
 
@@ -93,14 +94,14 @@ reads the system trust store from.
 ### Build and install
 
 ```sh
-git clone https://prod-box.example.net:9443/swasko/tui-do.git
+git clone https://github.com/sjwasko/tui-do.git
 cd tui-do
 cargo build --release
 install -Dm755 target/release/tui-do ~/.local/bin/tui-do
 ```
 
-Over SSH instead, if you have a key on the Forgejo instance:
-`git clone ssh://git@prod-box.example.net:2222/swasko/tui-do.git`
+Over SSH instead, if you have a key on your GitHub account:
+`git clone git@github.com:sjwasko/tui-do.git`
 
 The first build fetches and compiles the whole dependency tree and takes a few minutes.
 Make sure `~/.local/bin` is on your `PATH`.
@@ -257,8 +258,8 @@ Wrap a name containing spaces in brackets or quotes — brackets are usually eas
 shell, which strips quotes before tui-do sees them:
 
 ```sh
-tui-do add "Call the VA *urgent !3 +Legal tomorrow"
-tui-do add "Renew the passport +[Life Admin] 27aug26"
+tui-do add "Renew the domain *urgent !3 +Admin tomorrow"
+tui-do add "File the quarterly return +[Life Admin] 27aug26"
 tui-do add "Water the plants every 3 days"
 ```
 
@@ -279,7 +280,7 @@ syncs at launch). After that, `--offline` works on a plane as advertised.
 label, a priority, a project and a due date:
 
 ```sh
-tui-do add "Chase the Telnyx DID *urgent !4 +Infra tomorrow"
+tui-do add "Chase the upstream ticket *urgent !4 +Infra tomorrow"
 ```
 
 Constructing the equivalent Vikunja request means knowing a project id, a label id, and
