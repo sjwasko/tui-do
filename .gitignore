@@ -55,3 +55,9 @@ __pycache__/
 /md/MANUAL-CHECKS2.md
 /md/MANUAL-CHECKS-BUGS.md
 /md/overview.md
+
+# Rendered demo media. The tape script is tracked and regenerates these; the output is
+# multi-megabyte binary that would sit in history forever.
+/docs/demo/*.gif
+/docs/demo/*.mp4
+/docs/demo/*.webm
