@@ -429,9 +429,9 @@ the binary.
 
 **Scratch files are deleted by whoever made them**, on this workstation, on a remote host,
 and in the working tree. `md/ruflo-audit/`, `md/bloat-detector/` and `md/minify/` are what
-happens otherwise — untracked and unignored for days, one of them holding a live dev API
-token that a single `git add -A` would have committed. They are ignored now; the habit is
-the actual fix.
+happens otherwise — untracked and unignored for days, and one of them held a credential that
+a single `git add -A` would have committed. They are ignored now; the habit is the actual
+fix.
 
 ## Platform policy
 

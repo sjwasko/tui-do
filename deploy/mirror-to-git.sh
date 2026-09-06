@@ -29,8 +29,8 @@ say() { echo "[mirror] $*"; }
 
 git rev-parse --git-dir >/dev/null 2>&1 || { say "$repo is not a git repository"; exit 1; }
 
-# A passphrase-free key does the pushing, so never sit at a prompt: under a
-# systemd timer there is nobody to answer it and the unit would hang, not fail.
+# Never sit at a prompt: under a systemd timer there is nobody to answer one and
+# the unit would hang rather than fail, which is the worse of the two outcomes.
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=15}"
 export GIT_TERMINAL_PROMPT=0
 

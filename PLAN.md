@@ -2,15 +2,17 @@
 
 ## Context
 
-`tui-do` is a fork-in-spirit of [cria](https://github.com/frigidplatypus/cria), a Rust/ratatui TUI client
-for [go-vikunja](https://github.com/go-vikunja). A patched copy of cria lives at `/home/swasko/code/cria`
-(the local fix: `/tasks/all` → `/tasks`). Upstream has been unresponsive for months to both issues and
-direct messages, so tui-do is a real fork, not a contribution track.
+`tui-do` is a fork-in-spirit of [cria](https://github.com/frigidplatypus/cria) by frigidplatypus, a
+Rust/ratatui TUI client for [go-vikunja](https://github.com/go-vikunja), which established the idea of a
+keyboard-driven Vikunja TUI along with its quick-add syntax and column-layout configuration. A checkout
+is kept alongside this one for reference, carrying a local fix (`/tasks/all` → `/tasks`).
 
-An audit of that codebase (14.4k LOC src, 5.4k LOC tests, 63 files) found the *domain* work is valuable
-but the *architecture* is not salvageable in place:
+tui-do is an independent implementation rather than a contribution track, because the changes it wants are
+architectural and cannot be made in place. Reading that codebase to decide what to keep produced the notes
+below; they are recorded because each one is a constraint tui-do is built to satisfy, and they are about
+this project's own design rather than a judgement of anyone else's:
 
-- `src/tui/app/state.rs:22` — `App` is a God object with ~100 fields, including **22 `show_*_modal` bools**
+- `src/tui/app/state.rs:22` — `App` carries ~100 fields, including **22 `show_*_modal` bools**
   paired with `Option<Modal>` values. No state machine; illegal states are fully representable.
 - `src/ui_loop.rs:16` — `run_ui` is a single ~790-line function with a 46-branch `if app.show_X` chain,
   **15** pointless `lock().await` → `drop()` → `lock().await` sequences, and `.await`ed network calls made
@@ -30,8 +32,7 @@ Since the target UX is *Vikunja-inspired* — i.e. the UI layer is being redesig
 code is exactly the code we were going to replace. What remains worth keeping is everything that **isn't**
 the UI.
 
-**Outcome:** a new `tui-do` repo at `/home/swasko/code/tui-do` with a local-first architecture where the
-render loop never touches I/O, built on current dependencies against a spec pulled from a real server,
+**Outcome:** a new `tui-do` repo with a local-first architecture where the render loop never touches I/O, built on current dependencies against a spec pulled from a real server,
 developed against an isolated dev instance so production task data is never at risk.
 
 ## Locked decisions
@@ -513,16 +514,14 @@ the queue would be a second client with no replay and no rollback.
 `docs.json` (stale — 22 paths and 18 definitions behind), the `VikunjaTask`/`Task` dual model,
 `src/tui/handlers.rs` + `src/tui/shortcuts.rs` (empty), `libterminal_capabilities.rlib`.
 
-## Note on cria's licensing
+## No code is carried across
 
-`LICENSE` was **never committed** in cria's entire git history (`git log --all --diff-filter=A` finds
-nothing), `Cargo.toml` has no `license` field, and `README.md:94` points at a file that doesn't exist. With
-upstream unresponsive for months, no grant is going to materialize.
+Nothing in this plan copies source from cria. Where the two projects overlap, tui-do implements the same
+*documented behaviour* from its own sources: the quick-add parser implements Vikunja's own published
+syntax, and the config is a YAML schema described in prose. Both are written from the spec and from tests,
+which is what every task below already calls for.
 
-This is handled, not blocking: the two files we carry across are independently derivable — the parser
-implements *Vikunja's own documented* quick-add syntax, and the config is a YAML schema documented in
-cria's own markdown. Both get written from the spec and the tests rather than copy-pasted, which is what
-the plan already calls for. tui-do ships `MIT OR Apache-2.0` with a README credit to cria as inspiration.
+tui-do ships `MIT OR Apache-2.0`, and credits cria as inspiration in the README.
 
 ## Verification
 

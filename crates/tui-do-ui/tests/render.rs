@@ -715,7 +715,7 @@ fn a_long_message_wraps_rather_than_losing_its_tail() {
     // message that says what to do about it was the part that disappeared. This one is
     // 155 characters and the diagnosis -- the path, and "No such file or directory" -- is
     // entirely in the third of it that used to be off the end.
-    const MESSAGE: &str = "Not syncing: config error in /home/swasko/.config/tui-do/token: \
+    const MESSAGE: &str = "Not syncing: config error in /home/someone/.config/tui-do/token: \
                            could not read the API token file: No such file or directory \
                            (os error 2)";
     let mut model = fixture((80, 24));
@@ -739,7 +739,7 @@ fn a_toast_never_swallows_the_list_it_is_reporting_on() {
     // and one task survive, and the header is never drawn over.
     let mut model = fixture((40, 6));
     model.status.toast = Some(Toast::error(
-        "Not syncing: config error in /home/swasko/.config/tui-do/token: could not read \
+        "Not syncing: config error in /home/someone/.config/tui-do/token: could not read \
          the API token file: No such file or directory (os error 2)",
     ));
     let drawn = draw(&model);

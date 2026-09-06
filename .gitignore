@@ -27,8 +27,13 @@
 THIRD-PARTY-LICENSES.md
 
 # Scratch analyses under md/. Not documentation -- tool output kept for reference,
-# and `md/ruflo-audit/` contains a live dev API token in plaintext. These were
-# ignored only by never being added, which a single `git add -A` would undo.
+# and it may contain credentials. These were ignored only by never being added,
+# which a single `git add -A` would undo.
 /md/bloat-detector/
 /md/minify/
 /md/ruflo-audit/
+
+# Python bytecode from the helper scripts under test-scripts/. A .pyc was tracked until
+# 2026-09-06; it embeds the absolute path it was compiled from and is regenerated anyway.
+__pycache__/
+*.pyc

@@ -9,24 +9,18 @@ against the prod URL without `--i-know-this-is-prod`.
 
 ## Versions
 
-Pinned to match production exactly, verified 2026-08-24 on `prod-box`:
-
-| | version |
-|---|---|
-| Vikunja | `vikunja/vikunja:2.5.0` |
-| Postgres | `postgres:18.4` |
-
-Keep these in lockstep with prod. A behaviour difference between dev and prod should
-never turn out to be a version artifact.
+Both images are pinned in `docker-compose.yml`. Keep them in lockstep with whatever
+production runs, and re-check after any upgrade there: a behaviour difference between dev
+and prod should never turn out to be a version artifact.
 
 ## First-time setup
 
-On `dev-box`, following the homelab convention: compose stacks under `/opt/stacks`,
-data on local disk under `/opt/appdata`, secrets in `*.env` at mode 600.
+On the dev host. Compose stack and data live under a root of your choosing; the paths
+below are the default, and secrets stay in `*.env` at mode 600.
 
 ```sh
-# 1. Create the directories. This is the one step that needs sudo -- dev-box
-#    requires a password for it, so run this yourself before deploying.
+# 1. Create the directories. This is the one step that needs sudo, so run it
+#    yourself before deploying rather than expecting a script to do it.
 sudo mkdir -p /opt/stacks/tui-do-dev /opt/appdata/tui-do-dev/{db,files}
 sudo chown -R "$USER:$USER" /opt/stacks/tui-do-dev /opt/appdata/tui-do-dev
 
@@ -44,8 +38,8 @@ docker compose up -d
 tailscale serve --bg --https 8443 http://127.0.0.1:3456
 ```
 
-Then open `https://dev-box.example.net:8443`, register the first account, and
-set `VIKUNJA_SERVICE_ENABLEREGISTRATION=false` in `vikunja.env` followed by
+Then open the dev instance's URL, register the first account, and set
+`VIKUNJA_SERVICE_ENABLEREGISTRATION=false` in `vikunja.env` followed by
 `docker compose up -d` to close registration.
 
 ## Where each script runs
@@ -102,28 +96,19 @@ the instance and reset in seconds.
 ./test-ubuntu.sh        # build + test in ubuntu:26.04
 ```
 
-Ubuntu 26.04 LTS is a tier-1 target alongside Omarchy, and no homelab host runs it
-(prod-box, spare-box and arm-host-1 are all 24.04.4), so it is exercised in a container. The two
-distributions diverge sharply on glibc — a green build on the Arch workstation does not
-imply a green build here.
+Ubuntu 26.04 LTS is a tier-1 target alongside Omarchy and no host here runs it, so it is
+exercised in a container. The two distributions diverge sharply on glibc — a green build on
+the Arch workstation does not imply a green build here.
 
 ## Layout notes
 
-`dev-box` had never adopted the homelab's `/opt/stacks` + `/opt/appdata` convention —
-neither directory existed before this stack — so step 1 above creates them. That is also
-the only step requiring elevation: `sudo` on `dev-box` prompts for a password, so it
-cannot run unattended. Everything after it runs as `swasko` (who is in the `docker`
-group, and is Tailscale's `OperatorUser`, so `tailscale serve` needs no sudo either).
+Step 1 above is the only step requiring elevation, which is why it is not in a script:
+it cannot run unattended. Everything after it runs as your own account, which needs to be
+able to reach Docker.
 
-Override the data root with `TUI_DO_DEV_ROOT` in `.env` if it should move.
-
-## Tailnet mappings
-
-Before this stack, `dev-box` carried three stale `tailscale serve` mappings left over
-from decommissioned services — `:443`→`3030` (Forgejo), `:8443`→`8787`, and
-`:8444`→`8089` — none of which had anything listening behind them. Deploying reclaims
-`:8443` for dev Vikunja and removes the other two, leaving one mapping that reflects
-reality.
+Override the data root with `TUI_DO_DEV_ROOT` in `.env` if it should move. Check what the
+host already serves on the port you are about to claim before deploying — reusing one that
+something else answers on is a confusing way to lose an afternoon.
 
 ## Getting the work off this machine
 
@@ -135,21 +120,18 @@ could disagree about what the truth is.
 
     local  --push-->  Forgejo  --Forgejo's push mirror, 8h-->  GitHub (private)
 
-| | |
-|---|---|
-| **Forgejo** | `https://prod-box.example.net:9443` — v15.0.7, tailnet only, proxying `127.0.0.1:3030` |
-| **git over ssh** | `ssh://git@prod-box.example.net:2222/swasko/tui-do.git` |
-| **GitHub** | `github.com/sjwasko/tui-do` — private, written only by Forgejo |
+`origin` is the Forgejo instance, reachable on the tailnet only; GitHub is written by
+Forgejo's mirror and by nothing else.
 
 The mirror is configured in the web UI under Settings → Repository → Mirror Settings,
-with an 8h interval and "sync when new commits are pushed" on. Forgejo's default mirror
-interval is already 8h, so nothing in `app.ini` needs changing.
+with an 8h interval and "sync when new commits are pushed" on — which is already Forgejo's
+default interval, so no server config needs changing.
 
-Forgejo shares the `prod-box` box with production Vikunja but is a different service on a
-different port. The read-only rule covers the Vikunja instance and its data, not the
-host; pushing git there is not a prod write.
+Forgejo shares a box with production Vikunja but is a different service on a different
+port. The read-only rule covers the Vikunja instance and its data, not the host; pushing
+git there is not a prod write.
 
-Push-to-create is disabled on this instance, so a repository has to exist before the
+Push-to-create may be disabled, in which case the repository has to exist before the
 first push will land.
 
 `tui-do-mirror.timer` runs the script every eight hours (`deploy/systemd/`, symlinked
