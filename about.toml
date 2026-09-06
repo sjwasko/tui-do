@@ -1,0 +1,28 @@
+# Which licences may appear in a shipped binary. Kept in step with `deny.toml`
+# deliberately: that file decides what may enter the tree, and this one decides what
+# is attributed when the tree is compiled into something we hand to a stranger. They
+# must not drift -- a licence allowed there and missing here fails the release.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+# Only what actually ships. The binary is Linux-only, so Windows and macOS
+# dependencies in the lockfile are not redistributed and must not be attributed as
+# though they were.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
+# A crate with no license field at all is a stop, not a warning.
+private = { ignore = true }
