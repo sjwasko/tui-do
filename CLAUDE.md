@@ -452,9 +452,14 @@ fix.
 
 ## Platform policy
 
-Linux only through GA — tested on Omarchy (Arch, this workstation) and Ubuntu 26.04 LTS (via
-`ubuntu:26.04` container). macOS is a post-GA port; there is a non-gating `cargo check` in CI
-purely to limit drift. Windows is answered with "use WSL" and is not a build target.
+Linux only through GA — tested on Omarchy (Arch, this workstation) and on Ubuntu **two
+ways**: `cargo test` in an `ubuntu:26.04` container in CI, and the hand-driven checks on
+24.04.4 LTS hardware, x86-64 and aarch64. The two releases are deliberate rather than a
+discrepancy to reconcile: the container proves the build against the newer LTS, and the
+hardware proves the shipped static binary against the LTS people are actually running.
+Anything claiming a single Ubuntu version is describing half the evidence. macOS is a
+post-GA port; there is a non-gating `cargo check` in CI purely to limit drift. Windows is
+answered with "use WSL" and is not a build target.
 
 Still write portably where it is free: paths via `dirs`, never cwd-relative writes,
 `rusqlite` with `bundled`. Platform-varying behavior (URL opening, markdown rendering,

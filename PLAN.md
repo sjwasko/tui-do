@@ -315,7 +315,8 @@ Kanban buckets, saved filters via the views API, table/Gantt. This is where "Vik
 
 ### GA bar (Linux)
 
-tui-do is GA when, on **both** Omarchy Quattro and Ubuntu 26.04 LTS:
+tui-do is GA when, on **both** Omarchy Quattro and Ubuntu LTS — 26.04 in the CI container,
+24.04.4 on the hardware the hand-driven checks run on:
 
 1. Phases 1–5 are complete and every gate below is green.
 2. A single static binary installs and runs with no system SQLite and no runtime surprises.

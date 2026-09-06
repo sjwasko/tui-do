@@ -412,8 +412,9 @@ test any of it are very welcome.
 
 ## Platform support
 
-**Linux is the only supported platform.** Developed on Omarchy (Arch), with Ubuntu 26.04 LTS
-as the second supported target.
+**Linux is the only supported platform.** Developed on Omarchy (Arch), with Ubuntu as the
+second supported target — built and tested against 26.04 in CI, and hand-driven on 24.04 LTS
+hardware, on both x86-64 and aarch64.
 
 - **macOS** — a planned port. It may build today; it is not tested or supported.
 - **Windows** — not a target. Use [WSL](https://learn.microsoft.com/windows/wsl/install) and
