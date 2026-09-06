@@ -31,11 +31,40 @@ frame on a network call.
 ## Installing
 
 tui-do runs as a single binary with nothing to install beside it — SQLite is compiled in,
-and the only external program it ever calls is `xdg-open`, when you press `o`. **Building it
-is a different matter:** SQLite is compiled *from source*, so a C toolchain is required even
-though the result needs none.
+and the only external program it ever calls is `xdg-open`, when you press `o`.
 
-There are no published packages yet.
+### A prebuilt binary
+
+Every release ships a **statically linked** binary. It needs no Rust, no C toolchain and no
+system SQLite — only a Linux kernel — and the same file runs on Arch, Ubuntu, Debian, Fedora
+and older LTS releases alike, because it depends on no system libc.
+
+Pick the one matching `uname -m`: `x86_64` or `aarch64`.
+
+```sh
+tag=v1.0.0
+arch=$(uname -m)          # x86_64 or aarch64
+base=https://github.com/sjwasko/tui-do/releases/download/$tag
+
+curl -fLO "$base/tui-do-$tag-$arch-unknown-linux-musl.tar.gz"
+curl -fLO "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+
+tar -xzf "tui-do-$tag-$arch-unknown-linux-musl.tar.gz"
+install -Dm755 "tui-do-$tag-$arch-unknown-linux-musl/tui-do" ~/.local/bin/tui-do
+```
+
+`sha256sum --check` is worth the extra line: it catches a truncated download, which
+otherwise shows up as a confusing crash rather than as the incomplete file it is.
+
+There is **no first-run wizard yet** — see [Configuring](#configuring) before the first
+launch.
+
+### Building from source
+
+Only needed if you want to modify tui-do, or run on an architecture no release covers.
+**SQLite is compiled from source**, so a C toolchain is required even though the resulting
+binary needs none.
 
 ### Build prerequisites
 
