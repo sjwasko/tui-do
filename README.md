@@ -70,11 +70,40 @@ tar -xzf "tui-do-$tag-$arch-unknown-linux-musl.tar.gz"
 install -Dm755 "tui-do-$tag-$arch-unknown-linux-musl/tui-do" ~/.local/bin/tui-do
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. The only external program tui-do ever calls is
-`xdg-open`, when you press `o`.
-
 The `sha256sum --check` line is worth keeping: it catches a truncated download, which
-otherwise shows up as a confusing crash rather than as the incomplete file it is.
+otherwise shows up as a confusing crash rather than as the incomplete file it is. The only
+external program tui-do ever calls is `xdg-open`, when you press `o`.
+
+### Putting `~/.local/bin` on your `PATH`
+
+Many distributions add it already when the directory exists, so check before changing
+anything:
+
+```sh
+command -v tui-do
+```
+
+A path means you are done. Nothing means your shell cannot find it yet — add it, then open
+a new terminal:
+
+```sh
+# bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+# zsh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+
+# fish -- persistent, and takes effect immediately
+fish_add_path ~/.local/bin
+```
+
+`fish_add_path` needs fish 3.2 or newer, and is preferred over a `set -x PATH` line in
+`config.fish` because it records the directory once — re-running it does not stack
+duplicates. On older fish, add `set -gx PATH $HOME/.local/bin $PATH` to `config.fish`
+instead.
+
+If you use bash and it still is not found in a *login* shell — over SSH, say — your system
+reads `~/.profile` rather than `~/.bashrc` for those; add the same `export` line there too.
 
 ## Set up
 
