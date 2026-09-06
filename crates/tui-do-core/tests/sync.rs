@@ -2333,3 +2333,176 @@ async fn an_aborted_push_reports_that_it_is_no_longer_pushing() {
          forever for a push that is already gone"
     );
 }
+
+#[tokio::test]
+async fn a_retried_task_create_adopts_the_one_the_lost_response_made() {
+    // The task half of `a_retried_label_create_adopts_the_one_the_lost_response_made`,
+    // and it was missing while the label half existed.
+    //
+    // Driven on 2026-09-06 against dev, running the reconnect check: the container was
+    // paused mid-create, the client timed out, the container was unpaused -- which let the
+    // frozen request finish and create the task -- and the retry created it a second time.
+    // Ids 3915 and 3916, six seconds apart, identical titles. 3916 was adopted and carried
+    // the priority and the label queued behind it; 3915 was left on the server with
+    // neither, belonging to nobody.
+    //
+    // A title is no more unique than a label's, and `PUT /projects/{id}/tasks` says nothing
+    // about whether it has seen this body before, so a retry has to look first.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .and(query_param("s", "whiskey"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![task_json(3915, "whiskey")]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // No PUT mock: a second create is the bug, not a fallback.
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+    // One failed attempt is what arms the read, exactly as it does for a label.
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    assert!(
+        store.task(provisional).await.unwrap().is_none(),
+        "the provisional row outlived the adoption"
+    );
+    let stored = store.task(TaskId(3915)).await.unwrap();
+    assert!(
+        stored.is_some(),
+        "the retry did not adopt the task its own lost response made"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_retried_task_create_whose_read_finds_nothing_still_creates_it() {
+    // The other half, and what stops the read above from swallowing a real create. When
+    // the first attempt never reached the server -- a connect timeout, a DNS failure --
+    // there is nothing of ours to find, and the retry must go on and make the task.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .and(query_param("s", "whiskey"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(Vec::<serde_json::Value>::new()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(77, "whiskey")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    assert!(store.task(TaskId(77)).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_retried_task_create_does_not_adopt_a_task_the_store_already_knows() {
+    // The guard that makes the read safe, and the reason the task path needs one the label
+    // path does not. A todo list may well hold the same title twice -- "water the plants"
+    // last month and again today -- and adopting the older one would quietly merge a new
+    // task into it, taking the priority and labels queued behind the create with it.
+    //
+    // Our own lost create is by construction a task this box has no row for: the store
+    // still holds the provisional id. So anything the store can already name is older than
+    // this attempt and is not ours to take.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .and(query_param("s", "water the plants"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![task_json(500, "water the plants")]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The create must still happen. Without the store check this mock goes unused and the
+    // new task silently becomes id 500.
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(501, "water the plants")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    // The older task, already synced and sitting in the store.
+    store
+        .upsert_tasks(vec![task(500, "water the plants")])
+        .await
+        .unwrap();
+
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "water the plants")),
+        })
+        .await
+        .unwrap();
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    assert!(
+        store.task(TaskId(501)).await.unwrap().is_some(),
+        "the new task was swallowed by the one that was already there"
+    );
+    assert!(store.task(TaskId(500)).await.unwrap().is_some());
+}

@@ -625,12 +625,77 @@ impl Sync {
         Ok(Ok(()))
     }
 
+    /// Create the task, unless this box has already created it and lost the answer.
+    ///
+    /// `PUT /projects/{id}/tasks` says nothing about whether it has seen this body before:
+    /// it answers `201` and a second task. So a create that has already failed once looks
+    /// before it writes, exactly as [`Mutation::CreateLabel`] does and for the same reason.
+    /// The task path simply never had it — BUG-3 fixed the *quit* that produced a replay
+    /// and left the replay itself undefended.
+    ///
+    /// **Confirmed by driving it, 2026-09-06.** Dev's container was paused mid-create; the
+    /// client timed out; unpausing let the frozen request finish and make the task; the
+    /// retry made it again. Ids 3915 and 3916, six seconds apart, identical titles — 3916
+    /// adopted and carrying the priority and label queued behind it, 3915 left on the
+    /// server belonging to nobody.
+    ///
+    /// **Gated on the entry having already failed**, because a first attempt has nothing of
+    /// its own to find and everything it could adopt belongs to somebody else.
+    ///
+    /// **Three things narrow what may be adopted**, and each rules out a way of stealing a
+    /// task that is not ours:
+    ///
+    /// - the title matches byte for byte (`Client::tasks_named`), because a retry re-sends
+    ///   the same bytes;
+    /// - the project matches, because the same title in another project is another task;
+    /// - **the local store has never heard of it**, which is the one that matters. Our own
+    ///   lost create is by construction a task this box has no row for — it still holds the
+    ///   provisional id. Anything the store already knows is older than this attempt, and
+    ///   adopting it would quietly merge a new task into an existing one.
+    ///
+    /// A store failure means the third check cannot be made, so nothing is adopted and the
+    /// create goes ahead: a duplicate is visible and deletable, a wrong adoption is
+    /// neither. That is the same fail-safe direction `Client::labels_named` documents.
+    async fn create_or_adopt(
+        &self,
+        entry: &OutboxEntry,
+        task: &Task,
+    ) -> std::result::Result<Task, ApiError> {
+        if entry.is_failing() {
+            for candidate in self.client.tasks_named(&task.title).await? {
+                if candidate.project_id != task.project_id {
+                    continue;
+                }
+                match self.store.task(candidate.id).await {
+                    Ok(None) => {
+                        tracing::warn!(
+                            id = candidate.id.get(),
+                            title = %task.title,
+                            "adopting the task a lost response already created"
+                        );
+                        return Ok(candidate);
+                    }
+                    Ok(Some(_)) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            id = candidate.id.get(),
+                            %error,
+                            "cannot tell whether this task is ours; creating rather than adopting"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        self.client.create_task(task.project_id, task).await
+    }
+
     /// Make the request, and nothing else.
     async fn transmit(&self, entry: &OutboxEntry) -> std::result::Result<Sent, ApiError> {
         Ok(match &entry.mutation {
-            Mutation::CreateTask { task } => Sent::Created(Box::new(
-                self.client.create_task(task.project_id, task).await?,
-            )),
+            Mutation::CreateTask { task } => {
+                Sent::Created(Box::new(self.create_or_adopt(entry, task).await?))
+            }
             Mutation::UpdateTask { before, after } => {
                 // Read the server's current copy and replay the user's edit onto it,
                 // rather than sending a task that may have been read minutes ago.

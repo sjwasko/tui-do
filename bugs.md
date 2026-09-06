@@ -888,6 +888,69 @@ parser swap.
 replace it. The advisory was real, the severity assessment was right, and the recommended
 remedy would have left the tree larger than deleting four lines did.
 
+### ~~BUG-19~~ — FIXED — Critical — a retried task create makes a second task
+
+**Found by driving `md/MANUAL-CHECKS2.md` H2 on 2026-09-06**, the reconnect check that does
+*not* change the URL — and it was nearly passed. The two tasks looked right until the last
+two rows were compared: same title, one carrying the priority and label, one carrying
+nothing.
+
+Dev ids **3915** and **3916**, `Whiskey (used to taste good!)`, created six seconds apart.
+
+**The sequence**, which is an ordinary reconnect and not a contrived one:
+
+1. `docker pause` on the dev container. `a` creates a task; the create queues against a
+   provisional id.
+2. The push fires and hangs inside the frozen container. The client times out — a transport
+   error, correctly **not** permanent — so the entry is deferred with `attempts = 1`.
+3. Priority and a label are set. Both queue *behind* the create, blocked by subject.
+4. `docker unpause`. The server thaws and **finishes the request it was holding** → task
+   **3915**, whose response nobody is listening for any more.
+5. `R` retries the create → task **3916**. The store adopts 3916, so the priority and the
+   label replay onto it, landing inside the same second — which is why `created == updated`
+   on 3916 and why only it carries them.
+6. **3915 is an orphan**: on the server, belonging to nobody, invisible locally until the
+   next full pull drags it back.
+
+**Root cause — `sync/mod.rs:631`.** `Mutation::CreateTask` called `create_task`
+unconditionally. No `is_failing()` gate, no read-before-write, no reconcile of any kind —
+where `Mutation::CreateLabel`, forty lines below, has all three and twenty lines of comment
+about this exact hazard. **The protection was built for labels and never extended to
+tasks**, and the entry here *was* failing, so the label-shaped guard would have caught it.
+
+**This is not BUG-3, and BUG-3's write-up is why it survived.** That entry said the reconcile
+was "gated on `is_failing()`, which is false at zero attempts, [so] it is skipped" — which
+describes a guard that does not exist on the task path. The 2026-09-01 handoff caught the
+error ("`CreateTask` had **no** replay guard at all") and the correction never reached the
+code. BUG-3's fix closed the *quit* path by never producing the replay; a lost response and
+a legitimate retry are a different trigger and were left undefended.
+
+**Fixed 2026-09-06**, test-first, by giving the task path the label path's shape:
+`Client::tasks_named` plus `Sync::create_or_adopt`. Three things narrow what may be adopted,
+and the third is the one the label path does not need:
+
+- **byte-exact title**, not the case fold `labels_named` uses — a retry re-sends identical
+  bytes, and folding would only widen this to titles somebody else wrote;
+- **the same project**;
+- **the local store has never heard of it.** Our own lost create is by construction a task
+  this box has no row for, because it still holds the provisional id. Anything the store can
+  already name is older than this attempt. Without this, a todo list holding "water the
+  plants" from last month would have the new one silently merged into it, taking the
+  priority and labels queued behind the create with it.
+
+A store failure means that third check cannot be made, so nothing is adopted and the create
+proceeds: a duplicate is visible and deletable, a wrong adoption is neither.
+
+Three tests. `a_retried_task_create_adopts_the_one_the_lost_response_made` failed before the
+change by going straight to `PUT`; `..._whose_read_finds_nothing_still_creates_it` stops the
+read swallowing a real create; and `..._does_not_adopt_a_task_the_store_already_knows` was
+**verified non-vacuous** — removing only the store check fails it with *"the new task was
+swallowed by the one that was already there"* while the other two still pass.
+
+**Still open, unchanged from BUG-3:** SIGKILL. Nothing runs on SIGKILL and the reconcile only
+arms once an attempt has been recorded, so a create killed mid-flight can still be re-sent on
+the next launch. Closing that needs the outbox to record "handed to the server" durably.
+
 ---
 
 ## Minor
