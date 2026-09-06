@@ -404,6 +404,35 @@ export with `deploy/seed-from-prod.sh` (which reads prod and writes only to dev)
 integration tests refuse to run unless `TUI_DO_TEST_URL` points at dev. Do not weaken either
 guard to make something pass.
 
+## Driving another box by hand
+
+The fleet is hand-driven constantly — the hardware checks, the offline checks, an rc
+install — and one thing about it fails every single time.
+
+**Never hand the user multi-line shell content to paste into a remote terminal.** It
+arrives mangled. Measured twice within minutes on 2026-09-06 while installing
+`v1.0.0-rc.1` on `arm-host-1`: a `cat > config.yaml <<'EOF'` block came through with every
+line indented, so the closing `EOF` no longer matched its delimiter, bash sat at the `>`
+continuation prompt, and `^C` aborted the command *before it ran* — leaving no file and
+an error identical to the one being fixed. The `printf` written to avoid the heredoc then
+lost a `\n` and gained a stray `s`, collapsing `url:` and `token_file:` onto one line.
+
+So: **move the file, do not retype it.** `scp` from a box that already has a working one
+copies something already proven to parse, and it is one short line with nothing in it to
+corrupt — that is what worked, for both the token and the config. Where something must be
+typed, keep it to one short line, no escape sequences, no leading whitespace, and follow
+it with a `cat` so what actually landed is visible before anything depends on it.
+
+A mangled config does at least fail loudly, because `deny_unknown_fields` rejects what it
+does not recognise. Say so when handing one over: it means a parse error is the paste, not
+the binary.
+
+**Scratch files are deleted by whoever made them**, on this workstation, on a remote host,
+and in the working tree. `md/ruflo-audit/`, `md/bloat-detector/` and `md/minify/` are what
+happens otherwise — untracked and unignored for days, one of them holding a live dev API
+token that a single `git add -A` would have committed. They are ignored now; the habit is
+the actual fix.
+
 ## Platform policy
 
 Linux only through GA — tested on Omarchy (Arch, this workstation) and Ubuntu 26.04 LTS (via

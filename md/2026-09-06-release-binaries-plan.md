@@ -577,7 +577,32 @@ Run the README's own install commands from Task 4, with `tag=v1.0.0-rc.1`, on **
 (x86_64), **`arm-host-1`** (aarch64), and the **PocketTerm35**. Using the README's commands rather
 than a scratch script is deliberate: it checks the instructions, not just the artifact.
 
-- [ ] **Step 3: Prove each one reaches the server**
+- [ ] **Step 3: Give each host a config before expecting it to reach anything**
+
+There is no first-run wizard and no config is written for you, so a freshly installed host
+stops with `could not read …/config.yaml: No such file or directory`. That is documented
+behaviour, not a finding — but this task did not say to do it, and on 2026-09-06 `arm-host-1`
+read as a failure twice because of it.
+
+Copy a known-good config and token rather than typing them; see **Driving another box by
+hand** in `CLAUDE.md` for why a pasted heredoc will not survive the trip.
+
+```bash
+scp workstation:~/.config/tui-do/config.yaml ~/.config/tui-do/config.yaml
+scp workstation:~/.config/tui-do/token       ~/.config/tui-do/token
+chmod 600 ~/.config/tui-do/token
+cat ~/.config/tui-do/config.yaml
+```
+
+`workstation`'s config already points at **dev** and its `token_file` is an absolute path under
+the same username and home, so it needs no editing on any of these hosts. `chmod` matters
+because `scp` without `-p` creates the file under the destination's umask: tui-do notices a
+world-readable token but reports it through `tracing::warn!` to a subscriber the CLI never
+installs, so nothing would be printed either way.
+
+Expected from `cat`: `url:` and `token_file:` on separate lines.
+
+- [ ] **Step 4: Prove each one reaches the server**
 
 On each host, against **dev**:
 
@@ -589,18 +614,18 @@ tui-do add "rc probe from $(hostname) - delete me"
 Expected: the version, then `Sent.` — which is DNS, TLS, auth and a write. `Queued.` instead
 means it could not reach the server; that is a failure to investigate, not a pass.
 
-- [ ] **Step 4: Confirm server-side, then clean up**
+- [ ] **Step 5: Confirm server-side, then clean up**
 
 In the dev web UI, confirm one task per host, then delete them. A client reporting its own
 success is not evidence.
 
-- [ ] **Step 5: Record it**
+- [ ] **Step 6: Record it**
 
 Add a row to the "What has been driven, and when" table in `md/MANUAL-CHECKS2.md` naming each
 host, its architecture, and the result. If the PocketTerm35 turned out to be 32-bit, record
 that as the finding.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add md/MANUAL-CHECKS2.md
