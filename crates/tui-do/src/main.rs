@@ -305,8 +305,9 @@ fn guard_production(url: &str, acknowledged: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     bail!(
-        "{url} is the production server, which is read-only by policy.\n\
-         Point server.url at the dev instance, or pass --i-know-this-is-prod if you mean it."
+        "{url} is the production server, holding real task data.\n\
+         Pass --i-know-this-is-prod if you mean it, or point server.url at the dev instance.\n\
+         Nothing automated may write here: tests, seeding and resets all refuse this host."
     )
 }
 
