@@ -57,7 +57,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-7, BUG-9, SEC-2 |
+| **Decide, then fix** | BUG-7, BUG-9 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-11, BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -863,7 +863,7 @@ older version left permissive. `the_store_is_not_readable_by_other_accounts` fai
 `0o055` on the directory before the change, and asserts every entry in the directory rather
 than only the database, so restricting the file alone would not satisfy it.
 
-### SEC-2 — Minor — `tui-do add` never says the API token is readable by other accounts
+### ~~SEC-2~~ — FIXED — Minor — `tui-do add` never said the API token is readable by other accounts
 
 Filed beside SEC-1 rather than under Minor because this is where anyone looking for a
 credential finding will look. **It is a missing warning, not an exposure tui-do creates**:
@@ -903,10 +903,19 @@ returned `Vec`. Two files can be exposed at once — a permissive config carryin
 line behind `credential_problem` is commented and deliberate; discarding the rest of the
 list is not obviously either way.
 
-**Shape of a fix, not yet decided.** Call `exposed_credential_files` in `run_add` and print
-each entry to stderr before doing the work — stderr is free there, and `Sent.` stays on
-stdout so nothing piping the output changes meaning. A test would assert that a `0o644`
-token file produces a line on stderr from the add path, which fails today.
+**Fixed 2026-09-06**, test-first, reusing the existing helper rather than growing a second
+way to decide what counts as exposed. `report_exposed_credentials` in `main.rs` prints every
+entry to **stderr** — not just the first, which is all a toast can carry — and `run_add`
+calls it after the production guard. `Sent.` stays alone on stdout, so anything reading that
+output is unaffected. `the_add_path_says_when_a_credential_file_is_readable_by_others` fails
+to compile against the tree before the change and asserts both halves: a `0o644` token file
+is named with its remedy, and a `0o600` one produces no output at all.
+
+**The `.first()` in `runtime/mod.rs:121` is left alone, deliberately.** A toast is one line
+and a startup that stacks two of them buries the one that matters; the interface has always
+been the place where an exposure is noticed casually rather than acted on. The add path is
+now the one that reports the full list, which is the right split — it is also the path a
+script or an agent runs, where the output is read rather than glanced at.
 
 ### ~~DEP-1~~ — FIXED — the only live advisory was against a dependency nothing used
 

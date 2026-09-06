@@ -325,6 +325,29 @@ fn host_of(url: &str) -> Option<String> {
     Some(host.trim_end_matches('.').to_string())
 }
 
+/// Say, on stderr, which credential files other accounts on this machine can read.
+///
+/// SEC-2. `Config::exposed_credential_files` has been able to answer this all along and the
+/// interface has always asked -- `runtime::run` toasts it at startup. The add path never did,
+/// so a host driven entirely through `tui-do add`, which is what the README recommends for
+/// agent use, was never told. Found on 2026-09-06 installing the rc on `arm-host-1`: `scp` without
+/// `-p` creates the destination under the *receiving* account's umask rather than carrying
+/// `0o600` across, and `add` reached the server, printed `Sent.` and said nothing.
+///
+/// The same helper the interface uses, deliberately -- a second way of deciding what counts
+/// as exposed is a second thing to keep true. Every entry is printed rather than only the
+/// first, which is what a toast is limited to: an inline token in a permissive config and a
+/// permissive token file are different fixes, and naming one hides the other.
+///
+/// Goes to stderr so `Sent.` keeps stdout to itself and anything reading that output is
+/// unaffected. Failures to write are dropped: a warning that cannot be printed is not a
+/// reason to refuse to add a task.
+fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut impl std::io::Write) {
+    for problem in config.exposed_credential_files(config_path) {
+        let _ = writeln!(out, "warning: {problem}");
+    }
+}
+
 /// Add a task from the command line.
 fn run_add(
     args: &AddArgs,
@@ -335,6 +358,7 @@ fn run_add(
     let config =
         Config::load(&path).with_context(|| format!("could not read {}", path.display()))?;
     guard_production(&config.server.url, acknowledged)?;
+    report_exposed_credentials(&config, &path, &mut std::io::stderr());
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -676,6 +700,54 @@ mod tests {
                 "the config carrying the token is readable by others: {mode:o}"
             );
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SEC-2: `tui-do add` never said a credential file was readable by other accounts.
+    ///
+    /// `Config::exposed_credential_files` has answered this all along, and the interface has
+    /// always asked -- `runtime::run` toasts it at startup. The add path did not, so a host
+    /// driven entirely through `tui-do add` -- which is what the README recommends for agent
+    /// use -- was never told. Found on 2026-09-06 installing the rc on `arm-host-1`, where `scp`
+    /// without `-p` had created the token under the receiving account's umask: `add` reached
+    /// the server, printed `Sent.` and said nothing at all.
+    #[cfg(unix)]
+    #[test]
+    fn the_add_path_says_when_a_credential_file_is_readable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("tui-do-sec2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.yaml");
+        let token_path = dir.join("token");
+
+        std::fs::write(&token_path, "tk_secret\n").unwrap();
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let config = Config::from_yaml(&format!(
+            "server:\n  url: https://vikunja.example\n  token_file: {}\n",
+            token_path.display()
+        ))
+        .unwrap();
+
+        let mut out = Vec::new();
+        report_exposed_credentials(&config, &config_path, &mut out);
+        let printed = String::from_utf8(out).unwrap();
+        assert!(
+            printed.contains(&token_path.display().to_string()),
+            "the exposed token file was not named: {printed:?}"
+        );
+        assert!(
+            printed.contains("chmod 600"),
+            "no remedy offered: {printed:?}"
+        );
+
+        // And a token only its owner can read is not worth a word.
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut quiet = Vec::new();
+        report_exposed_credentials(&config, &config_path, &mut quiet);
+        assert!(quiet.is_empty(), "noise on a private token: {quiet:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
