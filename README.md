@@ -14,6 +14,26 @@ on a network call.
 > [what the future holds](#what-the-future-holds) is set out rather than left to be
 > discovered.
 
+> [!WARNING]
+> **Back up your Vikunja data before you use this.** tui-do is a release candidate and it
+> writes to your real server: it creates, edits, completes and **deletes** tasks, and every
+> sync reconciles your local copy against what the server holds.
+>
+> Undo (`u`) covers most of what you do from the interface, and is worth knowing the limits
+> of. **Undoing a delete re-creates the task with a new id, so its comments and attachments
+> do not come back** — Vikunja has no undelete. Creating a label cannot be undone at all.
+> And on a genuine conflict, where you and another client have changed the same field, your
+> value wins and overwrites theirs by design.
+>
+> Take an export first — Vikunja can export your account's data from your user settings —
+> and keep it until you trust this. **The software comes with no warranty of any kind, and
+> the authors accept no liability for lost or damaged data.** The formal terms are in
+> [License](#license); this paragraph is the plain-English version.
+>
+> The local store at `~/.local/share/tui-do/tui-do.db` is disposable — delete it and the
+> next run re-syncs. What is worth protecting is what lives on the server. Open issues are
+> listed in [`bugs.md`](bugs.md).
+
 ## What it does
 
 - **Reads instantly and works offline.** Every read is answered by the local store, so the
