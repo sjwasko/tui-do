@@ -18,7 +18,7 @@ malformed input the smoke test could construct.
 ## How to drive these by hand
 
 **The code snippets below are for whoever fixes each bug. They are not the test procedure.**
-`md/MANUAL-CHECKS-BUGS.md` has the hand-driven version — what to press, what a pass looks
+`md/MANUAL-CHECKS-BUGS.md` (kept out of the repository) has the hand-driven version — what to press, what a pass looks
 like, and what a fail looks like — in the same shape as `md/MANUAL-CHECKS2.md`.
 
 One correction recorded there and worth repeating here, because it was found by driving it:

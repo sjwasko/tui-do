@@ -591,7 +591,7 @@ async fn writes_use_the_verbs_the_spec_declares() {
     // Vikunja creates with PUT and updates with POST. Each mock matches one exact method
     // and path and expects exactly one hit, so sending the conventional-but-wrong verb
     // fails the test rather than surfacing as a 405 at runtime, which is how the same
-    // mistake reached production in `deploy/seed-from-prod.sh`.
+    // mistake reached production in the deploy kit's seed script.
     //
     // These verbs are what the *server* accepts, which is not always what the spec
     // documents: `spec/vikunja.json` says `put /labels/{id}` and the server answers 405

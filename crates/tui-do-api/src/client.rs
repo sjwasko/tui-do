@@ -1337,24 +1337,24 @@ mod tests {
 
     #[test]
     fn the_dev_server_url_resolves_as_expected() {
-        let client = client("https://dev-box.example.net:8443");
+        let client = client("https://vikunja.example.com");
         assert_eq!(
             client.resolve(endpoints::TASKS, &[]).unwrap().as_str(),
-            "https://dev-box.example.net:8443/api/v1/tasks"
+            "https://vikunja.example.com/api/v1/tasks"
         );
         assert_eq!(
             client
                 .resolve(endpoints::TASK, &[("id", "42")])
                 .unwrap()
                 .as_str(),
-            "https://dev-box.example.net:8443/api/v1/tasks/42"
+            "https://vikunja.example.com/api/v1/tasks/42"
         );
         assert_eq!(
             client
                 .resolve(endpoints::VIEW_TASKS, &[("id", "3"), ("view", "7")])
                 .unwrap()
                 .as_str(),
-            "https://dev-box.example.net:8443/api/v1/projects/3/views/7/tasks"
+            "https://vikunja.example.com/api/v1/projects/3/views/7/tasks"
         );
     }
 

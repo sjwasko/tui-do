@@ -15,24 +15,45 @@ mod runtime;
 /// What a redacted token is replaced with when a config is printed.
 const REDACTED: &str = "<redacted — the real token is written to the file>";
 
-/// Hosts that are the production instance.
+/// Identities of the production instance, as digests rather than names.
 ///
 /// Mirrors `tui-do-api`'s live-test guard deliberately: prod holds real task data, and a
 /// client pointed at it by a stale config would happily write. The flag exists so the
 /// answer is "yes, I meant it" rather than "there was no way to say no".
-const PROD_HOSTS: &[&str] = &["prod-box"];
-
-/// Addresses that are the production instance.
 ///
-/// A hostname is not the only way to name a machine, and the guard used to check only the
-/// name. A config pointing at `https://203.0.113.7:8443` reached exactly the same server
+/// A hostname is not the only way to name a machine, and this guard used to check only the
+/// name. A config pointing at production *by IP address* reached exactly the same server
 /// with exactly the same data and no guard at all — found on 2026-08-31 and recorded as
-/// BUG-6. Both of prod's addresses are listed because both route to it: the tailnet one from
-/// anywhere on the tailnet, the LAN one from the house.
+/// BUG-6. Both of prod's addresses are covered because both route to it: the tailnet one
+/// from anywhere on the tailnet, the LAN one from the house.
 ///
-/// These are addresses on a private tailnet and a home LAN. They are not secrets and they
-/// resolve to nothing from outside it.
-const PROD_ADDRS: &[&str] = &["203.0.113.7", "192.0.2.19"];
+/// **These are digests so the repository does not publish the fleet's naming, and that is
+/// obfuscation rather than secrecy.** A hostname is low-entropy and a digest of one falls
+/// to a dictionary attack in seconds. What it buys is that the names are not greppable, not
+/// indexed by code search and not readable at a glance, which is the whole of the
+/// requirement. Anything that needed to be secret would not be in a public repository.
+const PROD_HOST_DIGESTS: &[u64] = &[0xd46d_34ba_49c7_e934];
+
+/// The same machine, by address.
+const PROD_ADDR_DIGESTS: &[u64] = &[0xf44a_8a55_290f_bec7, 0xe71f_ea92_f3dc_2f65];
+
+/// FNV-1a, 64-bit.
+///
+/// A non-cryptographic hash on purpose. Hashing a hostname is obfuscation whichever
+/// function is used, so the choice is between a dependency that implies a security property
+/// this cannot have, and six lines that imply nothing. It is `const` so the digests above
+/// can be checked against a literal at compile time in a test.
+const fn digest(value: &str) -> u64 {
+    let bytes = value.as_bytes();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        i += 1;
+    }
+    hash
+}
 
 /// Command-line interface.
 #[derive(Debug, Parser)]
@@ -299,21 +320,45 @@ fn guard_production(url: &str, acknowledged: bool) -> anyhow::Result<()> {
 /// `prod-box` and `prod-box.example.net` are caught while `prod-box-notreally.example.com`
 /// is not. The port and the path never take part.
 fn names_production(url: &str) -> bool {
+    matches_any(url, PROD_HOST_DIGESTS, PROD_ADDR_DIGESTS)
+}
+
+/// Whether `url` names a host in `hosts` or an address in `addrs`, comparing digests.
+///
+/// Split out from [`names_production`] so the matching rules can be tested against
+/// fabricated hosts. Testing them against the real ones would put back exactly the names
+/// the digests exist to keep out of the source.
+///
+/// A name matches when it *is* one of `hosts` or when its **first label** is, so both
+/// `prod-box` and `prod-box.example.net` are caught while `prod-box-notreally.example.com`
+/// is not. The port and the path never take part.
+fn matches_any(url: &str, hosts: &[u64], addrs: &[u64]) -> bool {
     let Some(host) = host_of(url) else {
-        // Unparseable. The guard cannot do better than the old test here, and waving an
-        // unreadable URL through would be a worse answer than a false positive.
-        let lowered = url.to_ascii_lowercase();
-        return PROD_HOSTS.iter().any(|prod| lowered.contains(prod));
+        // Unparseable. Waving an unreadable URL through would be a worse answer than a
+        // false positive, so every hostname-shaped run of characters in it is checked.
+        //
+        // This is narrower than the substring search it replaces -- a digest cannot be
+        // searched for inside a longer string -- so a prod name welded into a longer word
+        // no longer matches. No URL shape produces that; a URL that cannot be parsed at all
+        // is already the unusual case, and the parsed path above is what runs in practice.
+        return url
+            .to_ascii_lowercase()
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+            .any(|token| label_matches(token, hosts));
     };
-    if PROD_ADDRS.contains(&host.as_str()) {
+    if addrs.contains(&digest(&host)) {
         return true;
     }
-    PROD_HOSTS.iter().any(|prod| {
-        host == *prod
-            || host
-                .strip_prefix(prod)
-                .is_some_and(|rest| rest.starts_with('.'))
-    })
+    label_matches(&host, hosts)
+}
+
+/// Whether a hostname, or its first label, digests to one of `hosts`.
+fn label_matches(host: &str, hosts: &[u64]) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    let first_label = host.split('.').next().unwrap_or(host);
+    hosts.contains(&digest(host)) || hosts.contains(&digest(first_label))
 }
 
 /// The host of a URL, lowercased, without its port, path or trailing dot.
@@ -460,35 +505,69 @@ mod tests {
     /// machine that holds real task data.
     #[test]
     fn every_way_of_naming_production_is_refused() {
+        // Fabricated hosts, not the real ones. The guard's *rules* are what this test is
+        // about, and asserting them against the real production names would put those
+        // names back into the source that the digests exist to keep them out of.
+        const HOSTS: &[u64] = &[digest("prod-box")];
+        const ADDRS: &[u64] = &[digest("203.0.113.7"), digest("192.0.2.19")];
+
         for url in [
             "https://prod-box.example.net:8443",
             "https://PROD-BOX.example.net:8443",  // case
             "https://prod-box.example.net:8443/", // trailing slash
             "https://prod-box.example.net./",     // fully-qualified trailing dot
             "https://prod-box.example.net",       // no port
-            "http://prod-box:8443",                     // short name
-            "https://203.0.113.7:8443",            // tailnet address -- BUG-6
-            "https://192.0.2.19:8443",              // LAN address
+            "http://prod-box:8443",               // short name
+            "https://203.0.113.7:8443",           // by address -- BUG-6
+            "https://192.0.2.19:8443",            // the other address
+            "not even a url prod-box",            // unparseable, still caught
         ] {
             assert!(
-                guard_production(url, false).is_err(),
+                matches_any(url, HOSTS, ADDRS),
                 "{url} was not recognised as production"
             );
-            // ...and the acknowledgement still works, or the flag would be a lie.
-            assert!(
-                guard_production(url, true).is_ok(),
-                "{url} refused despite the flag"
-            );
         }
+    }
+
+    /// The acknowledgement flag must actually work, or it would be a lie. Driven through
+    /// the real guard, because that is the wiring under test -- with a URL that is not
+    /// production, since a passing flag has to be a no-op there too.
+    #[test]
+    fn the_flag_is_honoured_and_harmless() {
+        assert!(guard_production("https://vikunja.example.com", true).is_ok());
+        assert!(guard_production("https://vikunja.example.com", false).is_ok());
+    }
+
+    /// The digest constants must not silently become empty. A guard that matches nothing
+    /// refuses nothing, and every other test here uses fabricated values, so nothing else
+    /// would notice.
+    #[test]
+    fn the_production_digests_are_populated_and_stable() {
+        assert!(
+            !PROD_HOST_DIGESTS.is_empty(),
+            "no production host is guarded"
+        );
+        assert_eq!(
+            PROD_ADDR_DIGESTS.len(),
+            2,
+            "both addresses reach production"
+        );
+        // Known answer: a change to `digest` would silently stop matching the constants,
+        // which are literals computed with this exact function.
+        assert_eq!(digest("tui-do"), 0x315a_0487_6d29_cecd);
+        assert_eq!(digest(""), 0xcbf2_9ce4_8422_2325);
     }
 
     /// The other direction: the guard must not cry wolf, or it trains people to pass the
     /// flag by reflex — at which point it protects nothing.
     #[test]
     fn everything_that_is_not_production_still_starts() {
+        const HOSTS: &[u64] = &[digest("prod-box")];
+        const ADDRS: &[u64] = &[digest("203.0.113.7")];
+
         for url in [
             "https://dev-box.example.net:8443", // the dev instance
-            "https://198.51.100.4:8443",                // dev by address
+            "https://198.51.100.4:8443",        // dev by address
             "http://localhost:3456",
             "https://vikunja.example.com",
             // The old check substring-matched the whole URL, so this was refused for a
@@ -498,11 +577,12 @@ mod tests {
             "https://prod-box-notreally.example.com",
         ] {
             assert!(
-                guard_production(url, false).is_ok(),
+                !matches_any(url, HOSTS, ADDRS),
                 "{url} was wrongly treated as production"
             );
         }
     }
+
     use super::*;
 
     /// Generate a completion script into a string.

@@ -19,7 +19,7 @@ use anyhow::{bail, Context, Result};
 ///
 /// Deliberately the *dev* instance. Production is read-only and must not become a
 /// routine dependency of the build.
-const DEFAULT_SPEC_SOURCE: &str = "https://dev-box.example.net:8443";
+const DEFAULT_SPEC_SOURCE: &str = "https://vikunja.example.com";
 
 fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {

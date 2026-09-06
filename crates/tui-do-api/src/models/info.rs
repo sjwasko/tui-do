@@ -112,7 +112,7 @@ mod tests {
     const LIVE: &str = r#"{
         "version": "v2.5.0",
         "max_items_per_page": 50,
-        "frontend_url": "https://dev-box.example.net:8443/",
+        "frontend_url": "https://vikunja.example.com/",
         "concurrent_writes": true,
         "available_migrators": ["vikunja-file", "ticktick", "wekan", "csv"],
         "task_comments_enabled": true,

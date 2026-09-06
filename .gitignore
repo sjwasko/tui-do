@@ -37,3 +37,21 @@ THIRD-PARTY-LICENSES.md
 # 2026-09-06; it embeds the absolute path it was compiled from and is regenerated anyway.
 __pycache__/
 *.pyc
+
+# Internal working material. These stay on disk and out of the published repository:
+# implementation plans and session handoffs are execution scaffolding rather than
+# documentation, the manual-check procedures name hosts on a private tailnet, and the
+# deploy kit and live-test runners target one specific dev instance and are unusable by
+# anyone else. The design documents under md/ are deliberately still tracked -- they are
+# the "why" a contributor needs.
+/deploy/
+/test-scripts/
+/run-live-tests-token.sh
+/run-live-tests-password.sh
+/md/*-plan.md
+/md/*-handoff.md
+/md/2026-09-06-release-binaries-design.md
+/md/MANUAL-CHECKS.md
+/md/MANUAL-CHECKS2.md
+/md/MANUAL-CHECKS-BUGS.md
+/md/overview.md

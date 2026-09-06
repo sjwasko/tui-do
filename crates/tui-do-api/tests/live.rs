@@ -7,7 +7,7 @@
 //! # Running them
 //!
 //! ```sh
-//! export TUI_DO_TEST_URL=https://dev-box.example.net:8443   # dev, never prod
+//! export TUI_DO_TEST_URL=https://your-dev-instance.example:8443   # dev, never prod
 //! export TUI_DO_TEST_TOKEN=tk_...          # Settings -> API tokens, in the web UI
 //! # or, instead of a token:
 //! export TUI_DO_TEST_USERNAME=... TUI_DO_TEST_PASSWORD=...
@@ -39,14 +39,16 @@ use chrono::Timelike;
 use tui_do_api::models::Login;
 use tui_do_api::{Client, Credentials, TaskQuery};
 
-/// The dev instance these tests are written against.
-const DEFAULT_DEV_HOST: &str = "dev-box.example.net";
+/// The dev instance these tests are written against, as a digest of its hostname.
+///
+/// `TUI_DO_DEV_HOST` names it in plain text when your dev instance lives somewhere else.
+const DEV_HOST_DIGESTS: &[u64] = &[0x7bfd_740f_9b2c_1455];
 
-/// Hosts that are never a test target, whatever else is configured.
+/// Hosts that are never a test target, whatever else is configured, as digests.
 ///
 /// Not overridable, deliberately. Every environment variable here is one an accident can
 /// set.
-const FORBIDDEN_HOSTS: &[&str] = &["prod-box"];
+const FORBIDDEN_HOST_DIGESTS: &[u64] = &[0xd46d_34ba_49c7_e934];
 
 /// The same machine, by address. A name is not the only way to reach it.
 ///
@@ -54,7 +56,47 @@ const FORBIDDEN_HOSTS: &[&str] = &["prod-box"];
 /// production by IP passed a check that only looked for the hostname. This guard is the
 /// same shape and had the same hole, and a live *test* suite pointed at production is the
 /// worse of the two, because it writes without anybody watching.
-const FORBIDDEN_ADDRS: &[&str] = &["203.0.113.7", "192.0.2.19"];
+const FORBIDDEN_ADDR_DIGESTS: &[u64] = &[0xf44a_8a55_290f_bec7, 0xe71f_ea92_f3dc_2f65];
+
+/// FNV-1a, 64-bit — the same function and the same reasoning as the binary's own guard.
+///
+/// Digests rather than names so the repository does not publish the fleet's naming. That
+/// is obfuscation, not secrecy: a hostname is low-entropy and falls to a dictionary attack.
+/// It keeps the names out of grep and code search, which is all it is for.
+const fn digest(value: &str) -> u64 {
+    let bytes = value.as_bytes();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        i += 1;
+    }
+    hash
+}
+
+/// The host of a URL: lowercased, without scheme, port, path or trailing dot.
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(rest)
+        .rsplit('@')
+        .next()
+        .unwrap_or(rest);
+    let host = host.split(':').next().unwrap_or(host);
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Whether a host, or its first label, digests to one of `digests`.
+fn matches(host: &str, digests: &[u64]) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    let first_label = host.split('.').next().unwrap_or(host);
+    digests.contains(&digest(host)) || digests.contains(&digest(first_label))
+}
 
 /// Projects the round-trip test creates, and the title it sweeps up before starting.
 const FIXTURE_PROJECT_TITLE: &str = "tui-do live test";
@@ -72,21 +114,22 @@ fn target() -> Option<String> {
         return None;
     }
 
-    for forbidden in FORBIDDEN_HOSTS.iter().chain(FORBIDDEN_ADDRS) {
-        assert!(
-            !url.contains(forbidden),
-            "TUI_DO_TEST_URL points at {url}, which is production. There is no way to \
-             override this; point it at the dev instance."
-        );
-    }
-
-    let dev_host =
-        std::env::var("TUI_DO_DEV_HOST").unwrap_or_else(|_| DEFAULT_DEV_HOST.to_string());
+    let host = host_of(&url);
     assert!(
-        !dev_host.is_empty() && url.contains(&dev_host),
-        "TUI_DO_TEST_URL is {url}, which is not the dev host {dev_host:?}. These tests \
-         create and delete data; they run against a known dev instance or not at all. \
-         Set TUI_DO_DEV_HOST if your dev instance lives somewhere else."
+        !matches(&host, FORBIDDEN_HOST_DIGESTS) && !matches(&host, FORBIDDEN_ADDR_DIGESTS),
+        "TUI_DO_TEST_URL points at {url}, which is production. There is no way to \
+         override this; point it at the dev instance."
+    );
+
+    let known_dev = match std::env::var("TUI_DO_DEV_HOST") {
+        Ok(named) if !named.trim().is_empty() => host == named.trim().to_ascii_lowercase(),
+        _ => matches(&host, DEV_HOST_DIGESTS),
+    };
+    assert!(
+        known_dev,
+        "TUI_DO_TEST_URL is {url}, which is not a known dev host. These tests create and \
+         delete data; they run against a known dev instance or not at all. Set \
+         TUI_DO_DEV_HOST if your dev instance lives somewhere else."
     );
     Some(url)
 }
@@ -727,7 +770,7 @@ async fn a_task_round_trips_through_create_read_update_delete() {
     };
 
     // Everything is created inside a throwaway project and deleted again, so a run leaves
-    // the dev instance as it found it even without `deploy/reset-dev.sh`.
+    // the dev instance as it found it even without the deploy kit's reset script.
     let project = client
         .create_project(&tui_do_api::models::Project {
             title: FIXTURE_PROJECT_TITLE.into(),

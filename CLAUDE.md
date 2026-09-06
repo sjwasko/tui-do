@@ -397,8 +397,10 @@ field quietly becomes uneditable.
 | **Vikunja version** | v2.5.0 (dev pinned to match prod) |
 | **TLS** | Tailscale Serve certs are publicly trusted; never disable certificate verification |
 
-Reset the dev server to its seeded baseline with `deploy/reset-dev.sh`. Seed it from a prod
-export with `deploy/seed-from-prod.sh` (which reads prod and writes only to dev).
+The dev deployment kit — the compose stack, `reset-dev.sh`, `seed-from-prod.sh`,
+`snapshot-dev.sh` — lives in `deploy/` on this workstation and is **not tracked**: it
+targets one specific instance and is unusable by anyone else. `scripts/test-ubuntu.sh` is
+the exception and is in the repository, because it needs no host.
 
 `crates/tui-do` refuses to start against the prod URL without `--i-know-this-is-prod`, and
 integration tests refuse to run unless `TUI_DO_TEST_URL` points at dev. Do not weaken either
@@ -451,6 +453,10 @@ a keystroke, so the assertions that matter most have nowhere to live. The UI tes
 store's answers and the store tests fake the user, and *between* them is a seam where a
 message can be produced with arguments nobody agreed on while every test stays green.
 
+The manual-check procedures (`md/MANUAL-CHECKS*.md`), the implementation plans and the
+session handoffs are likewise kept on disk and out of the repository. The design documents
+under `md/` are tracked deliberately: they are the "why" a contributor needs.
+
 `crates/tui-do-smoke` is that seam's home — `publish = false`, no binary, depends on both.
 `Harness` reimplements the effect runtime faithfully but small: same store calls, same
 messages back, and a push deferred until the reload it races has landed, because the real
@@ -469,7 +475,7 @@ cargo clippy --workspace --all-targets    # must be clean; CI runs with -D warni
 cargo fmt --all
 cargo test --workspace
 cargo xtask fetch-spec                    # refresh spec/vikunja.json from the dev server
-deploy/test-ubuntu.sh                     # build + test in the ubuntu:26.04 container
+scripts/test-ubuntu.sh                    # build + test in the ubuntu:26.04 container
 ```
 
 **`~/.local/bin/tui-do` is a symlink to `target/release/tui-do`**, so that is the binary a

@@ -126,7 +126,7 @@ Tier-1 test targets, both real:
 | Target | Where | Note |
 |---|---|---|
 | **Omarchy Quattro** | this workstation (**Omarchy 4.0.0-1**) + `tiny-box` | Primary dev and daily-driver target. `tiny-box` is a second Omarchy 4 box — but the KB flags it asleep on a default power policy and unreachable until ~2026-08-30. |
-| **Ubuntu 26.04 LTS** | `ubuntu:26.04` container on `dev-box` | No homelab host runs 26.04 (prod-box/spare-box/arm-host-1 are all 24.04.4); the image tag exists and is published. Scripted as `deploy/test-ubuntu.sh` — build + test in-container against the dev Vikunja. Doubles as the glibc-version floor check, since Arch and Ubuntu LTS differ sharply there. |
+| **Ubuntu 26.04 LTS** | `ubuntu:26.04` container on `dev-box` | No homelab host runs 26.04 (prod-box/spare-box/arm-host-1 are all 24.04.4); the image tag exists and is published. Scripted as `scripts/test-ubuntu.sh` — build + test in-container against the dev Vikunja. Doubles as the glibc-version floor check, since Arch and Ubuntu LTS differ sharply there. |
 
 Two habits kept from day one because they're good practice on Linux regardless — not as Windows tax:
 
@@ -171,17 +171,17 @@ Do this before writing feature code; it's what keeps quality from drifting.
 
 Stand this up **before** Phase 1, so every subsequent phase is verified against a server we can freely break.
 
-1. **Deploy.** `deploy/docker-compose.yml` in the tui-do repo: `vikunja` + `postgres:16`, pinned to the
+1. **Deploy.** the deploy kit's compose file (kept out of the repository): `vikunja` + `postgres:16`, pinned to the
    **same v2.5.0** as prod. Data at `/opt/appdata/tui-do-vikunja-db`, secrets in
    `/opt/stacks/tui-do-vikunja.env` (mode 600, gitignored). Bind `127.0.0.1:3456`.
 2. **Publish.** `tailscale serve` on `:8443` → `127.0.0.1:3456`, giving
    `https://dev-box.example.net:8443` — same port as prod so only the hostname differs.
 3. **Seed, prod-read-only.** `POST /user/export/request` on prod → poll → `POST /user/export/download` →
-   import into dev with the `vikunja-file` migrator. Scripted as `deploy/seed-from-prod.sh`. The script
+   import into dev with the `vikunja-file` migrator. Scripted as `seed-from-prod.sh` in that kit. The script
    takes prod strictly as a **source**: no writes, no DB access, no `pg_dump`, hard-refuses any prod URL
    as a destination.
 4. **Golden snapshot.** Immediately after seeding, `pg_dump` the *dev* DB to
-   `/opt/appdata/tui-do-vikunja-seed.sql`. `deploy/reset-dev.sh` restores it in seconds, so destructive
+   `/opt/appdata/tui-do-vikunja-seed.sql`. `reset-dev.sh` restores it in seconds, so destructive
    test runs are cheap and repeatable.
 5. **Prod-write guard, belt and braces.** `tui-do` refuses to run against a URL matching
    `TUI_DO_PROD_DENY` (defaulting to the prod-box host) unless `--i-know-this-is-prod` is passed, and
