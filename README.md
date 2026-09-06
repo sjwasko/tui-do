@@ -110,7 +110,11 @@ reads `~/.profile` rather than `~/.bashrc` for those; add the same `export` line
 **There is no first-run wizard, and no config is written for you.** Without one tui-do stops
 with `could not read …/config.yaml: No such file or directory`.
 
-Create an API token in Vikunja under **Settings → API tokens**, then:
+Create an API token in Vikunja under **Settings → API tokens**. Vikunja tokens are scoped,
+and the scopes are not obvious — see [Token permissions](#token-permissions) below if you
+get *"not authorized: missing, malformed, expired or otherwise invalid token provided"*.
+
+Then:
 
 ```sh
 mkdir -p ~/.config/tui-do
@@ -140,6 +144,32 @@ re-syncs.
 
 Coming from [cria](https://github.com/frigidplatypus/cria)? `tui-do migrate` translates its
 config and reports what did not carry across.
+
+### Token permissions
+
+Vikunja's API tokens carry a per-route permission list, and a token that looks complete can
+still fail. Grant these groups:
+
+| group | why |
+|---|---|
+| `other` → **`user`** | Identifies who you are at startup. **Without it tui-do does not start.** |
+| `tasks` | Read, create, edit, complete and delete tasks |
+| `tasks_labels` | Attach and detach labels — a *separate* group from `labels` |
+| `labels` | Create, rename and recolour labels |
+| `projects` | List projects, and move tasks between them |
+| `projects_views` | Read a project's views, which is how the list view is resolved |
+| `tasks_assignees` | Only if you assign people |
+
+Two of these are easy to miss and both fail unhelpfully.
+
+**`other` → `user` is the one that stops tui-do dead.** Every task and project call can
+succeed while `GET /user` returns 401, and what you see is a red toast reading *"not
+authorized: missing, malformed, expired or otherwise invalid token provided"* — which reads
+like the token is wrong when in fact it is merely incomplete.
+
+**`tasks_labels` is not part of `labels`.** With `labels` alone you can create and rename
+labels but not put one on a task, so `l` fails with the same message while everything else
+works.
 
 ## Keys
 
