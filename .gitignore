@@ -22,3 +22,6 @@
 # permissions everyone needs -- and belongs in the repo. This one does not, and was
 # ignored only by never being added until a `git add -A` swept it into a commit.
 .claude/settings.local.json
+
+# Generated at release time by `cargo about`; never committed.
+THIRD-PARTY-LICENSES.md

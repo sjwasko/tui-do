@@ -1,0 +1,22 @@
+# Third-party licences
+
+tui-do is distributed as a statically linked binary, which means the crates below are
+compiled into it and redistributed with it. Their licences are reproduced in full, as
+each of them requires.
+
+The tui-do source itself is dual-licensed MIT OR Apache-2.0; see `LICENSE-MIT` and
+`LICENSE-APACHE`.
+
+{{#each licenses}}
+## {{name}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```
+{{{text}}}
+```
+
+{{/each}}
