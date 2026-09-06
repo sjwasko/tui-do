@@ -129,10 +129,28 @@ path — gate, both builds, checksums, upload, a real download URL — while cla
 |---|---|---|---|
 | `laptop` | x86_64 | Ubuntu 24.04, glibc 2.39 | the x86 binary runs on a glibc older than the build host's |
 | `arm-host-1` | aarch64 | Ubuntu 24.04, glibc 2.39 | the arm binary runs at all |
+| PocketTerm35 | Raspberry Pi 5 | *to confirm* | the arm binary runs on hardware nobody built it on, at a terminal size nothing has been driven at |
+
+**Check `uname -m` on the PocketTerm35 before assuming the arm artifact fits it.** A Pi 5 is
+arm64 hardware, but Raspberry Pi OS still ships a 32-bit userland, and a 32-bit userland
+answers `armv7l` and **cannot run an `aarch64` binary**. If it does, serving that device
+needs a third target — `armv7-unknown-linux-musleabihf` — which is a scope decision, not a
+build-flag change. Worth knowing before the release is cut rather than after.
 
 On each: download the tarball, verify its checksum, run it against **dev**, and confirm a
 write reaches the server. Downloading and running is the check — a binary that has only been
 built is a claim.
+
+**The PocketTerm35 is worth more than a third architecture check.** It is the smallest screen
+this program will ever be asked to draw on, which makes it the right place to drive
+`md/MANUAL-CHECKS2.md` section **E** (short windows) and to look hard at **BUG-11** — the
+edit form has no scroll windowing, so on a short terminal `Tab` moves focus to a field that
+has been clipped away and the caret is silently dropped. BUG-11 is open and was filed as
+"verify first". A handheld terminal is where it stops being theoretical.
+
+That is not a release blocker and does not belong in this pipeline. It is recorded here
+because the device will be in someone's hands during the rc, and that is the cheapest the
+observation will ever be.
 
 This also gives **GA bar item 2** better evidence than the `ubuntu:26.04` container job does:
 a real download, on a real machine, against a real server.
