@@ -1,4 +1,11 @@
-# tui-do — scripted demo recording.
+# tui-do — scripted demo recording, agent variant.
+#
+# Identical to tui-do.tape except for the right-hand pane, which runs a *simulated* agent
+# session (docs/demo/agent-demo.sh, installed as `agent`) instead of a bare shell. There is
+# no model behind it: the prose is fixed and only the `tui-do add` is real. Kept as a second
+# tape rather than a flag so the two GIFs can be compared side by side.
+#
+# Original:
 #
 #   vhs docs/demo/tui-do.tape
 #
@@ -9,7 +16,7 @@
 # The script is committed so the recording can be regenerated when the interface
 # changes. A GIF cannot tell you it has gone stale; a tape re-run can.
 
-Output docs/demo/tui-do.gif
+Output docs/demo/tui-do-agent.gif
 
 Set Shell bash
 # JetBrainsMono Nerd Font, because VHS's default lacks the glyphs the interface uses:
@@ -133,10 +140,11 @@ Sleep 7s
 Ctrl+b
 Type "o"
 Sleep 1200ms
-Type@75ms "tui-do add 'Summarise the sync engine backoff policy +Agents *research !3 tomorrow'"
-Sleep 1200ms
+Type@75ms "agent"
+Sleep 900ms
 Enter
-Sleep 3s
+# The script paces itself and takes about seven seconds.
+Sleep 9s
 
 Ctrl+b
 Type "o"
