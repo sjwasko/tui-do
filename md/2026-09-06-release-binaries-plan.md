@@ -33,7 +33,7 @@ The one unproven piece in the spec. Do this before writing a workflow that assum
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: a decision — `cross` or `cargo-zigbuild` — recorded in the spec, and consumed by Task 4.
+- Produces: a decision — `cross` or `cargo-zigbuild` — recorded in the spec, and consumed by **Task 3**.
 
 - [ ] **Step 1: Create the probe branch**
 
@@ -138,7 +138,7 @@ A static binary is a redistribution of every crate compiled into it, and every l
 
 **Interfaces:**
 - Consumes: `deny.toml`'s allow-list (`deny.toml:7-20`).
-- Produces: a working `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`, consumed by Tasks 3 and 4.
+- Produces: a working `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`, consumed by **Task 3**.
 
 - [ ] **Step 1: Install cargo-about locally**
 
@@ -319,7 +319,14 @@ jobs:
         run: |
           f=target/${{ matrix.target }}/release/tui-do
           file "$f"
-          file "$f" | grep -q 'static-pie linked' \
+          # The property that matters is "no dynamic interpreter", not which static
+          # variant: a musl build may report `static-pie linked` or plain
+          # `statically linked` depending on the target and the tool. Both pass;
+          # anything dynamic fails, because that failure otherwise lands on the
+          # user's machine at startup as a linker error.
+          file "$f" | grep -q 'dynamically linked' \
+            && { echo "DYNAMIC -- refusing to publish"; exit 1; }
+          file "$f" | grep -Eq 'static-pie linked|statically linked' \
             || { echo "NOT STATIC -- refusing to publish"; exit 1; }
 
       - name: third-party licences
