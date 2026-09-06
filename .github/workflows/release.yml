@@ -24,9 +24,33 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # Generated once and shared by both matrix legs below: the two targets produce the
+  # same file from the same lockfile, and building it twice bought nothing but a second
+  # `cargo install cargo-about`.
+  licenses:
+    name: third-party licences
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo-about
+        # Pinned: an unpinned `cargo-about` takes whatever last published, and a new
+        # major version with a changed template context breaks `about.hbs` at tag time
+        # with no earlier warning. Bump deliberately, alongside the same pin in
+        # ci.yml's `licenses` job, which exists so that break shows up on a PR instead.
+        run: cargo install cargo-about --version 0.9.2 --locked --features=cli
+      - run: cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
+      - run: test -s THIRD-PARTY-LICENSES.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licenses
+          path: THIRD-PARTY-LICENSES.md
+
   build:
     name: build ${{ matrix.target }}
-    needs: gate
+    needs: [gate, licenses]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -58,7 +82,7 @@ jobs:
       - name: build (cross)
         if: ${{ matrix.cross }}
         run: |
-          cargo install cross --locked
+          cargo install cross --version 0.2.5 --locked
           cross build --release --bin tui-do --target ${{ matrix.target }}
 
       # A build that silently went dynamic must fail the release rather than ship: the
@@ -77,11 +101,46 @@ jobs:
           file "$f" | grep -Eq 'static-pie linked|statically linked' \
             || { echo "NOT STATIC -- refusing to publish"; exit 1; }
 
-      - name: third-party licences
+      # Static linkage says nothing about whether the binary actually starts -- only
+      # this leg can prove that, since the aarch64 binary cannot execute on this
+      # x86_64 runner. Its own reported version is also the strongest evidence the tag
+      # matches what ships: it is what a user runs `tui-do --version` against.
+      - name: run it, and check its version against the tag
+        if: ${{ !matrix.cross }}
         run: |
-          cargo install cargo-about --locked --features=cli
-          cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
-          test -s THIRD-PARTY-LICENSES.md
+          f=target/${{ matrix.target }}/release/tui-do
+          out="$("$f" --version)"
+          echo "binary reports: $out"
+
+          tag="${GITHUB_REF_NAME}"
+          tag_version="${tag#v}"        # v1.0.0-rc.1 -> 1.0.0-rc.1
+          tag_version="${tag_version%%-*}"  # 1.0.0-rc.1 -> 1.0.0
+          bin_version="${out##* }"
+
+          if [ "$bin_version" != "$tag_version" ]; then
+            echo "tag $tag implies version $tag_version but the binary reported '$out'" >&2
+            exit 1
+          fi
+
+      # This leg's binary cannot run here, so check the same claim against its source
+      # instead: the workspace version the binary was built from.
+      - name: check Cargo.toml's version against the tag
+        if: ${{ matrix.cross }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          tag_version="${tag#v}"
+          tag_version="${tag_version%%-*}"
+          crate_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.*)"$/\1/')"
+
+          if [ "$crate_version" != "$tag_version" ]; then
+            echo "tag $tag implies version $tag_version but Cargo.toml has $crate_version" >&2
+            exit 1
+          fi
+
+      - name: fetch the third-party licences
+        uses: actions/download-artifact@v4
+        with:
+          name: third-party-licenses
 
       - name: stage the tarball
         run: |
@@ -110,6 +169,10 @@ jobs:
           path: dist
       - name: checksums
         run: |
+          # `cd dist` is load-bearing, not tidiness: sha256sum must run with the
+          # tarballs as its cwd so SHA256SUMS records bare filenames, which is what the
+          # README's `sha256sum --check --ignore-missing` needs. Running it from the
+          # workspace root would bake `dist/` into every line and break that recipe.
           cd dist
           sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
@@ -121,6 +184,16 @@ jobs:
         run: |
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+
+          # A re-run after a partial publish (say, one asset upload dropped mid-way)
+          # finds the release the failed attempt already created; `gh release create`
+          # errors on a release that exists rather than resuming it. Delete and recreate
+          # for a clean retry -- the tag itself is untouched.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists -- removing it before recreating (partial-publish retry)"
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \

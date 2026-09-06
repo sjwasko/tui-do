@@ -24,5 +24,8 @@ targets = [
     "aarch64-unknown-linux-musl",
 ]
 
-# A crate with no license field at all is a stop, not a warning.
+# Skip crates marked `publish = false` -- our own workspace members among them -- rather
+# than demanding a licence for code that is never redistributed on its own. A crate with
+# no license field that *is* redistributed still stops the build; this setting does not
+# touch that.
 private = { ignore = true }
