@@ -8,7 +8,7 @@ on a network call.
 
 > **Status: 1.0 release candidate.** `v1.0.0-rc.1` is published and is what the commands
 > below install. Everything documented here works and is used daily against a real Vikunja;
-> [what is not there yet](#what-is-not-there-yet) is listed rather than left to be
+> [what the future holds](#what-the-future-holds) is set out rather than left to be
 > discovered.
 
 ## What it does
@@ -267,19 +267,51 @@ quick_actions:
 An unknown key is an error rather than a shrug, so a typo is caught at the one moment you can
 still connect it to what you just edited.
 
-## What is not there yet
+## What the future holds
 
-Stated plainly, because the alternative is discovering it:
+1.0 is deliberately small — the foundation is the part that had to be right. What is stated
+below is stated plainly, because the alternative is discovering it: **none of this exists
+today.** All of it is where tui-do goes next, and the *order is not settled*, which is
+exactly where you come in.
 
-- **Comments** — deferred. The API client exists; nothing in the interface reaches it.
-- **Subtasks and task relations** — deferred. Vikunja's relation kinds are parsed and
-  preserved, but not shown or editable.
+**Coming**
+
+- **A macOS port.** The hard part is already done — rendering needs no platform knowledge at
+  all, and the one thing that genuinely does, opening a URL, is already behind a seam built
+  for this. It may well build today; it is not tested or supported, and that is the gap to
+  close.
+- **A real agent surface.** `add` is the whole of it right now. Reading, completing, moving
+  and searching from the command line turn tui-do into something an agent can actually
+  operate rather than only write to. See [For agents](#for-agents) — this is the one I most
+  want to talk to people about.
+- **Disconnected mode.** tui-do with no Vikunja behind it at all: a fast local task list that
+  happens to speak Vikunja when there is a server to speak to. This is closer than it sounds,
+  because the local store already answers every read and the server is already optional at
+  startup — what is missing is making it optional *permanently*, and deciding what sync means
+  when you later point one at a server.
+- **Kanban, table and Gantt views, and saved filters.** The list view is the only view today.
+  Boards are the most-asked-for and the least-designed; how an agent should express a move
+  across one is an open question.
+- **Comments.** The API client can already do it; nothing in the interface reaches it yet.
+- **Subtasks and task relations.** Vikunja's relation kinds are parsed and preserved on every
+  write today, so the data survives — it is just not shown or editable.
+- **Windows, honestly.** The answer is WSL and will stay WSL, but "use WSL" is a claim nobody
+  has verified on a schedule. Making that a tested configuration rather than an assumption is
+  on the list.
+
+**Deliberately not**
+
 - **Attachments** — out of scope. Existing attachments survive edits untouched; tui-do
   neither displays nor uploads them.
-- **Kanban, table and Gantt views, and saved filters** — planned, not built. The list view is
-  the only view.
-- **Deleting a label** — deliberately absent. It cannot be undone honestly, because the label
-  would come back with a new id detached from every task it was on.
+- **Deleting a label** — it cannot be undone honestly, because the label would come back with
+  a new id detached from every task it was on. If it is ever built it gets a confirmation and
+  a plain "this cannot be undone", not a broken undo.
+
+**Which of these first?** That is a genuine question, not a rhetorical one — the order above
+is not a commitment and I would rather build what people will use than what I guessed at.
+[Open an issue](https://github.com/sjwasko/tui-do/issues) and say which one matters to you
+and why, or that the thing you want is not on the list at all. Volunteers to help build or
+test any of it are very welcome.
 
 ## Platform support
 
