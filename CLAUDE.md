@@ -393,7 +393,7 @@ field quietly becomes uneditable.
 | | |
 |---|---|
 | **Dev server** | `https://dev-box.example.net:8443` — use this for everything |
-| **Prod server** | `https://prod-box.example.net:8443` — the author's real task data. **Never a test target;** see below |
+| **Prod server** | `https://prod-box.example.net:8443` — the author's real task data, daily-driven. **Never an automated test target;** see below |
 | **Vikunja version** | v2.5.0 (dev pinned to match prod) |
 | **TLS** | Tailscale Serve certs are publicly trusted; never disable certificate verification |
 
@@ -402,29 +402,24 @@ The dev deployment kit — the compose stack, `reset-dev.sh`, `seed-from-prod.sh
 targets one specific instance and is unusable by anyone else. `scripts/test-ubuntu.sh` is
 the exception and is in the repository, because it needs no host.
 
-`crates/tui-do` refuses to start against the prod URL without `--i-know-this-is-prod`, and
-integration tests refuse to run unless `TUI_DO_TEST_URL` points at dev. Do not weaken either
-guard to make something pass.
+`crates/tui-do` no longer refuses to start against the prod URL, and there is no
+`--i-know-this-is-prod` flag. **Integration tests still refuse to run unless
+`TUI_DO_TEST_URL` points at dev, and that guard does not move.**
 
-**Prod is now daily-driven by hand, and that is not a loosening of the rule above.** It was
-written when prod was only ever a source for the seed export, and it said "read-only,
-always". That was the right rule while tui-do was being built and the wrong one for
-shipping it: GA bar item 3 requires living with the thing against real data, and a client
-nobody trusts with their own tasks is not finished. Switched 2026-09-06, after a Vikunja
-user export *and* a `pg_dump` were taken and the dump was proved restorable into a
-throwaway database.
+The startup guard was removed on 2026-09-06, after every host had been driven and prod
+had been exported and dumped. It was right while tui-do was one person's dev tool and
+wrong in a shipped one: **to every real user, their own server is production.** A released
+binary that refuses to start against "the production server" is either nonsense or, as
+here, dead code that could only ever match this author's two hostnames. Testing against
+real data before asking anyone else to is the point, not a risk to be flagged.
 
-The distinction that still holds, and is the whole of the rule now:
+What remains is the distinction that was actually load-bearing:
 
-- **A person may write to prod**, through the interface, deliberately, having passed
-  `--i-know-this-is-prod`.
-- **Nothing automated may.** No test, no script, no seeding, no reset, no agent run.
-  `TUI_DO_TEST_URL` still refuses anything but dev, `seed-from-prod.sh` and `reset-dev.sh`
-  still refuse to target prod, and none of those guards moves.
-
-If the flag becomes something typed by reflex — aliased away, or added to a wrapper — it
-has stopped being a decision and the guard is theatre. At that point change the guard
-honestly rather than route around it.
+- **A person writes to prod** through the interface, like any user of the software.
+- **Nothing automated does.** `TUI_DO_TEST_URL` refuses anything but dev, and
+  `seed-from-prod.sh` and `reset-dev.sh` refuse to target prod. Those guards protect
+  against unattended writes, which is a different thing from protecting against the
+  author using their own client.
 
 ## Driving another box by hand
 
