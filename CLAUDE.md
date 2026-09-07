@@ -600,12 +600,10 @@ that edits the tree away from the tag. And `cargo install tui-do` now resolves �
 not the recommended path, because `rusqlite` is `bundled` and wants a C toolchain, which is
 the friction the static binary exists to remove.
 
-Publishability was verified, not assumed: `cargo publish --dry-run -p tui-do-api` passes, all
-four carry `description`/`license`/`repository`, there are no git dependencies, and
-`cargo package --list` ships nothing but `src/` and `tests/` — no `deploy/`, no `md/`, no
-credentials. **`cargo install tui-do` is not the recommended path and never becomes one**:
-`rusqlite` is `bundled`, so it needs a C toolchain, which is the exact friction the static
-binary exists to remove.
+What ships in each crate was checked rather than assumed: `cargo package --list` carries
+nothing but `src/` and `tests/` — no `deploy/`, no `md/`, no credentials — and all four
+declare `description`, `license` and `repository`. Re-check that list before adding a crate,
+because the packaged set is not the working tree.
 
 ## Reference material
 
