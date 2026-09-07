@@ -444,6 +444,26 @@ A mangled config does at least fail loudly, because `deny_unknown_fields` reject
 does not recognise. Say so when handing one over: it means a parse error is the paste, not
 the binary.
 
+**`~` does not survive the trip either, and the error names a path nobody typed.** Measured
+2026-09-07 handing over an `scp` line: `~/.config/tui-do/config.yaml` arrived as
+`/.config/tui-do/config.yaml` — on *both* halves of the same command, so the source pointed
+at nothing and the remote half was aimed at the root filesystem. scp answered
+`stat local "/.config/tui-do/config.yaml": No such file or directory`, which reads like a
+missing file rather than a mangled command. The line also arrived indented, which is the
+same tell the heredoc gave.
+
+So a path handed over is **absolute or it is nothing**: `/home/swasko/…`, never `~/…`, and
+not `$HOME/…` either — that is one expansion away from the same class of problem.
+
+**`~/tui-do-keys.sh` on `sw-x1` is this procedure, so it stops being retyped.** It asks for
+a destination, then copies `config.yaml` and *the token the config names* — it reads
+`token_file:` rather than carrying a filename, so the pair cannot disagree and switching
+between prod and dev needs no edit. It creates the remote directory first, copies with
+`-p`, chmods the token anyway in case `-p` was lost to an sftp fallback, checks the token is
+readable at the absolute path the config names (which silently assumes a matching username
+and home), and `cat`s what landed. It names the server in its confirmation prompt, because
+prod and dev are one line apart in that file.
+
 **Scratch files are deleted by whoever made them**, on this workstation, on a remote host,
 and in the working tree. `md/ruflo-audit/`, `md/bloat-detector/` and `md/minify/` are what
 happens otherwise — untracked and unignored for days, and one of them held a credential that
