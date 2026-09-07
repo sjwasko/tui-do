@@ -517,6 +517,42 @@ tried.
 `cria` is the *predecessor*, still checked out at `../cria`. Every mention of it is
 deliberate.
 
+## The name, and the other tui-do
+
+**There is a second `tui-do` and it is not a mistake to be corrected.**
+`github.com/gouveags/tui-do` is a terminal to-do app written in C on the Clay UI framework,
+MIT, created 2026-01-25 and last pushed 2026-05-20 — 0 stars, 0 forks, and published to npm
+under the *scoped* name `@gouveags/tui-do`. Same category, seven months older, dormant.
+
+**Decided 2026-09-07: keep the name.** Neither side holds a trademark and both are permissive,
+so there is nothing to settle legally; the languages and the registries differ; and on the day
+it was found neither project ranked for "tui-do" in a web search, so there was no mindshare to
+inherit or to lose. Against that, renaming would have touched **894 occurrences across 97
+tracked files**, five crate names, the XDG paths (`~/.config/tui-do/`,
+`~/.local/share/tui-do/`) and every `TUI_DO_*` variable — and it was cheaper on that day than
+it will ever be again, which is the reason the question was taken seriously rather than waved
+off.
+
+**The cost is accepted, not denied.** Two terminal to-do apps with one name is the confusable
+kind of collision, and if tui-do gets traction it inherits the confusion — issues on the wrong
+tracker, "is this the C one?". That is the trade. Do not re-litigate it without a new fact;
+the analysis is above and the answer was deliberate.
+
+**The crates.io names are unclaimed on purpose until GA.** `tui-do`, `tui-do-api`,
+`tui-do-core` and `tui-do-ui` were all free on 2026-09-07, as were `tui-do` and `tui_do` bare
+on npm. They are published **from the GA tag and not before**: a crates.io version is
+immutable — yankable, never replaceable — so publishing `1.0.0` from a pre-GA tree would spend
+the number on code the `v1.0.0` tag does not point at, and Task 6 is a hardware drive that has
+already produced one Critical bug (BUG-19). The publish order is `tui-do-api`, `tui-do-core`,
+`tui-do-ui`, `tui-do`.
+
+Publishability was verified, not assumed: `cargo publish --dry-run -p tui-do-api` passes, all
+four carry `description`/`license`/`repository`, there are no git dependencies, and
+`cargo package --list` ships nothing but `src/` and `tests/` — no `deploy/`, no `md/`, no
+credentials. **`cargo install tui-do` is not the recommended path and never becomes one**:
+`rusqlite` is `bundled`, so it needs a C toolchain, which is the exact friction the static
+binary exists to remove.
+
 ## Reference material
 
 `../cria` is the predecessor, checked out for reference. Read it to learn *what* a screen
