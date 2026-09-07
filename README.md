@@ -76,7 +76,7 @@ Raspberry Pi 5), Ubuntu 24.04 (Raspberry Pi 4 Model B). Your results may vary on
 releases and distributions.
 
 ```sh
-tag=v1.0.1
+tag=v1.0.2
 arch=$(uname -m)          # x86_64 or aarch64
 base=https://github.com/sjwasko/tui-do/releases/download/$tag
 
