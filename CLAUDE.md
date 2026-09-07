@@ -584,13 +584,21 @@ kind of collision, and if tui-do gets traction it inherits the confusion — iss
 tracker, "is this the C one?". That is the trade. Do not re-litigate it without a new fact;
 the analysis is above and the answer was deliberate.
 
-**The crates.io names are unclaimed on purpose until GA.** `tui-do`, `tui-do-api`,
-`tui-do-core` and `tui-do-ui` were all free on 2026-09-07, as were `tui-do` and `tui_do` bare
-on npm. They are published **from the GA tag and not before**: a crates.io version is
-immutable — yankable, never replaceable — so publishing `1.0.0` from a pre-GA tree would spend
-the number on code the `v1.0.0` tag does not point at, and Task 6 is a hardware drive that has
-already produced one Critical bug (BUG-19). The publish order is `tui-do-api`, `tui-do-core`,
-`tui-do-ui`, `tui-do`.
+**The crates.io names are claimed.** `tui-do`, `tui-do-api`, `tui-do-core` and `tui-do-ui`
+were published at **1.0.1 on 2026-09-07**, from the `v1.0.1` tag rather than from `main`.
+`tui-do-smoke` is `publish = false` and is correctly absent. Bare `tui-do` and `tui_do` on npm
+were free the same day and are not claimed.
+
+**Publishing from the tag is the rule, not a detail.** A crates.io version is immutable —
+yankable, never replaceable — so a publish from `main` spends the number on a tree no tag
+points at. The order is forced by the dependency graph and each step verifies against the
+previous: `tui-do-api`, `tui-do-core`, `tui-do-ui`, `tui-do`.
+
+**Two things about that publish worth keeping.** The yanked `chacha20` in `Cargo.lock` warns
+on every one and blocks none; do *not* `cargo update` to silence it before publishing, because
+that edits the tree away from the tag. And `cargo install tui-do` now resolves — it is still
+not the recommended path, because `rusqlite` is `bundled` and wants a C toolchain, which is
+the friction the static binary exists to remove.
 
 Publishability was verified, not assumed: `cargo publish --dry-run -p tui-do-api` passes, all
 four carry `description`/`license`/`repository`, there are no git dependencies, and
