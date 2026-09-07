@@ -221,6 +221,43 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Where the setup instructions live.
+///
+/// Named in the error a first run produces, because that error is the first sentence
+/// tui-do ever says to somebody who installed it from a package manager and has read
+/// nothing. Pointing at the section beats describing it badly in one line.
+const SETUP_URL: &str = "https://github.com/sjwasko/tui-do#required---first-time-setup";
+
+/// What to say when the config cannot be loaded.
+///
+/// Two unrelated failures reach here as one error, because `Config::load` reports a
+/// missing file and a malformed one the same way. They need opposite advice: a first run
+/// has nothing and needs to be told how to write one, while a file that is already there
+/// is a syntax or permission problem, and telling that person to go and create a config
+/// they can plainly see is worse than saying nothing. So they are separated on
+/// `exists()` rather than on the error.
+///
+/// Neither arm mentions `tui-do migrate`. It imports a cria config, which is a thing
+/// almost nobody arriving here has, and it was the whole of what this error used to
+/// suggest -- so a stranger's first encounter with tui-do was advice about a program
+/// they have never heard of.
+fn config_problem(path: &Path) -> String {
+    if path.exists() {
+        format!(
+            "could not read {}. The file is there, so this is a permission or syntax \
+             problem rather than a missing config -- unknown keys are rejected, so one \
+             that was pasted into a terminal and arrived mangled fails exactly here.",
+            path.display()
+        )
+    } else {
+        format!(
+            "no config at {}. tui-do writes none for you: create that file with a \
+             `server.url` and somewhere to find an API token. {SETUP_URL}",
+            path.display()
+        )
+    }
+}
+
 /// Load the config and hand over to the interface.
 ///
 /// The runtime is only started here, so `main` itself stays synchronous and every early
@@ -228,13 +265,7 @@ fn main() -> anyhow::Result<()> {
 /// that is still in its normal state.
 fn start(cli: Cli) -> anyhow::Result<()> {
     let path = Config::resolve_path(cli.config.as_deref())?;
-    let config = Config::load(&path).with_context(|| {
-        format!(
-            "could not read {}. Run `tui-do migrate` to import a cria config, \
-             or write one following the example in the README.",
-            path.display()
-        )
-    })?;
+    let config = Config::load(&path).with_context(|| config_problem(&path))?;
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -279,8 +310,7 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
 /// Add a task from the command line.
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
     let path = Config::resolve_path(config_override)?;
-    let config =
-        Config::load(&path).with_context(|| format!("could not read {}", path.display()))?;
+    let config = Config::load(&path).with_context(|| config_problem(&path))?;
     report_exposed_credentials(&config, &path, &mut std::io::stderr());
 
     tokio::runtime::Builder::new_multi_thread()
@@ -442,6 +472,53 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn a_missing_config_says_how_to_make_one() {
+        let dir = scratch("missing-config");
+        let path = dir.join("config.yaml");
+        let message = config_problem(&path);
+
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(
+            message.contains(SETUP_URL),
+            "it must point somewhere: {message}"
+        );
+        assert!(
+            message.contains("server.url"),
+            "name the one key that is required: {message}"
+        );
+        // The whole point of the change. This error is the first thing a stranger who
+        // installed from a package manager ever reads, and it used to recommend
+        // importing a config from a program they have never heard of.
+        assert!(
+            !message.contains("migrate") && !message.contains("cria"),
+            "a first run must not be sent to the cria importer: {message}"
+        );
+    }
+
+    #[test]
+    fn a_config_that_is_there_is_not_reported_as_missing() {
+        let dir = scratch("malformed-config");
+        let path = dir.join("config.yaml");
+        std::fs::write(
+            &path,
+            "server:\n  url: https://example.invalid\n  nonsense: 1\n",
+        )
+        .unwrap();
+        let message = config_problem(&path);
+
+        // Telling someone to create a file they can see is worse than saying nothing,
+        // so this arm must not offer the write-one-from-scratch advice.
+        assert!(
+            !message.contains("writes none for you"),
+            "an existing file is not a missing one: {message}"
+        );
+        assert!(
+            message.contains("mangled") || message.contains("syntax"),
+            "say what kind of problem it actually is: {message}"
+        );
     }
 
     #[test]
