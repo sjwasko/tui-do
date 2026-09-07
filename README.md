@@ -129,7 +129,8 @@ Create an API token in Vikunja under **Settings → API tokens**. Vikunja tokens
 and the scopes are not obvious, so see [Token permissions](#token-permissions) below if you
 get *"not authorized: missing, malformed, expired or otherwise invalid token provided"*.
 
-Then:
+Then, **on Linux** (macOS uses different paths, see
+[Where tui-do keeps its files](#where-tui-do-keeps-its-files)):
 
 ```sh
 mkdir -p ~/.config/tui-do
@@ -154,13 +155,34 @@ harmless. `TUI_DO_API_TOKEN` works instead of the file if you would rather not h
 `TUI_DO_CONFIG` overrides where the config is read from. tui-do warns if either file is
 readable by other accounts.
 
-Your tasks live at `~/.local/share/tui-do/tui-do.db`. Deleting it is safe: the next run
-re-syncs.
+### Where tui-do keeps its files
+
+tui-do follows each platform's own convention rather than imposing one, so the paths differ.
+Deleting the database is safe on either: the next run re-syncs.
+
+| | Linux | macOS |
+|---|---|---|
+| config | `~/.config/tui-do/config.yaml` | `~/Library/Application Support/tui-do/config.yaml` |
+| token | `~/.config/tui-do/token` | `~/Library/Application Support/tui-do/token` |
+| store | `~/.local/share/tui-do/tui-do.db` | `~/Library/Application Support/tui-do/tui-do.db` |
+
+**On macOS all three share one directory**, where Linux splits config from data. That is what
+Apple's layout gives, and it is worth knowing before you go looking for a second folder that
+does not exist.
+
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured on Linux and deliberately ignored on
+macOS, which is the platform convention. If you want one path shape across machines of both
+kinds, set `TUI_DO_CONFIG` and `TUI_DO_DB` rather than the XDG variables; `--config` beats
+both.
+
+A `token_file` may be relative, in which case it resolves against the directory holding the
+config that names it. That is the portable way to write it: the config and its token then
+travel together to any machine, on either platform, with no absolute path to keep in step.
 
 ## Configuration reference
 
-tui-do reads `~/.config/tui-do/config.yaml`, or `$XDG_CONFIG_HOME/tui-do/config.yaml`.
-`TUI_DO_CONFIG` overrides the path. Only `server.url` and a credential are required; every
+tui-do reads the config from the platform path above, or from `$XDG_CONFIG_HOME/tui-do/`
+on Linux. `TUI_DO_CONFIG` overrides it on both. Only `server.url` and a credential are required; every
 other key below shows its default.
 
 ```yaml
