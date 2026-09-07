@@ -297,10 +297,10 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         Effect::OpenUrl(url) => {
             let tx = tx.clone();
             // `spawn_blocking` rather than `tokio::process`, which would need another
-            // tokio feature for one call. `xdg-open` hands the URL to a handler and exits
+            // tokio feature for one call. The opener hands the URL to a handler and exits
             // immediately, so this waits on a fork-exec and not on a browser.
             tokio::task::spawn_blocking(move || {
-                let result = std::process::Command::new("xdg-open")
+                let result = std::process::Command::new(URL_OPENER)
                     .arg(&url)
                     // Inherited handles would let the handler write over the alternate
                     // screen -- the interface owns this terminal.
@@ -310,8 +310,8 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
                     .status();
                 let failure = match result {
                     Ok(status) if status.success() => None,
-                    Ok(status) => Some(format!("xdg-open exited with {status}")),
-                    Err(error) => Some(format!("could not run xdg-open: {error}")),
+                    Ok(status) => Some(format!("{URL_OPENER} exited with {status}")),
+                    Err(error) => Some(format!("could not run {URL_OPENER}: {error}")),
                 };
                 if let Some(message) = failure {
                     let _ = tx.send(Msg::EffectFailed(message));
@@ -723,11 +723,25 @@ fn url_action() -> UrlAction {
     if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
         return UrlAction::Copy;
     }
+    // A local macOS session always has a window server to open onto, and sets neither of
+    // these -- checking for them here would send every Mac down the copy path and never
+    // open anything. The `SSH_*` check above is the one that still matters there.
+    #[cfg(not(target_os = "macos"))]
     if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
         return UrlAction::Copy;
     }
     UrlAction::Open
 }
+
+/// The program that hands a URL to the desktop.
+///
+/// `xdg-open` is the freedesktop entry point, and does not exist on macOS, which has `open`
+/// for the same job. Named once so the command and the error messages that quote it cannot
+/// drift apart.
+#[cfg(target_os = "macos")]
+const URL_OPENER: &str = "open";
+#[cfg(not(target_os = "macos"))]
+const URL_OPENER: &str = "xdg-open";
 
 /// Put text in the clipboard with OSC 52.
 ///

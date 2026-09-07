@@ -85,7 +85,8 @@ install -Dm755 "tui-do-$tag-$arch-unknown-linux-musl/tui-do" ~/.local/bin/tui-do
 
 The `sha256sum --check` line is worth keeping: it catches a truncated download, which
 otherwise shows up as a confusing crash rather than as the incomplete file it is. The only
-external program tui-do ever calls is `xdg-open`, when you press `o`.
+external program tui-do ever calls is the one that opens a link when you press `o`:
+`xdg-open` on Linux, `open` on macOS.
 
 ### Putting `~/.local/bin` on your `PATH`
 
@@ -260,13 +261,17 @@ rather not remember a key.
 | `:` / `?` | Run a command by name / show the keys |
 | `q`, `C-c` | Quit |
 
-**`o` copies rather than opens when there is nothing to open onto.** Over SSH, `xdg-open`
+**`o` copies rather than opens when there is nothing to open onto.** Over SSH the opener
 would launch a browser on the machine at the far end of the connection instead of the one you
-are sitting at. So with `SSH_CONNECTION` set, or with neither `DISPLAY` nor
+are sitting at. So with `SSH_CONNECTION` set, or -- on Linux -- with neither `DISPLAY` nor
 `WAYLAND_DISPLAY`, `o` puts the URL on your clipboard over OSC 52, which lands in the
-terminal *you* are typing in. That is working as intended, not a missing `xdg-open`. The
-toast names what it copied, because a few terminals ship with OSC 52 disabled and tui-do has
-no way to tell.
+terminal *you* are typing in. That is working as intended, not a missing opener. The toast
+names what it copied, because a few terminals ship with OSC 52 disabled and tui-do has no way
+to tell.
+
+The opener is `xdg-open` on Linux and `open` on macOS. A local macOS session always has a
+window server to open onto and sets neither `DISPLAY` nor `WAYLAND_DISPLAY`, so only the SSH
+rule applies there -- over SSH into a Mac, `o` still copies.
 
 ## Quick-add syntax
 
@@ -464,7 +469,9 @@ Then:
 git clone https://github.com/sjwasko/tui-do.git
 cd tui-do
 cargo build --release
-install -Dm755 target/release/tui-do ~/.local/bin/tui-do
+# `install -D` is GNU coreutils; BSD install (macOS) has no such flag.
+mkdir -p ~/.local/bin
+install -m755 target/release/tui-do ~/.local/bin/tui-do
 ```
 
 The first build fetches and compiles the whole dependency tree and takes a few minutes.

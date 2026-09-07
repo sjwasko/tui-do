@@ -66,3 +66,6 @@ __pycache__/
 # git history cannot be removed later without rewriting it, and a README image hosted
 # anywhere else breaks the day that host or release is deleted.
 !/docs/demo/tui-do-agent.gif
+
+# macOS finder metadata, which arrives with any checkout touched on a Mac.
+.DS_Store
