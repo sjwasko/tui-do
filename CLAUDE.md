@@ -472,14 +472,20 @@ fix.
 
 ## Platform policy
 
-Linux only through GA — tested on Omarchy (Arch, this workstation) and on Ubuntu **two
-ways**: `cargo test` in an `ubuntu:26.04` container in CI, and the hand-driven checks on
-24.04.4 LTS hardware, x86-64 and aarch64. The two releases are deliberate rather than a
-discrepancy to reconcile: the container proves the build against the newer LTS, and the
-hardware proves the shipped static binary against the LTS people are actually running.
-Anything claiming a single Ubuntu version is describing half the evidence. macOS is a
-post-GA port; there is a non-gating `cargo check` in CI purely to limit drift. Windows is
-answered with "use WSL" and is not a build target.
+Linux only at 1.0 — tested on Omarchy (Arch, this workstation) and on Ubuntu **two ways**:
+`cargo test` in an `ubuntu:26.04` container in CI, and the hand-driven checks on real
+hardware, x86-64 and aarch64.
+
+**The two used to be different releases, and that gap is closed.** This paragraph used to
+explain why 26.04 in CI and 24.04 on hardware were deliberate rather than a discrepancy —
+the container proving the build against the newer LTS, the hardware proving the shipped
+static binary against the LTS people actually run. Both are now driven by hand: 24.04.4 and
+**26.04 on 2026-09-07**, along with Raspberry Pi OS (64-bit) on a Pi 5 and 24.04 on a Pi 4.
+The old wording is worth remembering only as the shape of the argument — a claim about "the
+supported platform" that rests on two different kinds of evidence should say which is which.
+
+macOS is a post-1.0 port; there is a non-gating `cargo check` in CI purely to limit drift.
+Windows is answered with "use WSL" and is not a build target.
 
 Still write portably where it is free: paths via `dirs`, never cwd-relative writes,
 `rusqlite` with `bundled`. Platform-varying behavior (URL opening, markdown rendering,
@@ -525,6 +531,26 @@ report it still broken. Build release before saying a fix is ready to try.
 
 Workspace lints deny `unwrap`, `panic`, `todo`, `dbg!` and forbid `unsafe`. Tests may
 `allow` them at module level; production code may not.
+
+**Releases are tag-triggered.** `git tag v1.2.3 && git push origin v1.2.3` runs
+`.github/workflows/release.yml`, which gates on the full suite, builds a static musl binary
+for `x86_64` and `aarch64`, refuses to publish one that is not statically linked, and
+attaches both tarballs plus `SHA256SUMS` to a GitHub Release. A tag containing a hyphen
+(`v1.0.0-rc.1`) publishes as a pre-release; one without publishes as a full release, which
+is the whole of the difference between an rc and GA.
+
+The version lives in `Cargo.toml` in **four** places — `[workspace.package] version` and the
+three internal path dependencies, which carry a literal version because `cargo-deny`'s
+`wildcards = "deny"` rejects a versionless path dependency. They move together, and the
+obvious `sed` one-liner using `|` as both delimiter and alternation **silently bumps only
+the first and exits 0** — verified 2026-09-06. Use line-addressed substitution.
+
+Three things in that workflow look odd and are deliberate. The static check greps twice,
+accepting either `static-pie linked` or plain `statically linked`, because aarch64 comes out
+non-PIE while x86_64 is PIE. `cargo install cargo-about` needs `--features=cli` or it
+installs no binary at all. And `sha256sum` runs inside `dist/` while the release glob reads
+from the repo root, because `SHA256SUMS` must carry bare filenames for the README's
+`sha256sum --check` to work.
 
 ## Where tui-do keeps things
 
