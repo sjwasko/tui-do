@@ -51,15 +51,26 @@ jobs:
   build:
     name: build ${{ matrix.target }}
     needs: [gate, licenses]
-    runs-on: ubuntu-latest
+    # Per-target, because the darwin leg cannot be produced on Linux: cross-compiling to
+    # Apple's platform needs its SDK, which is not redistributable. `macos-latest` is
+    # Apple Silicon, so that leg is a plain native build -- simpler than the aarch64 musl
+    # one, which needs `cross`. Runners are free here because the repository is public.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
             cross: false
           - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
             cross: true
+          # Apple Silicon only, decided 2026-09-07. An Intel leg would need a second
+          # `macos-13` job or a `lipo` universal binary; nobody who runs this has one.
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -69,13 +80,16 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # Linux-only: `!matrix.cross` is now true for darwin as well, and `apt-get` on a
+      # macOS runner fails the job. macOS needs no equivalent -- the Xcode Command Line
+      # Tools are preinstalled, which is the C toolchain bundled SQLite compiles with.
       - name: musl C toolchain, for the bundled SQLite
-        if: ${{ !matrix.cross }}
+        if: ${{ runner.os == 'Linux' && !matrix.cross }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
 
-      - name: build (native musl)
+      - name: build (native)
         if: ${{ !matrix.cross }}
         run: cargo build --release --bin tui-do --target ${{ matrix.target }}
 
@@ -88,6 +102,7 @@ jobs:
       # A build that silently went dynamic must fail the release rather than ship: the
       # failure it causes lands on the user's machine, at startup, as a linker error.
       - name: refuse to ship anything that is not static
+        if: ${{ runner.os == 'Linux' }}
         run: |
           f=target/${{ matrix.target }}/release/tui-do
           file "$f"
@@ -100,6 +115,37 @@ jobs:
             && { echo "DYNAMIC -- refusing to publish"; exit 1; }
           file "$f" | grep -Eq 'static-pie linked|statically linked' \
             || { echo "NOT STATIC -- refusing to publish"; exit 1; }
+
+      # The same claim, in the only form macOS can make it.
+      #
+      # A Mach-O executable cannot be statically linked: Apple ships no static libSystem
+      # and does not support one, so the Linux check above would fail a perfectly good
+      # darwin build for lacking a property the platform does not have. What that check
+      # is really asserting is "this depends on nothing the user's machine might not
+      # have", and on macOS that is exactly `otool -L` naming only system libraries.
+      #
+      # It catches the failure the Linux gate exists for: a Homebrew libsqlite3 or
+      # libssl linked in from the runner would ship a binary that dies on a Mac without
+      # Homebrew, at startup, with a dyld error.
+      - name: refuse to ship anything linked outside the system
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          f=target/${{ matrix.target }}/release/tui-do
+          file "$f"
+          otool -L "$f"
+
+          # `tail -n +2` drops otool's first line, which is the binary's own path.
+          # `|| true` because grep exits 1 when it matches nothing, which is the pass.
+          outside=$(otool -L "$f" | tail -n +2 | awk '{print $1}' \
+            | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
+          if [ -n "$outside" ]; then
+            echo "links outside the system, so it would not start on a clean Mac:" >&2
+            echo "$outside" >&2
+            exit 1
+          fi
+
+          file "$f" | grep -q 'Mach-O 64-bit executable arm64' \
+            || { echo "NOT an arm64 Mach-O -- refusing to publish"; exit 1; }
 
       # Static linkage says nothing about whether the binary actually starts -- only
       # this leg can prove that, since the aarch64 binary cannot execute on this
@@ -148,7 +194,10 @@ jobs:
           mkdir -p "dist/$name"
           cp target/${{ matrix.target }}/release/tui-do "dist/$name/"
           cp README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # COPYFILE_DISABLE stops BSD tar writing `._` AppleDouble entries for extended
+          # attributes, which would put junk files beside the binary in the tarball and
+          # change its checksum for no reason. A no-op on Linux.
+          COPYFILE_DISABLE=1 tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -l "dist/$name.tar.gz"
 
       - uses: actions/upload-artifact@v4

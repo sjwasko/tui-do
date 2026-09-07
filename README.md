@@ -62,9 +62,14 @@ Regenerate it with [`docs/demo/tui-do-agent.tape`](docs/demo/tui-do-agent.tape).
 
 ## Install
 
-One statically linked binary. It needs no Rust, no C toolchain and no system SQLite (only a
-Linux kernel), and the same file runs on Arch, Ubuntu, Debian, Fedora and older LTS releases
-alike. [Building from source](#building-from-source) is only needed to modify tui-do.
+One binary, needing no Rust, no C toolchain and no system SQLite.
+[Building from source](#building-from-source) is only needed to modify tui-do.
+
+**On Linux it is statically linked** — nothing but a kernel is required, and the same file
+runs on Arch, Ubuntu, Debian, Fedora and older LTS releases alike. **On macOS it is not, and
+cannot be**: Apple ships no static libSystem, so the Mac binary links the system libraries
+every Mac already has. The release refuses to publish one that reaches outside `/usr/lib`
+and `/System/Library`, which is the same guarantee arrived at differently.
 
 **Tested on:** Ubuntu 24.04, Ubuntu 26.04, Omarchy 4.0.1-1j, Raspberry Pi OS (64-bit,
 Raspberry Pi 5), Ubuntu 24.04 (Raspberry Pi 4 Model B). Your results may vary on other
@@ -87,6 +92,20 @@ The `sha256sum --check` line is worth keeping: it catches a truncated download, 
 otherwise shows up as a confusing crash rather than as the incomplete file it is. The only
 external program tui-do ever calls is the one that opens a link when you press `o`:
 `xdg-open` on Linux, `open` on macOS.
+
+### macOS
+
+```sh
+brew install sjwasko/tui-do/tui-do
+```
+
+The release also carries `tui-do-<tag>-aarch64-apple-darwin.tar.gz` if you would rather not
+use Homebrew. Two things differ from the Linux recipe above and both fail confusingly:
+macOS has no `sha256sum` (`shasum -a 256 --check --ignore-missing` instead), and BSD
+`install` has no `-D` (`mkdir -p ~/.local/bin` first).
+
+**Apple Silicon only.** There is no Intel build; on an Intel Mac,
+[build from source](#building-from-source).
 
 ### Putting `~/.local/bin` on your `PATH`
 
@@ -457,7 +476,9 @@ test any of it are very welcome.
 second supported target: built and tested against 26.04 in CI, and hand-driven on both 24.04
 and 26.04 hardware, on x86-64 and aarch64 alike.
 
-- **macOS.** A planned port. It may build today; it is not tested or supported.
+- **macOS.** Apple Silicon, tested by hand on macOS 26 across several terminals, tmux, and
+  over SSH from Linux. Installed with Homebrew or from the release tarball. Intel is not
+  built.
 - **Windows.** Not a target. Use [WSL](https://learn.microsoft.com/windows/wsl/install) and
   run the Linux build. There are no plans to ship a native Windows binary.
 
