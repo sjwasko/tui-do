@@ -237,15 +237,80 @@ interface starts, on the same path the config is read on.
 
 ---
 
+## Decided and measured, 2026-09-08
+
+**The ordering question is settled: keychain first**, with `tui-do login` named and shaped
+now so an OAuth flow slots into it later rather than displacing it.
+
+The worry that held this open was that "building the storage half first is how the subcommand
+ends up wrong". That is answered by deciding the *shape* up front, not by reordering the work
+— and meanwhile OAuth acquired two blockers neither of which is ours to clear:
+[`go-vikunja/vikunja#3837`](https://github.com/go-vikunja/vikunja/pull/3837) has to merge,
+*and* a server carrying it has to be deployed before `cargo xtask fetch-spec` can satisfy
+Rule 3. Dev is on `v2.5.0`; upstream `main` is already past it. The keychain is blocked on
+nothing.
+
+### The premise of this note was wrong, and in an interesting direction
+
+It said "a statically linked musl binary that dlopens libsecret is a contradiction". There is
+**no libsecret anywhere in this**, and there is not one Linux backend but three, which link
+three different ways. Measured on the workstation, `keyring v3.6.3`, `ldd` on a release build:
+
+| keyring feature | what it talks to | shared libraries beyond libc/libgcc |
+|---|---|---|
+| `async-secret-service` | Secret Service over D-Bus, via `secret-service v4.0.0` → `zbus v4.4.0`, **pure Rust** | **none** |
+| `linux-native` | the kernel keyring (keyutils) | **none** |
+| `sync-secret-service` | Secret Service via `dbus-secret-service` → `libdbus-sys` | `libdbus-1.so.3`, `libsystemd.so.0` |
+
+So the question is not "does the Linux backend survive musl" but **"which backend do we
+pick"**, and the pure-Rust one exists. `sync-secret-service` is the one that would have made
+the original worry true.
+
+`linux-native` is not the answer despite linking nothing: the kernel keyring is
+session-scoped and does not survive a reboot. That is not what "keychain" means to anyone
+installing this.
+
+### What it costs, corrected
+
+Net-new crates against tui-do's current 412, computed as a set difference against
+`Cargo.lock` rather than guessed from a tree size:
+
+| backend | net-new crates |
+|---|---|
+| `async-secret-service` | **53** |
+| `sync-secret-service` | 18 |
+| `linux-native` | 2 |
+
+**53 is worse than it looks, and the reason is the finding.** `zbus v4.4.0` pulls `async-io`,
+`async-executor`, `blocking` and `polling` — the smol runtime — **even with keyring's `tokio`
+feature enabled**, because zbus does not drop its default features from where keyring sits.
+tui-do already runs on tokio, so the pure-Rust path as it stands means shipping **two async
+runtimes** in a to-do client. That is a real cost and it is not obviously worth 53 crates;
+whether zbus's defaults can be turned off from outside keyring is the next thing to establish.
+
+### Still unmeasured
+
+**The static musl link itself.** It could not be run here: the workstation has only the
+`x86_64-unknown-linux-gnu` target, no `musl-gcc`, and no `rustup` (Arch's `rust` package),
+and Docker's daemon is inactive with the user outside the `docker` group. Installing `rustup`
+alongside Arch's `rust` would disturb a working toolchain for a measurement, so this waits
+for a container.
+
+The `ldd` result above makes the answer very likely — a backend that links no C library has
+nothing to fail to link statically — but "very likely" is what the first version of this note
+said about OAuth. It is not measured until a musl binary exists and `file` says
+`statically linked`.
+
+---
+
 ## The open questions, not decided here
 
-1. **Does the Linux backend survive a static musl build?** Measure before choosing. This is
-   the one that could make the whole feature macOS-only in practice.
-1. **Does OAuth displace this work, or sit beside it?** Now that the authorization server
-   is known to exist (see the correction above), the ordering is a real question: a
-   `tui-do login` that completes an OAuth flow and stores the result in the keychain is one
-   feature, not two, and building the keychain first without deciding that is how the
-   subcommand ends up with the wrong shape. Rule 3 has to be answered either way.
+1. ~~**Does the Linux backend survive a static musl build?**~~ **Largely answered above,
+   2026-09-08** — there are three backends and the pure-Rust one links no C library at all.
+   The build itself still has to be run in a container to confirm it.
+1. ~~**Does OAuth displace this work, or sit beside it?**~~ **Decided 2026-09-08: it sits
+   beside it, and the keychain goes first.** See the section above. `tui-do login` is named
+   now so the OAuth flow has somewhere to land.
 2. **`tui-do login` or a flag on an existing command?** A subcommand is discoverable and is
    what the Homebrew caveats block would name. It is also the natural home for OAuth later,
    if the server ever grows it — which argues for the name now even if it only stores a

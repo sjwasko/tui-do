@@ -92,20 +92,33 @@ up by the agent. Needs nothing new on the wire — a saved filter plus a convent
 
 ## Auth and credentials
 
-**7. Decide: OAuth first, or keychain first.** *(raised 2026-09-08 — blocks 8)*
-Not decided, and it should be decided before either is built. `tui-do login` that completes
-an OAuth flow and stores the result in the keychain is **one** feature with one shape;
-building the storage half first is how the subcommand ends up wrong. See
-`md/2026-09-07-credential-storage-design.md`, including its 2026-09-08 correction.
+**7. ~~Decide: OAuth first, or keychain first.~~ Decided 2026-09-08: keychain first.**
+`tui-do login` is named and shaped now so the OAuth flow lands in it later rather than
+displacing it. OAuth is blocked on item 1 merging *and* a server carrying it being deployed,
+neither of which is ours to clear; the keychain is blocked on nothing. Recorded in
+`md/2026-09-07-credential-storage-design.md`.
 
-Two things stand in the way of OAuth and neither is the server: **Rule 3** (the endpoints
-are real and undocumented — item 1) and **a browser in the loop**, which is a new
-interaction on the startup path where Rule 1 says no prompts.
-
-**8. Keychain credential storage.** *(raised 2026-09-07 — blocked on 7)*
+**8. Keychain credential storage.** *(raised 2026-09-07 — unblocked 2026-09-08)*
 Designed, not built. Strictly additive: keychain → `TUI_DO_API_TOKEN` → `token_file` →
-inline. The open measurement is whether a libsecret backend survives a static musl build;
-if it does not, the Linux half may be from-source only. **Do not start before 7.**
+inline.
+
+The musl worry turned out to be the wrong question, measured 2026-09-08: there is no
+libsecret in this at all, and `keyring v3.6.3` offers three Linux backends that link three
+ways. `async-secret-service` reaches the Secret Service through `zbus`, in pure Rust, and
+links **no** C library — where `sync-secret-service` links `libdbus-1` and `libsystemd`, and
+`linux-native` is the kernel keyring, which does not survive a reboot and is not what
+"keychain" means to a user.
+
+Two things left before code:
+
+- **Confirm the static musl link in a container.** The workstation cannot: gnu target only,
+  no `musl-gcc`, no `rustup`, and Docker's daemon is inactive with the user outside the
+  `docker` group. Very likely fine — a backend linking no C library has nothing to fail to
+  link — but "very likely" is what this note said about OAuth once.
+- **Establish whether zbus's default features can be dropped.** `zbus v4.4.0` pulls
+  `async-io`/`async-executor`/`blocking` even with keyring's `tokio` feature on, so the
+  pure-Rust path currently means **two async runtimes** in the binary and 53 net-new crates
+  against the present 412. That may change which backend is worth having.
 
 ---
 
