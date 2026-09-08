@@ -115,8 +115,16 @@ not be fixed. None are Critical.
 - **2026-09-08** — README's first-time setup now covers macOS directly rather than making a
   Mac user translate Linux paths, and both config examples use a relative `token_file`,
   which is portable across platforms and machines.
-- **2026-09-08** — tui-do submitted to Vikunja's External Integrations page, at kolaente's
-  invitation on the announcement thread.
+- **2026-09-08** — **tui-do is listed on Vikunja's External Integrations page.** PR #399,
+  invited by kolaente on the announcement thread and merged by him the same day; live at
+  `vikunja.io/docs/integrations/`.
+
+  Worth keeping: the first push carried the PR title and body *inside* the file, every
+  line indented two spaces, because the entry and the PR metadata were handed over as one
+  block and pasted together. kolaente requested changes on it. That is the paste-mangling
+  failure in CLAUDE.md's "Driving another box by hand", arriving somewhere that section
+  does not cover — a browser textarea rather than a remote terminal. The fix was the same
+  one that section already prescribes: build the file and move it, do not retype it.
 - **2026-09-08** — the credential note's "OAuth is unavailable" finding corrected: the
   authorization server is live on `v2.5.0`.
 - **2026-09-07** — macOS port, `v1.0.1`; crates.io names claimed; the naming question
