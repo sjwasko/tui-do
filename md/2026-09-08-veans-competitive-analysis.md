@@ -164,34 +164,34 @@ offline, local-first, a real interface — goes unused.
 
 ---
 
-## 5. A correction this turned up, and it matters for the credential work
+## 5. A correction this turned up — now settled
 
 `md/2026-09-07-credential-storage-design.md` concluded that **OAuth is not available** on
-our Vikunja and deferred the whole question to a server upgrade. veans's documentation
-says the built-in authorization server has been there since **2.3**, and dev runs
-**2.5.0**. Both cannot be right.
+our Vikunja and deferred the question to a server upgrade. **Probed on dev the same day
+this was written: that conclusion is wrong. The authorization server is live on `v2.5.0`.**
 
-Two reasons to re-probe before any of the credential design is built:
+`OPTIONS /api/v1/oauth/authorize` and `/api/v1/oauth/token` both answer
+`Allow: OPTIONS, POST`; `POST /api/v1/oauth/token` with an empty body answers `400` code
+`17007` naming `authorization_code` and `refresh_token` as the supported grants. The same
+prefix with a nonsense suffix answers `404`, so the `405` the original note filed under
+"not available" was the route existing, not missing.
 
-- **A `405` is evidence the route exists.** The design note recorded
-  `/api/v1/oauth/authorize` → `405` and filed it under "not available." `405 Method Not
-  Allowed` conventionally means the path *is* registered and the method was wrong. The
-  `200`s that were correctly identified as the SPA catch-all are the misleading half; the
-  `405` is the one result in that table that is not a catch-all, and it was read as
-  absence.
-- **`openid_connect.enabled: false` is about something else.** The note says so itself —
-  that flag is Vikunja acting as an OIDC *client* to an external provider. It is not
-  evidence about Vikunja's own authorization server, and it should not have been counted
-  as corroboration.
+The full correction, including the two measurement mistakes that produced the original
+answer, is in that note. The short version is that **an SPA serves identical HTML for every
+route it owns**, so comparing a body against a nonsense path proves client-side routing and
+nothing else — and the probe never asked the API.
 
-It may still be config-gated and genuinely off on dev. But the question is open again
-rather than settled, and it is cheap to settle: `veans init --server <dev>` either
-completes an OAuth flow or it does not.
+**veans's documentation was right and ours was wrong**, which is worth saying plainly given
+this file spends its length comparing the two.
 
-**The keychain half of that design is independently confirmed.** veans stores the bot
-token in the OS keychain, falls back to `VEANS_TOKEN`, then to
-`~/.config/veans/credentials.yml` at `0600` — the same three sources in the same order the
-design note arrived at on its own.
+**The keychain half is independently confirmed.** veans stores the bot token in the OS
+keychain, falls back to `VEANS_TOKEN`, then `~/.config/veans/credentials.yml` at `0600` —
+the same three sources in the same order the design note reached on its own.
+
+**One blocker that is ours, not the server's:** the OpenAPI document has no `oauth` path —
+126 paths, checked-in and re-fetched live, neither contains one. Rule 3 says no endpoint is
+called that isn't in `spec/vikunja.json`, and a conformance test asserts it. Using OAuth
+means an argued exception or an upstream spec fix, decided before anyone starts.
 
 ---
 

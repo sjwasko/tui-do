@@ -3,11 +3,16 @@
 Written 2026-09-07, after the macOS port shipped in `v1.0.1` and a Homebrew tap was
 published. Prompted by [veans](https://vikunja.io/docs/veans/), an experimental
 Vikunja CLI in Vikunja's own documentation, which stores its credential in the OS keychain
-and authenticates by OAuth. Both ideas were examined; **one of them is available and one is
-not**, and the difference was settled by asking the server rather than by reading either
-document.
+and authenticates by OAuth. Both ideas were examined against the server rather than taken
+from either document — and the examination of one of them was botched, which is what the
+banner below is about.
 
 Nothing here is built yet. This is the note that gets argued with first.
+
+> **Superseded in part, 2026-09-08.** The finding that OAuth is unavailable is wrong; the
+> endpoints exist and work on `v2.5.0`. The correction, the two measurement mistakes that
+> produced it, and what it does and does not change are in the section below. The keychain
+> half of this note stands unaltered.
 
 ---
 
@@ -22,8 +27,9 @@ veans documents three credential sources, tried in order: **OS keychain**
 That second one would be worth more than everything else in this note put together, so it
 was checked first.
 
-**It is not available on the Vikunja tui-do is built against.** Measured against dev on
-2026-09-07, running `v2.5.0`:
+~~**It is not available on the Vikunja tui-do is built against.**~~ **Wrong — see the
+correction below.** Measured against dev on 2026-09-07, running `v2.5.0`, and kept here as
+the record of how the wrong answer was reached:
 
 | asked | answered |
 |---|---|
@@ -39,17 +45,76 @@ was checked first.
 `index.html`. A status code alone would have said the opposite of the truth here, which is
 the whole reason this project measures rather than probes.
 
-`spec/vikunja.json` agrees and was right all along: of 126 paths the only auth surfaces are
+~~`spec/vikunja.json` agrees and was right all along:~~ The spec is silent, which is not the
+same as agreeing — of 126 paths the only auth surfaces are
 `/login`, `/user/token`, `/user/token/refresh`, the scoped `/tokens` family, and
 `/auth/openid/{provider}/callback` — which is Vikunja acting as an OIDC *client* to an
 external provider, not as an authorization server. `/api/v1/info` reports
 `openid_connect.enabled: false`.
 
-**So OAuth is deferred to a server upgrade, not designed here.** Re-probe after the next
-one; `veans` claims to need only Vikunja ≥ 2.4.0, which sits oddly with this and is worth
-resolving before anyone builds against it. If it does arrive it deletes the whole "Token
-permissions" section of the README, which is the largest single piece of onboarding friction
-tui-do has.
+**CORRECTION, measured 2026-09-08 — the conclusion above is wrong. OAuth is available
+today, on this server, at `v2.5.0`.** The paragraph that stood here deferred the whole
+question to a server upgrade. It should not have.
+
+What settled it was asking the API rather than the web application:
+
+| asked | answered |
+|---|---|
+| `GET /api/v1/oauth/authorize` | `405`, `{"message":"Method Not Allowed"}` |
+| `OPTIONS /api/v1/oauth/authorize` | `204`, **`Allow: OPTIONS, POST`** |
+| `OPTIONS /api/v1/oauth/token` | `204`, **`Allow: OPTIONS, POST`** |
+| `GET /api/v1/oauth/garbage-xyz` | `404` — so the `405` is a *route*, not a prefix |
+| `POST /api/v1/oauth/token` `{}` | `400`, code **`17007`**, "The grant_type is not supported. Use 'authorization_code' or 'refresh_token'." |
+| `POST /api/v1/oauth/token` `grant_type=authorization_code` | `400`, code **`17004`**, "The authorization code is invalid or has already been used." |
+| `POST /api/v1/oauth/authorize` `{}` | `401`, code `11`, invalid token — it authorizes *as* a signed-in user |
+
+Distinct error codes for distinct failures, both `authorization_code` and `refresh_token`
+grants named by the server itself, and form and JSON bodies both accepted. That is an
+implemented authorization server, not a stub.
+
+**Two mistakes produced the original answer, and both are worth keeping.**
+
+**A single-page application serves the same HTML for every route it owns, real or
+invented.** The original measurement compared the body of `/.well-known/oauth-authorization-server`
+against a deliberately nonsense path, found the md5 identical, and concluded both were a
+catch-all. The md5s *are* identical — re-measured, `d70965d24f69` for both — but that
+proves only that the front end does client-side routing. It cannot distinguish a route the
+SPA implements from one it does not, so it is not evidence of absence and was read as if it
+were. `/oauth/authorize` returning the SPA is exactly what a browser-facing consent page
+looks like.
+
+**The probe never asked the API.** Every path in the original table was a front-end path
+except one, and that one — `/api/v1/oauth/authorize` — answered `405`, which was filed
+under "not available" alongside the `200`s. `405 Method Not Allowed` conventionally means
+the route exists and the method was wrong, and here it does: the same prefix with a
+nonsense suffix answers `404`, and `OPTIONS` names `POST`.
+
+**`openid_connect.enabled: false` was cited as corroboration and is about something else.**
+This note already says so two paragraphs above — that flag is Vikunja acting as an OIDC
+*client* to an external provider. It is not a statement about Vikunja's own authorization
+server, and counting it as agreement is how a wrong answer got a second vote.
+
+**What this changes.** veans's documentation was right and this note was wrong: the
+authorization server is there, which is why veans can require only ≥ 2.4.0. The "sits
+oddly with this" hedge was the correct instinct and should have been resolved by
+measurement before the conclusion was written down.
+
+**It does not follow that tui-do should build OAuth next.** Two things stand in the way and
+neither is about the server:
+
+- **Rule 3.** No endpoint is called that isn't in `spec/vikunja.json`, asserted by a
+  conformance test. The OpenAPI document — checked-in *and* re-fetched live on 2026-09-08,
+  126 paths both — contains **no** `oauth` path at all. So the endpoints are real and
+  undocumented, and using them means either an explicit, argued exception to Rule 3 or an
+  upstream fix to the spec. That is a decision to take deliberately, not a detail to
+  discover halfway through an implementation.
+- **A browser.** The flow needs the user to open a URL, sign in, and paste a callback back.
+  veans does exactly that. It is not hard, but it is a new interaction on the startup path
+  and Rule 1's "no prompt on the startup path" applies to it.
+
+The prize is unchanged and is still the largest one available: it deletes the whole "Token
+permissions" section of the README, which is the biggest single piece of onboarding
+friction tui-do has.
 
 **The keychain needs nothing from the server.** It is entirely client-side and can be built
 today. The rest of this note is about that.
@@ -176,6 +241,11 @@ interface starts, on the same path the config is read on.
 
 1. **Does the Linux backend survive a static musl build?** Measure before choosing. This is
    the one that could make the whole feature macOS-only in practice.
+1. **Does OAuth displace this work, or sit beside it?** Now that the authorization server
+   is known to exist (see the correction above), the ordering is a real question: a
+   `tui-do login` that completes an OAuth flow and stores the result in the keychain is one
+   feature, not two, and building the keychain first without deciding that is how the
+   subcommand ends up with the wrong shape. Rule 3 has to be answered either way.
 2. **`tui-do login` or a flag on an existing command?** A subcommand is discoverable and is
    what the Homebrew caveats block would name. It is also the natural home for OAuth later,
    if the server ever grows it — which argues for the name now even if it only stores a
