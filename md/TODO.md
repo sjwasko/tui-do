@@ -17,11 +17,13 @@ Last touched 2026-09-08.
 
 ## Now
 
-**1. PR the missing OAuth paths to Vikunja's OpenAPI spec.** *(raised 2026-09-08)*
-`/api/v1/oauth/authorize` and `/api/v1/oauth/token` are live on the server and absent from
-all 126 paths in `docs.json`, because `pkg/modules/auth/oauth2server/{token,authorize}.go`
-carry no `@Router` annotations. Filed against `go-vikunja/vikunja`. This is a prerequisite
-for anything below that touches OAuth, because of Rule 3.
+**1. Wait on the OAuth spec PR, then refresh `spec/vikunja.json`.** *(raised 2026-09-08)*
+[`go-vikunja/vikunja#3837`](https://github.com/go-vikunja/vikunja/pull/3837) is **open** and
+adds `@Router` annotations for `/oauth/authorize` and `/oauth/token` plus the regenerated
+`pkg/swagger` — 126 paths to 128, 521 insertions and no deletions. Nothing to do here until
+it merges *and* a server carrying it is deployed; then `cargo xtask fetch-spec`, because
+Rule 3 checks tui-do's pinned copy and not upstream's. That is the prerequisite for
+anything below that touches OAuth.
 
 **2. Drive the rest of the interface on macOS.** *(raised 2026-09-07)*
 The port note's honest limit: the compiler, the test suite and the startup path are proven,
@@ -112,6 +114,17 @@ not be fixed. None are Critical.
 
 ## Done
 
+- **2026-09-08** — **Vikunja PR #3837 opened**: swagger annotations for the two OAuth 2.0
+  endpoints, which are served and were in none of the 126 documented paths. Regenerated
+  with `mage generate:swagger-docs`; `mage lint` clean, `gofmt` clean, the package tests
+  pass. Two corrections to the drafted annotations came out of reading their source rather
+  than assuming: the token endpoint is `@Accept json`, matching upstream's own comment that
+  v1 binds JSON and v2 takes the form body (v1 *does* bind a form body — measured — and the
+  PR hands them that fact rather than deciding it for them); and authorize's `403` is
+  `models.Message`, not `web.HTTPError`, because it comes from `echo.NewHTTPError` with a
+  string, which `error_handler.go` wraps as `{"message": …}`. The handoff's fallback import
+  path for `web` was also wrong — it is `code.vikunja.io/api/pkg/web` — but `swag` resolved
+  the bare `web.HTTPError` through `--parseDependency`, so it was never needed.
 - **2026-09-08** — README's first-time setup now covers macOS directly rather than making a
   Mac user translate Linux paths, and both config examples use a relative `token_file`,
   which is portable across platforms and machines.
