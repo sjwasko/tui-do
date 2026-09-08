@@ -39,18 +39,45 @@ note and does not exist** — write it or drop the reference.
 This is where the 2026-09-08 competitive analysis (`md/2026-09-08-veans-competitive-analysis.md`)
 lands, and the order matters.
 
-**3. Read verbs, with `--json`.** *(raised 2026-09-08)*
-`tui-do list` and `tui-do show`. Today `add` is the entire agent surface, and the real gap
-against veans is not quick-add versus flags — it is that veans can read and tui-do cannot.
-Answering **from the local store** is the part veans structurally cannot copy: instant, and
-works offline. Smaller than Kanban and worth doing first.
+**3. An MCP server, and read verbs with `--json`. One piece of work, not two.**
+*(raised 2026-09-08; in progress on `feature/mcp-server`, worktree `../tui-do-mcp`)*
+Design taken in `md/2026-09-08-mcp-server-design.md`. `tui-do list` and `tui-do show` are
+still the item — today `add` is the entire agent surface, and the real gap against veans is
+not quick-add versus flags but that veans can read and tui-do cannot. Answering **from the
+local store** is the part veans structurally cannot copy.
+
+**They merged into one item because they are one contract.** An MCP tool result and
+`tui-do list --json` are the same promise about the same shape through different doors.
+`PLAN.md` and `skills/tui-do/SKILL.md` both flag that shape as undecided and warn that once
+something depends on it, it is an API; shipping the two separately means two incompatible
+agent-facing contracts and a reconciliation that breaks whichever arrived first. So one
+serialisation module — `tui_do_core::agent` — is the single source and both surfaces render
+from it.
+
+**Nothing of this is on `main` yet, deliberately.** The branch also carries the
+`runtime::add` split that `bugs.md` §2 already prescribes, because MCP speaks JSON-RPC over
+stdout and a function that prints six branches of console report cannot be called from it.
 
 **4. Kanban buckets.** *(raised 2026-09-08; on the roadmap since Phase 5)*
-The blocker for everything below it: tui-do cannot currently display the thing an agent
-moves. Promotes from "Vikunja parity" to "the feature that makes the agent story real".
+Promotes from "Vikunja parity" to "the feature that makes the agent story real".
 
-**5. A review queue.** *(raised 2026-09-08)*
-A view filtered to work an agent has finished and parked for a human. veans's one good rule
+**Two corrections from the 2026-09-08 MCP design, both from `PLAN.md`'s own post-GA
+sections.** First, the *write* side is **not** blocked on tui-do rendering a board — *"the
+web UI is the display and tui-do is the actuator"*, and the write side alone delivers most
+of the value and can ship first. The real blocker is narrower: **`tui-do-api` has no bucket
+calls at all**, so this is "a client method, a `Mutation`, and a CLI verb, not a new
+subsystem."
+
+Second, **a bucket belongs to a view, not to a project**, and the CLI shape has to make that
+unmissable or someone moves a card on a board nobody is looking at. The MCP server therefore
+carries a view in its binding from its first commit even though nothing reads it yet, so the
+label-to-bucket swap cannot change a launch contract agents have already been configured
+with.
+
+**5. A review queue.** *(raised 2026-09-08; unblocked early by item 3)*
+A view filtered to work an agent has finished and parked for a human. Item 3's status labels
+(`agent:in-review`) give this a filter to read **before** buckets exist, so it no longer
+waits on item 4. veans's one good rule
 is that the agent never closes its own task — that leaves a sign-off step whose only home
 today is a web browser. Highest value per unit of work on this list, and a feature an
 agent CLI structurally cannot build.
@@ -108,7 +135,10 @@ not be fixed. None are Critical.
 
 - `md/2026-09-07-macos-test-plan.md` is referenced and absent — see item 2.
 - The three structural troubleshooting surfaces in `bugs.md` (`sync::push_with`,
-  `runtime::add`, `update::apply_edit`) are still the worst places to debug.
+  `runtime::add`, `update::apply_edit`) are still the worst places to debug. **`runtime::add`
+  is scheduled**: item 3's branch splits it into `resolve_or_explain` and `report` exactly as
+  `bugs.md` §2 prescribes, because an MCP server cannot call a function that writes to the
+  stdout it speaks JSON-RPC over. The other two are untouched.
 
 ---
 
