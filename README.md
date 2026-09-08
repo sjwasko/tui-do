@@ -39,7 +39,9 @@ Regenerate it with [`docs/demo/tui-do-agent.tape`](docs/demo/tui-do-agent.tape).
 > authors accept no liability for lost or damaged data.** The formal terms are in
 > [License](#license); this paragraph is the plain-English version.
 >
-> The local store at `~/.local/share/tui-do/tui-do.db` is disposable: delete it and the next
+> The local store (`~/.local/share/tui-do/tui-do.db` on Linux; see
+> [Where tui-do keeps its files](#where-tui-do-keeps-its-files) for macOS) is disposable:
+> delete it and the next
 > run re-syncs. What is worth protecting is what lives on your Vikunja server.
 > Open issues are listed in [`bugs.md`](bugs.md).
 
@@ -148,8 +150,7 @@ Create an API token in Vikunja under **Settings → API tokens**. Vikunja tokens
 and the scopes are not obvious, so see [Token permissions](#token-permissions) below if you
 get *"not authorized: missing, malformed, expired or otherwise invalid token provided"*.
 
-Then, **on Linux** (macOS uses different paths, see
-[Where tui-do keeps its files](#where-tui-do-keeps-its-files)):
+Then, on **Linux**:
 
 ```sh
 mkdir -p ~/.config/tui-do
@@ -158,13 +159,31 @@ chmod 600 ~/.config/tui-do/token
 $EDITOR ~/.config/tui-do/config.yaml
 ```
 
-A URL and somewhere to find the token is the whole minimum:
+Or on **macOS**, where all three files share one directory. Note the space in the path,
+which is why every line here is quoted:
+
+```sh
+dir="$HOME/Library/Application Support/tui-do"
+mkdir -p "$dir"
+printf '%s' 'YOUR_TOKEN_HERE' > "$dir/token"
+chmod 600 "$dir/token"
+$EDITOR "$dir/config.yaml"
+```
+
+A URL and somewhere to find the token is the whole minimum, and this file is the same on
+both platforms:
 
 ```yaml
 server:
   url: https://vikunja.example.com
-  token_file: ~/.config/tui-do/token
+  token_file: token
 ```
+
+`token_file: token` is **relative**, so it resolves against the directory holding the config
+that names it. Writing it that way is what makes the config portable: it works unchanged on
+either platform, and it travels to a new machine alongside its token with no absolute path
+to keep in step. An absolute path or one starting `~` works too if you would rather be
+explicit.
 
 Then run `tui-do`. Everything else has a default; see the
 [configuration reference](#configuration-reference) for the rest.
@@ -209,7 +228,9 @@ server:
   url: https://vikunja.example.com
   # Either point at a file holding the token, or set TUI_DO_API_TOKEN.
   # tui-do warns if the file is readable by other accounts.
-  token_file: ~/.config/tui-do/token
+  # A relative path resolves against this config's own directory, which is the
+  # portable way to write it. Absolute paths and a leading ~ also work.
+  token_file: token
 
 sync:
   # The local store answers every read, so this sets staleness rather than speed.
