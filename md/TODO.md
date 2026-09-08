@@ -29,8 +29,10 @@ anything below that touches OAuth.
 The port note's honest limit: the compiler, the test suite and the startup path are proven,
 and `o` was confirmed by hand. Rendering, keybindings, sync against a live server from
 inside the interface, OSC 52 in Terminal.app and iTerm2, lid close, and `o`'s *copy* branch
-over SSH are all undriven. **`md/2026-09-07-macos-test-plan.md` is referenced by the port
-note and does not exist** — write it or drop the reference.
+over SSH are all undriven. The plan is written — `md/2026-09-08-macos-test-plan.md`,
+2026-09-08 — and waits on the machine being stood up. It opens by flagging that
+`README.md:500` already claims "several terminals, tmux, and over SSH", none of which has
+been driven; that claim either gets backed or gets cut.
 
 ---
 
@@ -133,7 +135,7 @@ not be fixed. None are Critical.
 
 ## Documentation debt
 
-- `md/2026-09-07-macos-test-plan.md` is referenced and absent — see item 2.
+- `README.md:500` claims macOS was tested across several terminals, tmux and over SSH; none of that has been driven. See item 2.
 - The three structural troubleshooting surfaces in `bugs.md` (`sync::push_with`,
   `runtime::add`, `update::apply_edit`) are still the worst places to debug. **`runtime::add`
   is scheduled**: item 3's branch splits it into `resolve_or_explain` and `report` exactly as

@@ -271,11 +271,12 @@ against a live server from inside the interface, OSC 52 clipboard behaviour in T
 or iTerm2, behaviour across a lid close, or `o`'s *copy* branch over SSH — which, now that
 the open branch works, is the one that keeps a browser from opening on an unattended Mac.
 
-**That plan has not been written.** This paragraph used to name
-`md/2026-09-07-macos-test-plan.md` as though it existed; it never did, which is exactly the
-failure mode of recording an intention in prose instead of in a backlog. The work is item 2
-in `md/TODO.md`, and its exit criteria are still what should gate moving macOS out of
-"planned" in the README's platform table.
+**The plan now exists: `md/2026-09-08-macos-test-plan.md`**, written 2026-09-08 and not
+yet driven. This paragraph used to name `md/2026-09-07-macos-test-plan.md` as though it
+existed; it never did, which is exactly the failure mode of recording an intention in prose
+instead of in a backlog — so the replacement carries the date it was actually written. The
+work is item 2 in `md/TODO.md`, and that plan's exit criteria are what should gate the
+README's platform claim.
 
 ---
 
