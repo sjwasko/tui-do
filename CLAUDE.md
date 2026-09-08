@@ -1,7 +1,15 @@
 # tui-do — working notes for Claude
 
 A local-first terminal client for Vikunja. Rust workspace, ratatui UI, SQLite store.
-Full phase plan in `PLAN.md`.
+
+**Before planning or starting any feature work, read `md/TODO.md` first.** It is the live
+backlog: what is planned, what is blocked on a decision that has not been taken, and what
+was promised publicly and is therefore owed. Anything newly agreed goes into that file in
+the session it is agreed in — a feature that lives only in a chat log or a design note is
+not planned, and the next session will not find it.
+
+`PLAN.md` is the *foundation* plan and is historical: phases 0-5 shipped and it does not
+describe what comes after them. `bugs.md` holds defects. `md/TODO.md` holds intent.
 
 ## The rules that matter
 

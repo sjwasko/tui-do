@@ -271,8 +271,11 @@ against a live server from inside the interface, OSC 52 clipboard behaviour in T
 or iTerm2, behaviour across a lid close, or `o`'s *copy* branch over SSH — which, now that
 the open branch works, is the one that keeps a browser from opening on an unattended Mac.
 
-`md/2026-09-07-macos-test-plan.md` is the plan for closing the rest, and its exit criteria
-are what should gate moving macOS out of "planned" in the README's platform table.
+**That plan has not been written.** This paragraph used to name
+`md/2026-09-07-macos-test-plan.md` as though it existed; it never did, which is exactly the
+failure mode of recording an intention in prose instead of in a backlog. The work is item 2
+in `md/TODO.md`, and its exit criteria are still what should gate moving macOS out of
+"planned" in the README's platform table.
 
 ---
 
