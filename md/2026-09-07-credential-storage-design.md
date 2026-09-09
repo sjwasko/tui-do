@@ -186,6 +186,28 @@ diagnosis the user cannot reach from the message. And an entry that exists but c
 read must never be quietly replaced by a different credential, because that is how someone
 ends up authenticated as the wrong account without noticing.
 
+**That table imagines a person at a terminal, and one prospective consumer is not one.**
+The MCP server designed on 2026-09-08 (`md/2026-09-08-mcp-server-design.md`, branch
+`feature/mcp-server`) links `tui-do-core`, so it needs the same credential the interface
+does — but it is started by an agent supervisor, not by a human logging in. For that
+consumer **"service present, locked" is the ordinary case rather than the edge case**: a
+process with no graphical session has nothing to unlock the ring against, and nobody is
+reading the "say so once" message.
+
+Two consequences, neither of which changes the keychain-first decision:
+
+- **`TUI_DO_API_TOKEN` and `token_file` are not a legacy path for this consumer, they are
+  the primary one.** That is another reason the file source must stay, independent of the
+  fleet argument above — and it means "the keychain is where the credential lives" can
+  never become an assumption anything depends on.
+- **Rule 1's "no new prompt on the startup path" hardens from a preference into a
+  constraint.** For a person, an unlock dialog is an unwanted interruption. For a server
+  with no session bus and no human, it is unanswerable — the process hangs or fails, and
+  the failure looks like a credential problem rather than a UI one.
+
+Written down here because it only appears where the two efforts meet, and the session
+building the MCP server will reach the credential path before this one does.
+
 ---
 
 ## What it costs, honestly
