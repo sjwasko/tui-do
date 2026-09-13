@@ -51,13 +51,14 @@ throughout, both learned the hard way in this pass:
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
 | BUG-9 | grapheme table against `truncate`/`wrap` | yes |
 | BUG-14 | store-level rollback sequence | yes |
+| BUG-20 | render at the offset in force on the target date | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 
 ## What is left, at a glance
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-7, BUG-9 |
+| **Decide, then fix** | BUG-7, BUG-9, BUG-20 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -609,6 +610,92 @@ assert!(orphans.is_empty(), "a provisional label was resurrected: {orphans:?}");
 If `labels_with_negative_ids` does not exist, the same check is one `SELECT id FROM labels
 WHERE id < 0` in a test helper. The row it finds will never settle and never sync, which is
 what makes it a phantom rather than merely stale.
+
+### BUG-20 — a date typed across a DST boundary lands on the wrong day
+
+`crates/tui-do-core/src/quickadd/dates.rs:575` (`to_utc`), with the cause at
+`crates/tui-do/src/runtime/mod.rs:58`:
+
+```rust
+fn now() -> chrono::DateTime<chrono::FixedOffset> {
+    chrono::Local::now().fixed_offset()
+}
+```
+
+`fixed_offset()` freezes *today's* UTC offset and throws the zone's rules away. `to_utc` then
+resolves every date the user types in that one offset:
+
+```rust
+let zone = now.timezone();
+match zone.from_local_datetime(&naive) { … }
+```
+
+For a `FixedOffset` there is nothing to decide, so the `Ambiguous` and `None` arms below it —
+written for exactly this problem, and correct — are **unreachable**. A date six months out is
+resolved at an offset that will not be in force when it arrives.
+
+Because `DUE_TIME` is `23:59` and `START_TIME` is `00:00`, both sit against a day boundary,
+so a one-hour error crosses it. Measured 2026-09-13 by driving `find` with a pinned `now`
+and rendering the result at the offset genuinely in force on the target date:
+
+| typed in | field | asked for | shown where DST is real | |
+|---|---|---|---|---|
+| winter (−05:00) | due | 2027-07-04 | **2027-07-05 00:59** | **a day late** |
+| summer (−04:00) | due | 2027-02-24 | 2027-02-24 22:59 | right day, an hour early |
+| winter (−05:00) | start | 2027-07-04 | 2027-07-04 01:00 | right day, an hour late |
+| summer (−04:00) | start | 2027-02-24 | **2027-02-23 23:00** | **a day early** |
+
+The two that survive do so by luck of direction, not by being right: the hour is wrong in all
+four.
+
+**Who sees the wrong day.** Anything that applies real zone rules — the Vikunja web UI, which
+uses the browser's IANA zone; and tui-do itself once the clock crosses the boundary, because
+`now()` is re-stamped every run. So a task can read as due the 4th all winter and the 5th all
+summer without anyone touching it.
+
+**Why the suite cannot see it.** `dates.rs`'s tests pin `now` to a `FixedOffset` and render
+the result back through `now().timezone()` — the same fixed offset. That round-trip is
+self-consistent by construction and returns the day the user asked for no matter how wrong
+the stored instant is. `a_local_date_is_converted_not_relabelled` is a good test of the cria
+bug it was written for and structurally blind to this one.
+
+**Suggested test — deterministic, and it needs no new dependency to *expose*.** Render at the
+offset actually in force on the target date rather than at `now`'s:
+
+```rust
+let winter = FixedOffset::west_opt(5 * 3600).unwrap()
+    .with_ymd_and_hms(2027, 1, 15, 10, 0, 0).unwrap();
+let matched = find(&split("due 2027-07-04"), &winter).into_iter().next().unwrap();
+
+// EDT, -04:00, is what that zone is on 2027-07-04.
+let in_force = FixedOffset::west_opt(4 * 3600).unwrap();
+assert_eq!(
+    matched.at.with_timezone(&in_force).format("%Y-%m-%d").to_string(),
+    "2027-07-04",
+    "a July date typed in January must still be a July date",
+);
+```
+
+It fails today with `2027-07-05`. Add the `start` mirror, which fails in the other direction.
+
+**The fix is a decision, which is why this is not merely mechanical.** `to_utc` is already
+generic over `Tz` and already handles the ambiguous and skipped hours correctly; it is
+starved of a zone that has any. Making it right means carrying a real zone —
+`chrono-tz` plus `iana-time-zone` to discover it — from `runtime::now()` through `Model.now`,
+which today is deliberately a `FixedOffset` so that `tui-do-ui` stays pure and needs no zone
+database. That is a new dependency in the render path and a change to the type the whole
+interface reads the clock through, weighed against a defect that only bites across a DST
+boundary.
+
+**Severity: Important, not Critical.** It writes a wrong date to the server silently, and a
+task moving a day on its own is the kind of thing a user blames themselves for. But it needs
+a date on the far side of a boundary, it is off by one day rather than arbitrarily, and
+nothing is lost — the task exists and is editable.
+
+Related: this is the same family as the fixed `BUG-12` (the local-day rule in the backdate
+check) and as CLAUDE.md's note on `Model.now`, which records replacing `Utc::now()` with
+`Local::now()`. That change was right and is not what this is: the offset is now correct for
+*today* and still wrong for any day on the other side of a transition.
 
 ### ~~BUG-17~~ — FIXED — archiving the project you are viewing wedges the sidebar
 
