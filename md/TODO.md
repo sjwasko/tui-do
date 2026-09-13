@@ -277,8 +277,18 @@ that did not exist when it was designed. Undesigned.
 
 ### The drain torture test — planned 2026-09-13, not yet driven
 
-`md/drain-torture-test-plan.md`, with `md/2026-09-13-drain-torture-continuity.md` as the
-prompt that precedes it.
+`md/drain-torture-test-plan.md`, with `md/2026-09-13-drain-torture-handoff.md` as the
+prompt that precedes it. **Both are deliberately untracked** — `/md/*-plan.md` and
+`/md/*-handoff.md` are gitignored, the same rule that keeps the manual checks local. They
+live on `sw-x1`.
+
+**It runs in two phases.** Phase zero upgrades `x1-omarchy` from **1.0.0** to **v1.0.2**
+by building from git, which tests the README's build-from-source block on a box with no
+checkout and an in-place upgrade over an existing binary — neither of which has ever been
+driven. Checked rather than assumed: **no migration will run**, because the schema target
+is v5 and that store is already at v5, so nobody should later read "upgrade tested" as
+covering migrations. Build the **tag**, not `main`: 26 commits separate them and not one
+touches `crates/`, so they are the same program today and would silently stop being so.
 
 A bad Microsoft To Do import left **1,767 tasks in a project called `Archive`** with their
 completion flag lost — `done = 0`, semantically finished years ago. Marking them done by
