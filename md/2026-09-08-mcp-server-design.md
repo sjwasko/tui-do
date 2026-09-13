@@ -45,6 +45,23 @@ and even with no network.
 
 ---
 
+## 0. The process model
+
+![Four agent windows, one tui-do store](2026-09-08-mcp-process-model.png)
+
+**Added 2026-09-13.** This diagram was drawn on 2026-09-08 and lived only as a PNG in a
+home directory until it was tracked here. It is the part of the design this note did not
+have: N `tui-do mcp` processes sharing one SQLite store, a `sync_lock` lease in
+`sync_state` electing the one process allowed to reach the network, and the HTTP daemon
+that makes the lease unnecessary later.
+
+The reasoning it implies — what the lease is for, why identity decides whether the store
+can be shared at all, and how the whole thing scales from one laptop to a team — is in
+`md/TODO.md` under **"How this scales — the five tiers"**, and the assumptions it breaks in
+the existing codebase are item 10 there.
+
+---
+
 ## 1. What the agent can do
 
 We're copying [veans](https://vikunja.io/docs/veans/)'s command set, because you
