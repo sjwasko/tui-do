@@ -60,26 +60,29 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | BUG-7, BUG-9, BUG-20 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
+| **Found by the drain torture test** | BUG-21, BUG-22 — both new, 2026-09-13, both need fixing |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
-Every open item needs either a decision or a measurement. Nothing is left that is merely
-mechanical — that was the point of the 2026-08-31 pass.
+Every open item needed either a decision or a measurement — that was the point of the
+2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21 and BUG-22 are both
+mechanical, and both were found by driving load at the write path rather than by reading
+the code. Neither is a decision waiting to be taken; they are work waiting to be done.
 
 ## Summary
 
 | area | Critical | Important | Minor |
 |---|---|---|---|
-| UI state machine | **1** | 1 → 0 | 2 |
-| Sync engine | 0 | 4 | 7 → 5 |
+| UI state machine | **1** | 2 → 1 | 2 |
+| Sync engine | 0 | 5 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
 | Runtime and CLI | 0 | 3 → 2 | 3 |
 | API client | 0 | 1 → 0 | 1 |
-| **found** | **1** | **14** | **15** |
+| **found** | **1** | **16** | **15** |
 | **fixed** | **1** | **8** | **2** |
-| **open** | **0** | **6** | **13** |
+| **open** | **0** | **8** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -1171,6 +1174,85 @@ swallowed by the one that was already there"* while the other two still pass.
 **Still open, unchanged from BUG-3:** SIGKILL. Nothing runs on SIGKILL and the reconcile only
 arms once an attempt has been recorded, so a create killed mid-flight can still be re-sent on
 the next launch. Closing that needs the outbox to record "handed to the server" durably.
+
+---
+
+### BUG-21 — the status line's queued count is stale for the whole of a long drain
+
+`crates/tui-do-ui/src/update.rs:295` (`SyncEvent::Pushed`) and
+`crates/tui-do-core/src/sync/mod.rs:440-530` (the drain loop).
+
+`model.status.queued` is refreshed from exactly two places: `Effect::LoadPending`, which
+`apply` emits on every edit, and `SyncEvent::Pushed`/`Finished`, which fire when a push
+pass **ends**. Inside the drain loop the only `emit` is `SyncEvent::Rejected` — **a
+successfully pushed entry produces no event at all.** So nothing reports progress while a
+pass is running.
+
+**Measured 2026-09-13** during the drain torture test: the count climbed to **1781** as
+the key was held (each press emitting `LoadPending`), then sat frozen at 1781 for the
+entire 268-second drain while the real depth fell to zero. The user reported the queue as
+"not draining"; it was draining perfectly at 6.3 entries/s.
+
+**Why it has never been seen:** `Pushed`'s own comment says *"a push can be the whole
+pass, so this is where sending ends"*, which is true and harmless when a pass is a handful
+of entries and completes in well under a second. The design assumes a short pass. At 1,781
+entries the assumption breaks and the interface lies for five minutes.
+
+**Severity: cosmetic, but badly so.** No data is at risk. What is at risk is the user's
+judgement — a frozen counter during a long operation reads as a hang, and the honest
+response to a hang is to kill the process, which is the one thing that would actually
+cost work.
+
+**The fix is a progress event.** The drain loop already has the entry count in hand each
+iteration; emitting a `SyncEvent::Progress { remaining }` (or simply reusing
+`LoadPending`) every N entries would close it. N should not be 1 — that is 1,781 extra
+messages through the event loop for no benefit.
+
+---
+
+### BUG-22 — a reload racing a write re-shows an already-queued task, so auto-repeat queues it twice
+
+`crates/tui-do-ui/src/update.rs:2296` (`apply_locally`), and the runtime's spawned
+`Effect::Apply`/reload pair.
+
+`apply_locally` removes a task from the visible list **synchronously** when it is marked
+done and the view hides done tasks, precisely so the cursor advances rather than jumping
+to the top. That works. What does not hold is the assumption that the row stays gone: a
+reload issued by an *earlier* task's write can read the store **before this task's write
+has committed**, and its answer still carries this task as `done = 0`. The row reappears
+under the cursor, and a held key presses it again.
+
+**Measured 2026-09-13**, holding `d` over 1,767 tasks:
+
+| | |
+|---|---|
+| distinct task ids written | 1,767 |
+| `POST /tasks/{id}` requests | **1,784** |
+| tasks written twice | **17 (0.96 %)** |
+| where | clustered in ids **2082–2118** — one burst, not scattered |
+
+The clustering is the tell: this is not a steady background rate but a single window in
+which one reload overtook a run of writes.
+
+**It was harmless here, and that was luck.** Both entries carried `done = true`, so the
+second write was idempotent and the end state is exactly correct — 1,767 changed, server
+reads 0 open / 1,831 done. But `d` is `Action::ToggleDone`, and the mutation is built from
+whatever `selected_task()` says *at press time*. Had the reload arrived after the write
+instead of before it, the second press would have read `done = true` and queued
+`done = false`, **silently un-doing the user's work on 17 tasks** with nothing in the
+interface to show it.
+
+**Related to BUG-2 but not the same defect.** BUG-2 is two writes to one task taking their
+`outbox.id`s out of order. This is one task being legitimately pressed twice because the
+interface showed it as unedited. Fixing BUG-2's spawn ordering does not fix this; what
+fixes this is either a reload that cannot regress a locally-applied edit, or a per-task
+guard that suppresses a duplicate mutation while one is already queued for the same
+subject and field.
+
+**`CLAUDE.md` already knows this race exists** — the `tui-do-smoke` note says the harness
+defers a push until the reload it races has landed, and that getting the order wrong "is
+not cosmetic". This is that race, reached from the UI side, with a consequence nobody had
+named.
 
 ---
 
