@@ -275,6 +275,27 @@ never reaches the open TUI, which goes on holding a provisional id until its nex
 Same family as the bug the label lifecycle fought hardest over, arriving from a direction
 that did not exist when it was designed. Undesigned.
 
+### The drain torture test — planned 2026-09-13, not yet driven
+
+`md/drain-torture-test-plan.md`, with `md/2026-09-13-drain-torture-continuity.md` as the
+prompt that precedes it.
+
+A bad Microsoft To Do import left **1,767 tasks in a project called `Archive`** with their
+completion flag lost — `done = 0`, semantically finished years ago. Marking them done by
+holding `d` is a thing the owner actually wants to do, and it is **the largest load this
+project's write path has ever seen, by roughly 350x**. Dev is already seeded with the same
+pile (project 28, 1,767 open, 64 done — identical to prod), so it can be driven against dev
+with nothing to import.
+
+It measures five things at once that are otherwise untested at scale: rule 1 under
+sustained write pressure, whether the drain is O(n²) because `pending()` is re-read every
+iteration, BUG-2's named residual (auto-repeat on `d`), `flush_on_exit` with a deep queue,
+and (b) above under exactly the contention that triggers it.
+
+**The plan names what it cannot see**, which is the part worth keeping: there is **no
+tracing in the store layer at all**, so SQLite tail latency — the thing most worth knowing —
+is not obtainable without adding code. That gap is itself a finding about the codebase.
+
 ### The test for (b), designed 2026-09-13
 
 **Two `Store` handles on one file, not two processes.** SQLite locks per *connection*, not
