@@ -257,6 +257,11 @@ database writes; the lease stops two processes duplicating each other's server w
 Nothing about a transaction closes the `pending()` → network → `settle` gap, because that
 gap contains a round trip.
 
+**It is also a cost argument, and a bigger one than it looks** — four processes pull 312
+pages every five minutes and three quarters of that is redundant, because they share the
+store they are all filling. The measured numbers are under "The lease is a cost argument
+before it is a correctness argument" below.
+
 **(e) Lease churn, which argues the daemon is nearer than it looks.** An MCP stdio server
 lives and dies with its client session. Three clients opening and closing all day means the
 lease holder changes constantly and every ungraceful exit orphans the lease until it
@@ -494,18 +499,69 @@ having. Change the identity model and the diagram comes apart. For a single-user
 option 1 is plainly right — which is what `md/2026-09-08-mcp-server-design.md` §9 already
 chose, with `AgentIdentity::Bot` written down beside it as the honest, more expensive route.
 
-### The lease gets better at scale, which was not obvious
+### The lease is a cost argument before it is a correctness argument
 
-It collapses N agents into one syncer per person:
+**Measured against the code on 2026-09-13, not estimated.** `spawn_sync_timer`
+(`runtime/mod.rs:695`) fires `Pass::Full` every interval, and `Sync::once` — what startup
+calls — is `pass(Reach::Full, ..)`. So **every process pulls all 78 pages every five
+minutes**, plus another 78 at startup. Not a cheap delta: the whole listing, ~3,877 tasks,
+about 15 seconds.
+
+That is deliberate and should not be "fixed" by shrinking it. **Only a full pull may
+delete** — a filtered listing cannot tell "unchanged" from "deleted elsewhere" — and
+`CLAUDE.md` records the decision of 2026-08-28: *"Startup and the timer stay full."*
+
+**What that costs at the configuration this is actually for** — three MCP connectors plus
+an open interface:
 
 ```
-   10 people x 5 agents each = 50 agent processes
-   without the lease:   50 processes polling Vikunja
-   with the lease:      10 processes polling Vikunja
+   4 processes x 78 pages = 312 requests every 5 minutes
+   4 processes x 15s      =  60s of server work per 300s window
+
+   |####################|........................................|
+   0min               1min                                     5min
+   #### Vikunja busy      .... idle
+
+   Busy one minute in every five, re-sending data it already sent.
+   Opening the laptop fires all 312 at once.
 ```
 
-So it is not only a correctness fix. It is what keeps server load flat as agents multiply —
-which is the argument for building it even if duplicates were somehow tolerable.
+**And at Tier 4/5**, 10 people x 5 agents = 50 processes:
+
+```
+   50 x 78 = 3,900 requests / 5 min  ~= 13 req/sec sustained
+   50 x 15s = 750s of work per 300s window
+
+   The polling alone exceeds capacity. The server never catches up,
+   before anybody does any actual work.
+```
+
+**The local file is loaded too, and in the worst possible way.** Each of those pulls writes
+~3,877 upserts into the *same* SQLite file, in page-sized transactions. N processes x 78
+write transactions per interval, all contending for one write lock — which is precisely
+when (b) above loses its snapshot. The two problems feed each other: more pulling means
+more writing means more `SQLITE_BUSY_SNAPSHOT`.
+
+**The point that makes this decisive: with a shared store, N-1 of those pulls are pure
+waste.** All N processes fetch the same rows into the same file. One pull already serves
+everyone.
+
+```
+   WITHOUT THE LEASE             WITH THE LEASE
+
+   [proc] 78 pages --+           [proc] 78 pages --+
+   [proc] 78 pages --+           [proc]            |
+   [proc] 78 pages --+--> DB     [proc]            +--> DB
+   [proc] 78 pages --+           [proc]            |
+                                                   +
+   312 requests                  78 requests
+   4 copies of the same data     one copy, shared
+```
+
+So the lease is not only a correctness fix for duplicate writes. **It removes three
+quarters of the traffic at four processes**, and it does so without giving up the
+deletion-detection that makes the pull expensive in the first place. That argument holds at
+Tier 2, not only at scale.
 
 ### What actually breaks at Tier 5
 
