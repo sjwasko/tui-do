@@ -117,6 +117,50 @@ Two things left before code:
 
 ---
 
+## Launch and outreach
+
+**Decided 2026-09-13: spend nothing that can only be spent once.** "Another TUI to-do
+client" is a crowded story, made worse by the `gouveags/tui-do` name collision. "An agent
+files its own tasks into a self-hosted server and the terminal client picks them up" is a
+different story, and it needs item 3 shipped. So the one-shot channels are held.
+
+**Held for the MCP launch (item 3):** Show HN, `r/selfhosted`, a `community.vikunja.io`
+follow-up, `r/rust`. Spend them together, frame on the agent rather than the TUI, and
+pre-empt the name collision in one line — the analysis is in `CLAUDE.md` and it costs a
+sentence to own it and a derailed thread not to.
+
+Lead into the README's data-loss warning and the public `bugs.md` rather than softening
+them. On those audiences an open defect list reads as credibility.
+
+**Done 2026-09-13:** GitHub topics, homepage, Discussions and a social preview card
+(`docs/demo/social-preview.png` — still needs uploading by hand, GitHub exposes no API for
+it); `rothgar/awesome-tuis` [#890](https://github.com/rothgar/awesome-tuis/pull/890).
+
+**Ruled out:** `awesome-selfhosted`. Its scope is "network services and web applications
+which can be hosted on your own server(s)" — tui-do is a client, not a hostable service, so
+it does not qualify. Checked rather than attempted.
+
+**Weaker than assumed:** This Week in Rust. Crate of the Week nominations are taken on the
+users.rust-lang.org forum rather than on GitHub, and self-nomination is discouraged there.
+It needs someone else to nominate, or a blog post to submit instead.
+
+**Left to do by hand:** Terminal Trove (web form, no submission repo exists), and a
+Mastodon post.
+
+**The referrers say where the value is**, measured 2026-09-13 and worth re-reading before
+the next push: `community.vikunja.io` 40 views / 5 uniques, `github.com` 17/6,
+`vikunja.io`'s integrations page 3/3. The forum post did nearly all the work and the
+integrations listing sends almost nothing — which is the argument for saving the forum
+follow-up for when there is something to say.
+
+Baseline to measure against: **7 stars, 104 views / 27 uniques over 14 days.**
+
+```sh
+gh api repos/sjwasko/tui-do/traffic/popular/referrers   # which channel actually worked
+```
+
+---
+
 ## Announced publicly, and therefore owed
 
 From the launch post on `community.vikunja.io`, 2026-09-07. These were said out loud, so
