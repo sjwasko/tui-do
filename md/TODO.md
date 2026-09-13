@@ -334,6 +334,26 @@ still outstanding. What matters to this file:
   from `tui_do_api`. `EnvFilter` matches on module-path segments and `tui_do_api` is not a
   child of `tui_do`. All three crate targets are needed.
 
+**Run 2 (`flush_on_exit`) was driven the same day and passes.** Quitting with 353 entries
+queued is safe: tui-do declined to re-push, printed *"Still sending; leaving the rest
+queued for next time."*, and the queue drained on the next launch as 353 POSTs for 353
+distinct ids — zero duplicates, store and server agreeing exactly at 1,407 open / 424 done.
+
+**It also found the most consequential defect of the exercise, BUG-23: the push is starved
+by the UI's own writes.** Fifteen seconds passed with *no requests at all* while the key
+was held, then four in 350 ms after release — roughly **7 % of the unloaded rate**. Run 1
+shows the same shape in hindsight: its 6.3 entries/s was entirely post-release, and
+essentially nothing drained during the 74-second hold.
+
+**This changes the argument in (a) above, and it should be read before BUG-2 is dismissed
+again.** BUG-2 is accepted on the grounds that its window is sub-50 µs and "the whole
+acceptance rests on a human being slow". The unfairness it exploits — `std::sync::Mutex`
+with no fairness guarantee, guarding the one `Connection` — turns out to have a second and
+much larger consequence that a *human* reaches today, with no agent and no MCP server
+involved: a held key stops the outbox draining. The mutex is now implicated in two
+defects rather than one, which is a stronger case for fixing it structurally than either
+makes alone.
+
 ### The test for (b), designed 2026-09-13
 
 **Two `Store` handles on one file, not two processes.** SQLite locks per *connection*, not

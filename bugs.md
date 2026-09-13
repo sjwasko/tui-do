@@ -60,13 +60,13 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | BUG-7, BUG-9, BUG-20 |
 | **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
-| **Found by the drain torture test** | BUG-21, BUG-22 — both new, 2026-09-13, both need fixing |
+| **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
 Every open item needed either a decision or a measurement — that was the point of the
-2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21 and BUG-22 are both
+2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
 mechanical, and both were found by driving load at the write path rather than by reading
 the code. Neither is a decision waiting to be taken; they are work waiting to be done.
 
@@ -78,11 +78,11 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | Sync engine | 0 | 5 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
-| Runtime and CLI | 0 | 3 → 2 | 3 |
+| Runtime and CLI | 0 | 4 → 3 | 3 |
 | API client | 0 | 1 → 0 | 1 |
-| **found** | **1** | **16** | **15** |
+| **found** | **1** | **17** | **15** |
 | **fixed** | **1** | **8** | **2** |
-| **open** | **0** | **8** | **13** |
+| **open** | **0** | **9** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -1253,6 +1253,63 @@ subject and field.
 defers a push until the reload it races has landed, and that getting the order wrong "is
 not cosmetic". This is that race, reached from the UI side, with a consequence nobody had
 named.
+
+---
+
+### BUG-23 — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
+
+`crates/tui-do-core/src/store/mod.rs` (the `Arc<Mutex<Connection>>`),
+`crates/tui-do-core/src/sync/mod.rs:459` (the drain loop's `pending()` re-read), and
+`crates/tui-do/src/runtime/mod.rs:520` (`flush_on_exit`).
+
+**Measured 2026-09-13**, holding `d` on `x1-omarchy` against dev. The seven entries that
+reached the server before the user quit are spaced like this:
+
+```
+23:15:20.216  task 2040
+23:15:20.456  task 2045      +0.2s
+23:15:23.320  task 2065      +2.9s
+23:15:38.280  task 2075     +15.0s   <- key held across this whole window
+23:15:38.394  task 2076      +0.1s
+23:15:38.501  task 2079      +0.1s
+23:15:38.629  task 2082      +0.1s
+```
+
+**Fifteen seconds with no requests at all while the key was down, then four in 350 ms
+after release.** The push runs at roughly **7 % of its unloaded rate** under auto-repeat
+(0.39/s against ~9/s).
+
+The same thing is visible in the full drain run and was missed there: ~1,776 presses over
+a 74-second hold produced a peak outbox depth of 1,781, so **nothing meaningful drained
+while the key was held**. The 6.3 entries/s measured in that run is entirely post-release.
+
+**The likely mechanism is the one BUG-2 already names.** The store is an
+`Arc<Mutex<Connection>>`, and `std::sync::Mutex` offers no fairness guarantee. A
+continuous stream of write acquisitions — one per keypress, ~24/s under auto-repeat — can
+lock the push's `pending()` read out indefinitely. This is the same unfairness BUG-2
+exploits to reorder two writes, producing a different and larger symptom.
+
+**The consequence at exit.** `flush_on_exit` gives an in-flight push a five-second grace
+(`FLUSH_TICK * FLUSH_DOTS`) and then prints *"Still sending; leaving the rest queued for
+next time."* With 353 entries queued, needing ~56 s at the measured rate, that grace can
+only ever expire. Worse, **the grace window was itself idle — zero requests in five
+seconds** — so the message describes a push that was not sending.
+
+**No data is at risk and the conservative behaviour is right.** The 353 entries survived
+the exit and drained on the next launch as 353 POSTs for 353 distinct ids, zero
+duplicates, server and store agreeing exactly. Re-pushing instead would risk a duplicate
+task, which is the worse failure. **This is a throughput and honesty bug, not a
+correctness one.**
+
+**One part is deliberately left unexplained rather than guessed at.** By the time the
+grace was running the key had been released, so UI contention does not account for the
+idle five seconds. The last line in the process's life is the POST at
+`23:15:38.628919`; nothing follows. What the push was blocked on is not established.
+
+**How to test it.** Do not sample the race. Drive the store directly: issue writes in a
+tight loop from one task while a second task calls `pending()` in a loop, and assert the
+reader's completions per second stays above some floor. It fails today. A fair lock, or a
+dedicated reader path that does not contend with the writer, makes it deterministic.
 
 ---
 
