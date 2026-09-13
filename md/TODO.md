@@ -563,6 +563,64 @@ quarters of the traffic at four processes**, and it does so without giving up th
 deletion-detection that makes the pull expensive in the first place. That argument holds at
 Tier 2, not only at scale.
 
+### Making the pull cheaper — four leads, two of them easy
+
+*(raised 2026-09-13, from asking why 10-year-old archived tasks are re-read every
+five minutes. They are not — see the correction first.)*
+
+**The premise correction, because it changes what to optimise.** Archived projects' tasks
+are **not in the listing at all**: measured in BUG-15, an unfiltered `GET /tasks` returned
+3,879 tasks across 78 pages and **none** of the four belonging to an archived project. They
+cost nothing per pull because they are never fetched — and by the same token a store that
+lost them never gets them back, and a fresh install never sees them. What actually fills the
+listing is **done tasks: 1,942 of 3,877, half the payload.**
+
+**The rule that rules out the obvious fix.** A filtered listing can never be swept: "absent"
+and "did not match the filter" are indistinguishable, which is exactly why
+`Reach::Incremental` exists and is forbidden from deleting. Filtering the full pull
+reintroduces BUG-15 by hand. **So the lever is frequency, not content.**
+
+**Lead 1 — pull full rarely, incremental often.** *(easy, no new anything)*
+The timer runs `Pass::Full` every interval. Run `Incremental` on the timer and `Full` on a
+much longer schedule (startup, plus hourly or daily), and the cost drops ~99% — 288 full
+sweeps a day becomes one. The honest cost is that a task deleted elsewhere can take up to
+that interval to disappear rather than up to five minutes; `R` still forces it. That is a
+scheduling change, not a protocol one, and it does not weaken deletion detection — it
+reschedules it.
+
+**Lead 2 — stop rewriting rows that did not change.** *(easy, and separate from lead 1)*
+`upsert_task` (`store/tasks.rs:448`) is an unconditional
+`INSERT ... ON CONFLICT (id) DO UPDATE SET` over **every column**. Nothing compares
+`updated` first, so all ~3,877 rows are rewritten on every pull whether or not a character
+changed — roughly 1.1 million row writes a day against an idle server. A
+`WHERE excluded.updated > tasks.updated` guard skips nearly all of it.
+
+This is the *local* half of the cost and it compounds (b) above: every one of those writes
+is contention on the one write lock, which is precisely when a deferred transaction loses
+its snapshot. Lead 1 cuts the network cost; lead 2 cuts the disk cost; they are independent.
+
+**Lead 3 — webhooks, unmeasured.** Vikunja has them and nothing here had noticed:
+`GET /webhooks/events`, `PUT /projects/{id}/webhooks`, and an account-level
+`/user/settings/webhooks`. If a `task.deleted` event exists, deletions could arrive as they
+happen instead of being inferred from a sweep.
+
+**The first experiment is one request:** `GET /webhooks/events` against dev, and read the
+list. The spec does not enumerate the event names — which is exactly the shape of thing this
+project has already got wrong once by reading a document instead of asking the server.
+
+Two caveats that keep it from being a silver bullet, both worth knowing before spending time
+on it. A webhook needs somewhere to arrive, and a laptop has no address — less absurd on the
+tailnet, where Serve already fronts Vikunja, but a deployment change rather than a code
+change. And **push is an optimisation, reconciliation is the guarantee**: a laptop asleep or
+offline misses events silently, so a periodic full sweep stays necessary whatever webhooks
+do. They make it rare; they do not remove it.
+
+**Lead 4 — a scoped sweep, for completeness.** Fetch `done = false` (≈39 pages rather than
+78) and sweep only against local tasks that are also `done = false`. The subtlety that makes
+it a design job: a task marked done *elsewhere* also vanishes from that listing and would be
+wrongly deleted, so it needs a second cheap lookup to separate "deleted" from "now done".
+Possible, not worth doing before leads 1 and 2.
+
 ### What actually breaks at Tier 5
 
 1. **Labels are one global pool.** Item 3 stores agent state as `agent:todo`,
