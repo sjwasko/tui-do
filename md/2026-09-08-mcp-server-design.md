@@ -1,7 +1,16 @@
 # An MCP server for tui-do
 
-**Written 2026-09-08.** Being built on branch `feature/mcp-server` (worktree
-`../tui-do-mcp`). Nothing is on `main` yet except this note.
+**Written 2026-09-08. Not built — status corrected 2026-09-13.**
+
+This note said it was "being built on branch `feature/mcp-server`", and that nothing was on
+`main` except the note. Both halves were wrong. The note *is* on `main`, along with every
+commit that branch has: `feature/mcp-server` is an **ancestor** of `main` — no commits of its
+own, six behind — and the worktree at `../tui-do-mcp` holds the same five crates `main` does.
+Forgejo and GitHub both answer `418d8aa` for it, matching local, so nothing is unpushed.
+
+Worth keeping, because it is what made the branch look alive: **a GitHub branch page renders
+the whole repository at that commit**, so an empty branch is indistinguishable by eye from a
+full one. The "behind / ahead" count is the only part of that page carrying the information.
 
 ---
 
@@ -208,8 +217,12 @@ project. Apache-2.0 (already allowed by `deny.toml`), 12.7M recent downloads, la
 ```
 ~/code/tui-do/        main branch, untouched
 ~/code/tui-do-mcp/    worktree, branch feature/mcp-server
-                        └── crates/tui-do-mcp/    <- the new crate
+                        └── crates/tui-do-mcp/    <- the new crate (does not exist yet)
 ```
+
+**This is the intended layout, not the current one.** As of 2026-09-13 the worktree is a
+plain checkout of an older `main` and contains no such crate; it also wants a rebase before
+anything is written in it.
 
 A worktree on a real branch, **not a gitignored folder**. An ignored folder isn't committed
 anywhere, so there's no history, no diff, and `git clean -xdf` deletes it. `CLAUDE.md`
