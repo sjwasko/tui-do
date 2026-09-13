@@ -13,6 +13,26 @@ note in `md/` when it is taken. Items carry the date they were raised.
 
 Last touched 2026-09-13.
 
+## The road map, as of 2026-09-13
+
+Three questions were argued out on 2026-09-13 and their answers are in this file rather
+than in a chat log. Read in this order, because each one assumes the last:
+
+| the question | where the answer is |
+|---|---|
+| **1. Auth** — what are we actually building, and why | item 9, then "The macOS auth goal" |
+| **2. The lease** — concurrent agents, identity, scaling | "How this scales — the five tiers" |
+| **3. MCP** — how it authenticates, and what breaks at two processes | item 10, with its test design |
+
+**The critical path is item 3 (the MCP server), and item 10 gates its first write.**
+Everything in the launch section is held for item 3 shipping. Items 4–6 follow it. Items
+8 and 9 are independent of all of that and are the shortest route to a visibly better
+product on macOS.
+
+A plain-English version of question 1 is in the knowledge base at
+`3-developer/tui-do-auth-explainer.md`, and of question 2 at
+`md/2026-09-08-mcp-process-model.png` plus the five-tier section below.
+
 ---
 
 ## Now
@@ -92,6 +112,133 @@ agent CLI structurally cannot build.
 **6. An agent inbox.** *(raised 2026-09-08)*
 A project or label that is an agent's feed: specs and tasks filed to it by a human, picked
 up by the agent. Needs nothing new on the wire — a saved filter plus a convention.
+
+
+**10. Two processes on one store file — what MCP makes ordinary.**
+*(raised 2026-09-13; gates the first MCP write, not the MCP design)*
+
+Item 3 puts N `tui-do mcp` processes on one SQLite file. Several assumptions in the
+codebase hold for one process and stop holding at two. None of this changes the MCP
+design; all of it has to be true before an MCP server writes to a real server.
+
+**First, the part that needs no work at all: MCP over stdio has no authentication.** The
+client *spawns* `tui-do mcp` as a child process and talks over pipes — no port, no socket,
+no handshake. The trust model is "if you can spawn the process, you are the user": the
+child inherits the OS account, the environment, the config and the token. So Gemini CLI,
+Claude Code and Hermes side by side are **necessarily the same Vikunja user**, and it is
+not a choice anyone gets to make. Only a different `TUI_DO_CONFIG` separates them.
+
+That is free today and stops being free with the HTTP daemon, which genuinely cannot tell
+who is calling — the MCP spec defines OAuth 2.1 for HTTP transports for exactly that
+reason. Worth knowing before the daemon is scoped, not during.
+
+**What actually needs doing, cheapest and most certain first:**
+
+**(a) The MCP crate writes sequentially, by construction.** `bugs.md` BUG-2 is an
+18.3%-at-0µs write-reordering race, accepted and not fixed — and read *why* it was
+accepted: "two distinct user actions, which are at least ~50 ms apart". **The whole
+acceptance rests on a human being slow.** An agent looping `update_task` has no such floor.
+The race lives in the TUI runtime, which `tokio::spawn`s each write; the MCP crate can
+decline to inherit it by awaiting each `store.queue()` in order. Free, but only if it is a
+deliberate decision rather than an accident. BUG-2's entry should stop claiming no
+reachable trigger once `tui-do mcp` exists.
+
+**(b) `Store::write` opens deferred transactions, and should open immediate ones.**
+`crates/tui-do-core/src/store/mod.rs:208` uses `guard.transaction()` — rusqlite's default,
+which is `Deferred`: it takes a read snapshot and upgrades on first write. In WAL, a
+transaction whose snapshot has been overtaken answers **`SQLITE_BUSY_SNAPSHOT`**, and
+`busy_timeout` does **not** retry that one away — waiting would deadlock, so SQLite returns
+at once and the transaction must be rolled back.
+
+Invisible today because the in-process `Arc<Mutex<Connection>>` serialises every write.
+Genuinely reachable the moment two processes write. And `Store::queue` is exactly the
+hazardous shape: `next_local_id` reads `sync_state` and then writes it, inside the caller's
+transaction.
+
+The fix is one line and touches nothing else — `write()` is the only transaction site
+outside migrations, and all fifteen callers take a `&Transaction<'_>` and do not care how
+it began. Cost is a marginally longer lock hold, bounded because a pull applies **one page
+per transaction** and the server caps a page at 50.
+
+**(c) The migration loop reads its version outside the transaction.**
+`store/schema.rs:214` reads `PRAGMA user_version` *before* the loop, then applies each
+migration in its own deferred transaction. Two processes starting together against an
+out-of-date store both decide to apply the same migration.
+
+Checked rather than assumed: there are **zero** `IF NOT EXISTS` in that file (11
+`CREATE TABLE`, 3 `ALTER TABLE`, 7 `CREATE INDEX`), so the loser fails **loudly** — and
+each migration is one `execute_batch` in one transaction, so it rolls back whole. The
+outcome is a confusing startup error, not a partial migration and not corruption. That is
+the good version of this bug, and it is still worth closing: read the version inside the
+same immediate transaction that applies the migration.
+
+**(d) The lease.** Covered by the diagram and unchanged by any of the above. Worth stating
+plainly so the two are not confused: **(b) stops two processes corrupting each other's
+database writes; the lease stops two processes duplicating each other's server writes.**
+Nothing about a transaction closes the `pending()` → network → `settle` gap, because that
+gap contains a round trip.
+
+**(e) Lease churn, which argues the daemon is nearer than it looks.** An MCP stdio server
+lives and dies with its client session. Three clients opening and closing all day means the
+lease holder changes constantly and every ungraceful exit orphans the lease until it
+expires — which pushes the duration *short*, against the requirement that it survive a
+78-page full pull. A daemon outlives every client and the tension disappears.
+
+**(f) Cross-process adoption has no path to a running TUI.** When a create is adopted
+(`-3` → `812`), `SyncEvent::Adopted` retargets every in-memory holder — the model, the undo
+stack, open modals. That is an **in-process** event. An adoption performed by an MCP process
+never reaches the open TUI, which goes on holding a provisional id until its next reload.
+Same family as the bug the label lifecycle fought hardest over, arriving from a direction
+that did not exist when it was designed. Undesigned.
+
+### The test for (b), designed 2026-09-13
+
+**Two `Store` handles on one file, not two processes.** SQLite locks per *connection*, not
+per process, so two connections in one test reproduce the multi-process case exactly and
+can be driven deterministically. `bugs.md`'s own rule applies — never test a race by
+sampling it — so the interleaving is forced rather than hoped for:
+
+```
+  connection A                      connection B
+  ------------                      ------------
+  BEGIN (deferred)
+  read sync_state      <- takes the read snapshot
+  signal "read done"  ------------>
+  sleep 250ms                       BEGIN; write sync_state; COMMIT
+                                       (WAL advances past A's snapshot)
+  write sync_state     <- SQLITE_BUSY_SNAPSHOT, deterministically
+```
+
+`Store::write` takes a caller-supplied closure, so the read, the signal and the write can
+all live inside one closure with a channel — no new API and no test hook in production code.
+
+**Before the fix:** A fails with `SQLITE_BUSY_SNAPSHOT` (code 517).
+**After:** A holds the write lock from `BEGIN`, B blocks at its own `BEGIN IMMEDIATE` for
+~250 ms, and both commit. `busy_timeout` is 5000 ms, so the margin is 20x — the sleep sets
+the ordering, it is not a race window.
+
+**One trap, found while designing it and worth writing down:** the obvious version has A
+*wait for B to commit* rather than sleeping. That deadlocks after the fix — A holds the
+write lock, B blocks at `BEGIN IMMEDIATE`, and A is waiting for a signal B can never send.
+A generous sleep is what keeps the test honest in both directions.
+
+**The same shape proves (c) for free:** stand up a store one version behind, let A read
+`user_version` and B migrate and commit, then let A apply. It errors today.
+
+### A documentation correction this turned up, true regardless of MCP
+
+`CLAUDE.md` says, under "tui-do is multi-instance":
+
+> the concurrency that matters is **concurrent writers against one server**, not two
+> processes on one database file — there is no shared file, and nothing here needs
+> cross-process locking.
+
+**The fleet reasoning is right and the sentence overreaches.** `tui-do add` alongside a
+running interface has been two processes on one file since Phase 4, whose design note says
+so explicitly: *"Safe alongside a running TUI: the store is WAL with a 5s busy timeout, so
+the two processes do not fight."* The two statements contradict each other, and the narrow
+one is correct. MCP does not create this; it widens it from "two processes you start by
+hand, seconds apart" to "four that launch when you open the laptop."
 
 ---
 
@@ -187,6 +334,136 @@ above mix them together and that is most of the confusion:
   async runtime. Building the macOS half alone delivers the whole stated goal and leaves
   the expensive, unmeasured Linux half unbuilt — possibly permanently, which would be a
   fine outcome.
+
+
+## How this scales — the five tiers
+
+*(worked out 2026-09-13; the frame items 3–6 and 10 sit inside, not a task of its own)*
+
+The process model is in **`md/2026-09-08-mcp-process-model.png`**, tracked beside this file.
+Read it first — everything below is that diagram extended outwards.
+
+**The lease, in one paragraph.** Several agent processes share one SQLite store on one
+machine. A *lease* — a row in `sync_state` naming a process id and an expiry — elects
+exactly one of them to be the only one allowed to talk to Vikunja. It is **not** protecting
+the database; SQLite already does that with `journal_mode = WAL` and `busy_timeout = 5000`.
+It protects the *server*, because the damage it prevents happens on the wire, in the gap
+between reading an outbox entry and marking it sent — a gap no database lock covers. Without
+it, four processes read the same pending `CreateTask` and four identical tasks land in
+Vikunja.
+
+**tui-do already has this mechanism in the wrong place.** `RUNNING`, an `AtomicBool`, stops
+two sync passes overlapping *inside one process*. It works perfectly and is invisible to a
+second process, because it lives in memory. The lease is that flag moved into the database
+where others can see it — a new row, not a new table.
+
+```
+  TIER 1  one person, several machines                     WORKS TODAY
+  ----------------------------------------
+     sw-x1       [store] --+
+     x1-omarchy  [store] --+-->  Vikunja  <-- the only shared thing
+     sw-pi       [store] --+
+     Each machine keeps its own cache. r / R reconciles.
+
+  TIER 2  one person, several agents, one machine          THE ONLY NEW WORK
+  -----------------------------------------------
+     agent x4  -->  [ one store + LEASE ]  -->  Vikunja
+     The lease, and nothing else. Note the open interface is a writer too.
+
+  TIER 3  one person, agents on several machines           FREE
+  ----------------------------------------------
+     sw-x1       [store + lease] --+
+     x1-omarchy  [store + lease] --+-->  Vikunja
+     A lease belongs to a FILE, so each machine's is independent. They
+     reconcile at the server exactly as two people would. Nothing to build.
+
+  TIER 4  a team                                           NEEDS BOT USERS
+  --------------
+     Steve  [store + lease] + agents --+
+     Alice  [store + lease] + agents --+-->  Vikunja
+     Bob    [store + lease] + agents --+
+     Architecturally identical to Tier 3, repeated per person.
+
+  TIER 5  enterprise, several teams                        THREE THINGS BREAK
+  ---------------------------------
+     The same shape again, N times over. See below.
+```
+
+**Tier 4's blocker is attribution, not concurrency.** The concurrency was solved in Phase 2
+— `Task::merge_onto` already assumes several machines writing to one server. What fails is
+*identity*: if an agent acts as its owner, the board says **Steve** filed the task and
+nobody in review can tell agent work from human work.
+
+### Identity decides everything else
+
+The two options are not independent of the diagram, because **the store caches what one
+user can see**:
+
+```
+  OPTION 1 - agents act as YOU         OPTION 2 - each agent is a bot user
+  ----------------------------         ----------------------------------
+  one Vikunja user                     many Vikunja users
+  one API token                        many tokens
+  ONE store  <-- shareable!            MANY stores <-- nothing to share
+  agents share it -> lease works       each agent syncs alone
+  cheap: one sync loop, one cache      N x sync loops, N x 3,877 tasks
+                                       on disk, N x server load
+```
+
+One identity is what buys the shared store; the shared store is what makes the lease worth
+having. Change the identity model and the diagram comes apart. For a single-user homelab,
+option 1 is plainly right — which is what `md/2026-09-08-mcp-server-design.md` §9 already
+chose, with `AgentIdentity::Bot` written down beside it as the honest, more expensive route.
+
+### The lease gets better at scale, which was not obvious
+
+It collapses N agents into one syncer per person:
+
+```
+   10 people x 5 agents each = 50 agent processes
+   without the lease:   50 processes polling Vikunja
+   with the lease:      10 processes polling Vikunja
+```
+
+So it is not only a correctness fix. It is what keeps server load flat as agents multiply —
+which is the argument for building it even if duplicates were somehow tolerable.
+
+### What actually breaks at Tier 5
+
+1. **Labels are one global pool.** Item 3 stores agent state as `agent:todo`,
+   `agent:in-progress`, `agent:in-review`, `agent:scrapped`. Vikunja shares its label pool
+   across *every project and every user on the instance*. Fine for one person; at fifty
+   teams it is one namespace with no way to scope a workflow. **This is a second and
+   stronger argument for item 4** — a bucket belongs to a view, and a view to a project, so
+   buckets scope correctly where labels cannot.
+2. **Token provisioning.** Hand-minting a token per person and per bot, ticking seven
+   permission boxes each time, does not survive fifty people. That is where OAuth stops
+   being a convenience and becomes the provisioning mechanism — a different argument for
+   item 1 than the one recorded there.
+3. **Attribution.** Bot users, per above, at a store and a sync loop each.
+
+### The principle, and the honest limit
+
+**tui-do scales by staying per-person.** Vikunja is the thing that scales to a team and it
+already does that job. The temptation at Tier 4 will be to make one tui-do store serve
+several people; that is rebuilding Vikunja, badly, on SQLite.
+
+**SQLite shared across processes is a one-machine trick.** Fine for a handful of agents on
+one laptop, not a server architecture. The `localhost:7777` daemon in the diagram's
+bottom-right is the natural ceiling — one machine, one owner, many agents, one process
+holding the store and the network — and at that point the lease is unnecessary because
+there is one writer by construction. Item 10(e) argues that ceiling arrives sooner than the
+diagram implies.
+
+### Still open
+
+- **How long is the lease?** Too short and a full pull (78 pages, ~15s against dev) loses it
+  mid-sync; too long and a crashed agent blocks the network for that long. The diagram says
+  `expires 12:04:30` without naming the interval. Choose it deliberately.
+- **An agent that holds the lease and dies mid-send.** The expiry frees the lease, but the
+  entry it was sending may or may not have reached Vikunja. That is BUG-19's shape exactly,
+  and `Sync::create_or_adopt` exists to handle it — confirm it covers this path rather than
+  assuming.
 
 ---
 
