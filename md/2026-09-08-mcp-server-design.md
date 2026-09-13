@@ -181,13 +181,37 @@ Three details:
 
 - Every response includes **`synced_at`**, so the agent can see how stale the data is rather
   than guess.
-- While the server is running it refreshes in the background — an *incremental* pull, which
-  is **one page**. (A full refresh is 78 pages and ~15 seconds; that only happens when asked.)
+- ~~While the server is running it refreshes in the background — an *incremental* pull,
+  which is **one page**.~~ **Wrong — corrected 2026-09-13. The background refresh is the
+  full 78 pages.** `spawn_sync_timer` (`runtime/mod.rs:695`) fires `Pass::Full` every
+  interval, and `Sync::once`, which startup calls, is `pass(Reach::Full, ..)`. There is no
+  incremental background pull in the code and never has been.
 - The `sync` tool forces a full refresh on demand.
 
-`PLAN.md` raised this as an open worry — *"then a stale store answers, and an agent has no
+~~`PLAN.md` raised this as an open worry — *"then a stale store answers, and an agent has no
 way to ask for freshness without a flag that costs 78 pages."* The worry was based on
-full pulls; incremental pulls are one page, so keeping fresh is nearly free.
+full pulls; incremental pulls are one page, so keeping fresh is nearly free.~~
+
+**`PLAN.md`'s worry was right and this paragraph dismissed it on a false premise.** Keeping
+fresh is not nearly free: it is 78 pages and ~15 seconds, per process, every five minutes.
+
+**And the obvious repair is not available.** Making the timer incremental would buy
+cheapness by giving up the thing full pulls exist for — **only a full pull may delete**,
+because a filtered listing cannot distinguish "unchanged" from "deleted elsewhere".
+`CLAUDE.md` records that decision, taken 2026-08-28: *"Startup and the timer stay full."*
+Shrinking the timer here would silently reintroduce BUG-15's shape.
+
+**The lease is the repair, and it is better than the one this section imagined.** One
+process does the full pull; the others do nothing and read the store it fills. Same
+freshness, deletion detection intact, and at four processes it removes three quarters of
+the traffic — because they already share the file they are all redundantly filling. The
+measured numbers are in `md/TODO.md` under "The lease is a cost argument before it is a
+correctness argument".
+
+**Worth keeping as a method note:** this claim was written from what the design *wanted*
+the timer to be rather than from what `spawn_sync_timer` does, and it stood for five days
+inside the paragraph that waved away a correct objection. It was caught by someone asking
+which server the load lands on.
 
 ---
 
