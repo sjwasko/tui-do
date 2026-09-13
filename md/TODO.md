@@ -25,14 +25,9 @@ it merges *and* a server carrying it is deployed; then `cargo xtask fetch-spec`,
 Rule 3 checks tui-do's pinned copy and not upstream's. That is the prerequisite for
 anything below that touches OAuth.
 
-**2. Drive the rest of the interface on macOS.** *(raised 2026-09-07)*
-The port note's honest limit: the compiler, the test suite and the startup path are proven,
-and `o` was confirmed by hand. Rendering, keybindings, sync against a live server from
-inside the interface, OSC 52 in Terminal.app and iTerm2, lid close, and `o`'s *copy* branch
-over SSH are all undriven. The plan is written — `md/2026-09-08-macos-test-plan.md`,
-2026-09-08 — and waits on the machine being stood up. It opens by flagging that
-`README.md:500` already claims "several terminals, tmux, and over SSH", none of which has
-been driven; that claim either gets backed or gets cut.
+**2. ~~Drive the rest of the interface on macOS.~~ Done 2026-09-13** — see the Done section.
+The number stays rather than renumbering: `md/2026-09-08-mcp-server-design.md` and item 5
+both cite items by number, and shifting them would break those references silently.
 
 ---
 
@@ -148,7 +143,6 @@ not be fixed. None are Critical.
 
 ## Documentation debt
 
-- `README.md:500` claims macOS was tested across several terminals, tmux and over SSH; none of that has been driven. See item 2.
 - The three structural troubleshooting surfaces in `bugs.md` (`sync::push_with`,
   `runtime::add`, `update::apply_edit`) are still the worst places to debug. **`runtime::add`
   is scheduled**: item 3's branch splits it into `resolve_or_explain` and `report` exactly as
@@ -158,6 +152,17 @@ not be fixed. None are Critical.
 ---
 
 ## Done
+
+- **2026-09-13** — **macOS is driven, and the README's platform claim is backed.** Rendering
+  including tmux, keybindings, sync from inside the interface, sleep/wake, and `o`'s copy
+  branch over SSH, across Terminal.app and iTerm2. Procedure and results in
+  `md/2026-09-08-macos-test-plan.md`; `md/2026-09-07-macos-port.md` §5 no longer sets the
+  limit of the port.
+
+  Worth keeping: **OSC 52 works in Terminal.app**, where that plan's §4 predicted it would
+  not and said the finding would become a README caveat. It needs none. A prediction written
+  down and then measured is the only reason anyone can tell the difference between a caveat
+  that is true and one that was inherited from folklore.
 
 - **2026-09-08** — **Vikunja PR #3837 opened**: swagger annotations for the two OAuth 2.0
   endpoints, which are served and were in none of the 126 documented paths. Regenerated

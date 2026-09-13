@@ -264,19 +264,30 @@ Verified:
 the one thing nothing automated could reach — it is a change to *which branch is taken*, so
 only a human pressing the key settles it. The `open` half of §2.1 is settled with it.
 
-**Still not verified, and this remains the honest limit of this port:** the rest of the
-interface has not been driven on macOS. Everything else above is the compiler, the test suite
-and the startup path. Nothing here has exercised rendering, keybindings, the sync engine
-against a live server from inside the interface, OSC 52 clipboard behaviour in Terminal.app
-or iTerm2, behaviour across a lid close, or `o`'s *copy* branch over SSH — which, now that
-the open branch works, is the one that keeps a browser from opening on an unattended Mac.
+**The rest of the interface has since been driven by hand, and this section no longer sets
+the limit of the port.** Everything above this line is the compiler, the test suite and the
+startup path; what follows is a human using the software. Confirmed on `sw-mba` across
+Terminal.app and iTerm2:
 
-**The plan now exists: `md/2026-09-08-macos-test-plan.md`**, written 2026-09-08 and not
-yet driven. This paragraph used to name `md/2026-09-07-macos-test-plan.md` as though it
-existed; it never did, which is exactly the failure mode of recording an intention in prose
-instead of in a backlog — so the replacement carries the date it was actually written. The
-work is item 2 in `md/TODO.md`, and that plan's exit criteria are what should gate the
-README's platform claim.
+- **Rendering**, including inside tmux.
+- **Keybindings** — the motions, the half-page keys, the `gg`/`gp`/`gl`/`zs`/`zp` chords, and
+  the keys a MacBook keyboard reaches only through `fn`.
+- **The sync engine from inside the interface** — `r` and `R`, writes, and the outbox.
+- **Sleep and wake**, and **`o`'s *copy* branch over SSH** — the one that keeps a browser
+  from opening on an unattended Mac.
+
+**One result overturned a written expectation, which is why it is recorded here rather than
+just ticked off. OSC 52 works in Terminal.app.**
+`md/2026-09-08-macos-test-plan.md` §4 predicted the opposite in as many words — that
+Terminal.app has historically not supported the sequence, that nothing landing in the
+clipboard would be the expected answer, and that the finding would be a README caveat. It
+landed in both terminals. So the clipboard path needs **no** macOS caveat, and the prediction
+was wrong in the safe direction.
+
+The procedure is `md/2026-09-08-macos-test-plan.md`, which carries the results. That file
+used to be named here as `md/2026-09-07-macos-test-plan.md` as though it existed; it never
+did, which is exactly the failure mode of recording an intention in prose instead of in a
+backlog — so the replacement carries the date it was actually written.
 
 ---
 
