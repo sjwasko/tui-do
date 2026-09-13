@@ -132,9 +132,20 @@ sentence to own it and a derailed thread not to.
 Lead into the README's data-loss warning and the public `bugs.md` rather than softening
 them. On those audiences an open defect list reads as credibility.
 
-**Done 2026-09-13:** GitHub topics, homepage, Discussions and a social preview card
-(`docs/demo/social-preview.png` — still needs uploading by hand, GitHub exposes no API for
-it); `rothgar/awesome-tuis` [#890](https://github.com/rothgar/awesome-tuis/pull/890).
+**Done 2026-09-13:** GitHub topics, homepage, Discussions with a pinned welcome post, and
+the social preview card (`docs/demo/social-preview.png`, uploaded by hand — GitHub exposes no
+API for it).
+
+**Blocked until 2027-02-24: `rothgar/awesome-tuis`.**
+[#890](https://github.com/rothgar/awesome-tuis/pull/890) was **auto-closed by their bot**,
+not reviewed by a person: the list requires a repository to be at least **six months old by
+first commit**, and tui-do's first commit is `603a331`, 2026-08-24. The branch and the fork
+are still there, and the bot says the status table refreshes on reopen or push — so this is
+`gh pr reopen 890 --repo rothgar/awesome-tuis` on or after **2027-02-24**, not a rewrite.
+
+Worth knowing before submitting anywhere else: **a minimum age bar is a category of rejection
+nothing in the repository can fix.** Check for one before spending the effort, the way
+`awesome-selfhosted`'s scope was checked rather than attempted.
 
 **Ruled out:** `awesome-selfhosted`. Its scope is "network services and web applications
 which can be hosted on your own server(s)" — tui-do is a client, not a hostable service, so
