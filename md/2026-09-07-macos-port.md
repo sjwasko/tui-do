@@ -176,10 +176,11 @@ mentions. The error is honest; the instructions that led to it were not.
 `dirs::state_dir()` also returns `None` on macOS, but `main.rs:186` already falls back to
 `data_local_dir()`, so logging needed nothing.
 
-**This was left unfixed on purpose.** Whether macOS should follow XDG (one path across the
-fleet, README correct everywhere, config portable by `scp`) or Apple convention (what
-`dirs` gives, what Mac users expect) is a product decision, not a port detail. Both are
-defensible; see §6.
+**This was left unfixed on purpose, and has since been decided.** Whether macOS should
+follow XDG (one path across the fleet, README correct everywhere, config portable by `scp`)
+or Apple convention (what `dirs` gives, what Mac users expect) is a product decision, not a
+port detail. **Decided 2026-09-13: Apple convention, and the README documents both platforms
+instead.** The reasoning and the cost are in §6.
 
 Two escape hatches exist today and neither needs a rebuild:
 `TUI_DO_CONFIG` (`config/mod.rs:38`) overrides the config path, `TUI_DO_DB`
@@ -291,18 +292,48 @@ backlog — so the replacement carries the date it was actually written.
 
 ---
 
-## 6. Open decisions, deliberately not taken
+## 6. The decisions this port left open — three taken, one still open
 
-- **XDG or Apple paths on macOS (§3).** The one that matters. Making `config_dir()` and
-  `store::path()` prefer XDG on macOS would put the fleet on one path, make the README
-  correct everywhere, let `tui-do-keys.sh` skip its first adaptation, and make a config
-  portable by plain `scp`. Keeping `dirs` is what a Mac user expects and needs no code. Both
-  are reasonable; the port should not decide it quietly.
-- **README setup section.** Whatever §3 resolves to, the setup instructions currently
-  produce an error on macOS. If the paths stay Apple-native they need a macOS column.
-- **`install -Dm755` in the README** is GNU coreutils. BSD `install` has no `-D`, so the
-  documented install line fails on macOS; it needs
-  `mkdir -p ~/.local/bin && install -m755 target/release/tui-do ~/.local/bin/tui-do`.
-- **The `xdg-open` comment in `tui-do-keys.sh` on sw-x1** is stale about tilde expansion
-  (§4.2) and worth correcting at the source, since it is what makes the absolute-path
-  approach look necessary.
+**§3's question is answered: Apple-native paths, decided 2026-09-13.** `dirs` stays exactly
+as it is and **no code changes** — `config_dir()` and `store::path()` go on returning
+`~/Library/Application Support/tui-do/` on macOS, and `XDG_CONFIG_HOME` goes on being ignored
+there.
+
+The reason is that it is what a Mac user expects to find, and it is what the platform's own
+convention gives for free. That matters more now than it did when this section was written,
+because `brew install` is the route most Mac users arrive by, and they have read nothing:
+the install that surprises them least is the one that puts files where every other Mac
+application does.
+
+**The cost is real and is accepted, not waved away.** The fleet no longer has one path shape
+across platforms; `tui-do-keys.sh` keeps the destination-directory adaptation §4.1 describes;
+and every path in a Linux-written note is wrong on a Mac unless it says so. Three things make
+that bearable, and all three already exist:
+
+- **`TUI_DO_CONFIG` and `TUI_DO_DB`**, with `--config` beating both, give one path shape
+  across machines of both kinds to anyone who wants it. The README says so.
+- **A relative `token_file`** resolves against the directory holding the config that names it
+  (`config::resolve_relative`), so a config and its token travel together to either platform
+  with no absolute path to keep in step. This is the fix §4.2 found, and it is better than
+  what the fleet did on Linux alone.
+- **The README documents both platforms side by side** rather than making a Mac user
+  translate — a setup block for each, and a table of all three paths.
+
+Recorded as a decision rather than left to be inferred from the code, because the code would
+have looked the same either way: choosing `dirs`'s default *is* a choice, and an undocumented
+one is indistinguishable from never having asked the question.
+
+**Two more from this list are discharged, both by the README:**
+
+- **The setup section** now carries a macOS block and the three-path table, so following it
+  no longer produces an error naming a path the README never mentioned.
+- **`install -Dm755`** is named as GNU coreutils, with both macOS differences called out:
+  `shasum -a 256 --check` for the missing `sha256sum`, and `mkdir -p ~/.local/bin` for BSD
+  `install`'s missing `-D`.
+
+**Still open, and not fixable here:**
+
+- **The `xdg-open` comment in `~/tui-do-keys.sh` on `sw-x1`** is stale about tilde expansion
+  (§4.2) and is what makes the absolute-path approach look necessary. That file lives on this
+  workstation, outside the repository, so no commit here can reach it — which is presumably
+  why it has survived this long.
