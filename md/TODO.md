@@ -27,11 +27,90 @@ than in a chat log. Read in this order, because each one assumes the last:
 **The critical path is item 3 (the MCP server), and item 10 gates its first write.**
 Everything in the launch section is held for item 3 shipping. Items 4–6 follow it. Items
 8 and 9 are independent of all of that and are the shortest route to a visibly better
-product on macOS.
+product on macOS. **Which of those to do first is settled in "Where to start" below** —
+read that before picking anything up.
 
 A plain-English version of question 1 is in the knowledge base at
 `3-developer/tui-do-auth-explainer.md`, and of question 2 at
 `md/2026-09-08-mcp-process-model.png` plus the five-tier section below.
+
+---
+
+## Where to start — development priority, set 2026-09-13
+
+**A session picking up work starts here, not at "## Now".** That heading holds items 1 and
+2 for historical numbering; item 1 is blocked on upstream and item 2 is done. This section
+is the actual order. Items keep their stable numbers — nothing is renumbered, because other
+notes cite them — so this says *what order*, not *what number*.
+
+```
+  NOW      10(a)+(b)  two-process fixes + the test        ~1 session
+           9          tui-do login                        ~1-2 sessions
+           8(macOS)   keychain, behind a cfg              ~1-2 sessions
+           ------------------------------------------------------------
+           delivers the stated macOS goal in full, plus the foundation
+           everything agentic needs
+
+  NEXT     3a         tui_do_core::agent + list/show --json
+           3b         the MCP server, rendering from that same module
+
+  DECIDE   BUG-20 before November. The --json contract before 3a ships.
+           BUG-7 and BUG-9 need a decision, not work.
+
+  DEFER    4 (Kanban), standalone mode, comments, subtasks
+```
+
+**Why 10(a) and (b) go first.** Both are small, certain, and **silent when wrong**. The
+transaction change is one line; the sequential-write decision in the MCP crate is free if
+taken deliberately and expensive to retrofit. Skipped, they surface weeks later as a
+corrupted store or a duplicated task with no obvious cause. And (b) is a real defect
+*today*, not only under MCP — `tui-do add` alongside the open interface has been two
+processes on one file since Phase 4.
+
+**Why 9 and 8 come before the critical path.** They are the whole of the stated macOS goal,
+they are unblocked by anything, they carry no open design question, and they are
+**finishable** — one or two sessions each, where item 3 is several before anything works at
+all. They also improve the first thing a `brew install` user meets, which matters more than
+it looks at 27 unique visitors in 14 days: the few people who do arrive should not hit a
+`printf`/`chmod` wall. Take **only the macOS half of item 8** — the 53 crates and the second
+async runtime are Linux's problem, and Linux mostly cannot use a keychain anyway.
+
+**The judgement call, and it is reversible.** Putting auth before item 3 costs launch time:
+the one-shot channels are all held for the MCP server, and the differentiated story is the
+agent one, not the TUI one. **Inverting the NOW and NEXT blocks is legitimate** and should be
+done without ceremony if launch timing starts to matter more than the macOS experience. The
+reason it is written this way round is that a project built in evenings is better served by
+what can be *finished* than by what is theoretically highest-value.
+
+**Split item 3, which its own design note does not.** §8 is right that the MCP tool result
+and `tui-do list --json` are one contract through two doors — but one contract does not mean
+one shipment. **3a** is `tui_do_core::agent` plus the CLI read verbs: no rmcp, no new crate,
+no protocol layer, useful the day it lands, and it closes the "veans can read and tui-do
+cannot" gap on its own. **3b** is the MCP server rendering from that same module. The hazard
+§8 warns about is two *serialisations* drifting; shipping one door first creates one contract
+with one consumer, then two. This halves the risk of the largest item on the list.
+
+**Note item 3 starts from nothing.** The branch is an ancestor of `main` and the worktree is
+stale — rebase it or cut a fresh one before writing in it.
+
+### Why the deferrals, said out loud
+
+- **Kanban (item 4).** Agent-state-as-labels is fine at n=1; build buckets when the global
+  label pool actually chafes, which is Tier 4. It is also the question `README.md` asked the
+  public, and merging MCP with a label scheme closes it quietly. Ship 3a/3b, see whether
+  anyone engages, then decide.
+- **Standalone mode.** The largest owed item, wants a design note before code, and has one
+  unanswered question that determines all the others ("does the outbox stay armed?"). No
+  demand signal.
+- **Comments and subtasks.** Publicly owed, genuinely not asked for, and `PLAN.md` has
+  already reasoned out why deferring loses nothing — `related_tasks` is measured as *not*
+  replaced from an update body, so the data survives while they wait.
+
+### The caveat that outranks this whole section
+
+All of it optimises for **a single user with agents**, which is the honest scope today. If
+someone else turns up wanting tui-do, their first request will probably not be on this list,
+and it should outrank this ordering.
 
 ---
 
