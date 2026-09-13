@@ -11,7 +11,7 @@ note nobody re-reads.
 Keep it honest. An item moves to **Done** when it ships, and a decision moves to a design
 note in `md/` when it is taken. Items carry the date they were raised.
 
-Last touched 2026-09-08.
+Last touched 2026-09-13.
 
 ---
 
@@ -37,11 +37,21 @@ This is where the 2026-09-08 competitive analysis (`md/2026-09-08-veans-competit
 lands, and the order matters.
 
 **3. An MCP server, and read verbs with `--json`. One piece of work, not two.**
-*(raised 2026-09-08; in progress on `feature/mcp-server`, worktree `../tui-do-mcp`)*
+*(raised 2026-09-08; designed, **not started**)*
 Design taken in `md/2026-09-08-mcp-server-design.md`. `tui-do list` and `tui-do show` are
 still the item — today `add` is the entire agent surface, and the real gap against veans is
 not quick-add versus flags but that veans can read and tui-do cannot. Answering **from the
 local store** is the part veans structurally cannot copy.
+
+**Nothing is built, and this entry used to say otherwise.** Checked 2026-09-13:
+`feature/mcp-server` is an *ancestor* of `main` — no commits of its own, six behind — and the
+worktree at `../tui-do-mcp` holds the same five crates `main` does, with no
+`crates/tui-do-mcp`. Forgejo and GitHub both answer `418d8aa` for that branch, matching
+local, so this is not a mirror lagging: the branch genuinely carries nothing. **A GitHub
+branch page renders the whole repository at its commit, which is why an empty branch looks
+like work** — the "6 behind, 0 ahead" count is the part that says otherwise, and it is worth
+knowing before the next branch is judged by eye. The worktree is still the right home for
+this; rebase it or cut a fresh branch before writing in it.
 
 **They merged into one item because they are one contract.** An MCP tool result and
 `tui-do list --json` are the same promise about the same shape through different doors.
@@ -51,9 +61,9 @@ agent-facing contracts and a reconciliation that breaks whichever arrived first.
 serialisation module — `tui_do_core::agent` — is the single source and both surfaces render
 from it.
 
-**Nothing of this is on `main` yet, deliberately.** The branch also carries the
-`runtime::add` split that `bugs.md` §2 already prescribes, because MCP speaks JSON-RPC over
-stdout and a function that prints six branches of console report cannot be called from it.
+**It carries the `runtime::add` split with it**, which `bugs.md` §2 already prescribes
+independently: MCP speaks JSON-RPC over stdout, and a function that prints six branches of
+console report cannot be called from it. That is scope, not a second item.
 
 **4. Kanban buckets.** *(raised 2026-09-08; on the roadmap since Phase 5)*
 Promotes from "Vikunja parity" to "the feature that makes the agent story real".
@@ -114,6 +124,69 @@ Two things left before code:
   `async-io`/`async-executor`/`blocking` even with keyring's `tokio` feature on, so the
   pure-Rust path currently means **two async runtimes** in the binary and 53 net-new crates
   against the present 412. That may change which backend is worth having.
+
+
+**9. `tui-do login` — it does not exist, and it is the cheap half of the macOS goal.**
+*(raised 2026-09-13)*
+Verified rather than assumed: the binary has **three** subcommands — `add`, `migrate`,
+`completions`. Item 8 and `md/2026-09-07-credential-storage-design.md` both talk about
+`tui-do login` as though it were a place to put things. There is no such place yet.
+
+**Build it for both platforms, decided 2026-09-13.** The first instinct was macOS-only,
+since the goal that prompted it is a Mac one. Wrong instinct: the command's job is *writing
+the config file for you*, and hand-editing YAML is no more pleasant on a Pi. Same command,
+same prompts, same order; only where the token lands differs, which is exactly what the
+platform seam in `CLAUDE.md` is for.
+
+```
+tui-do login
+  ├─ "Server URL?"                    → writes config.yaml for you
+  ├─ opens the browser at the server's API-token page
+  ├─ you paste the token back (hidden input)
+  └─ stores it:  macOS → Keychain    (item 8)
+                 Linux → token_file, mode 0600, written right the first time
+```
+
+**What it is worth is the first-run experience, not the storage.** It deletes the `printf`,
+the `chmod`, and the `$EDITOR config.yaml` — which is three of the six steps the README's
+"REQUIRED — First time setup" currently asks for, on both platforms. It also gives the
+README's honest "there is no first-run wizard" note something to become.
+
+**And it is where OAuth lands later**, without displacing anything: the paste step
+disappears and everything the user learned stays true. That was already the argument for
+naming it now (item 7); this entry is only recording that naming it is all that has
+happened.
+
+---
+
+## The macOS auth goal, and what it actually needs
+
+*(raised 2026-09-13, from a discussion that is not otherwise written down)*
+
+**The goal, in the owner's words:** hand-editing config files and `chmod` from the CLI is
+not a Mac-like experience, and making the macOS auth experience Mac-like is the primary
+goal of the port from here.
+
+Three clarifications came out of that discussion and are worth keeping, because the notes
+above mix them together and that is most of the confusion:
+
+- **"Where the token lives" and "how you got the token" are different questions.** Keychain
+  is storage. OAuth is sign-in. The Mac goal is entirely a *storage* problem plus item 9,
+  and neither is blocked on the Vikunja spec PR that OAuth waits for.
+- **No Apple Developer Program membership is required**, and no third party is involved.
+  Keychain access is an ordinary OS API available to unsigned binaries. What the $99/year
+  would buy is narrower: a stable code-signing identity, so the Keychain permission prompt
+  is not re-asked after every upgrade, and Gatekeeper clearance for a browser-downloaded
+  binary — which does not bite while the Homebrew formula builds from source.
+  **Unmeasured:** whether the re-prompt actually happens on upgrade. Store an item, rebuild,
+  read it back, see whether macOS asks. Cheap, and it is the only fact the money question
+  turns on.
+- **Split item 8 by platform.** macOS Keychain is always present and always unlocked at
+  login, and costs a handful of crates. Linux's Secret Service is frequently *absent*
+  (every headless box in the fleet) or *locked*, and costs 53 net-new crates plus a second
+  async runtime. Building the macOS half alone delivers the whole stated goal and leaves
+  the expensive, unmeasured Linux half unbuilt — possibly permanently, which would be a
+  fine outcome.
 
 ---
 
