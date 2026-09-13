@@ -13,7 +13,7 @@ agentic tasks and workflows.
 Feel the flow break when you have to tab out of tmux or herdr or your terminal sessions to go
 to a PWA or the web page for your Vikunja instance? I'm with you, tui-do is the answer!
 
-> **Status: 1.0.** `v1.0.0` is published and is what the commands below install. Everything
+> **Status: 1.0.** `v1.0.2` is published and is what the commands below install. Everything
 > documented here works and is used daily against a real Vikunja;
 > [what's planned](#whats-planned--coming) is set out rather than left to be discovered.
 
