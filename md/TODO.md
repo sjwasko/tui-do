@@ -275,7 +275,7 @@ never reaches the open TUI, which goes on holding a provisional id until its nex
 Same family as the bug the label lifecycle fought hardest over, arriving from a direction
 that did not exist when it was designed. Undesigned.
 
-### The drain torture test — planned 2026-09-13, not yet driven
+### The drain torture test — driven 2026-09-13
 
 `md/drain-torture-test-plan.md`, with `md/2026-09-13-drain-torture-handoff.md` as the
 prompt that precedes it. **Both are deliberately untracked** — `/md/*-plan.md` and
@@ -305,6 +305,34 @@ and (b) above under exactly the contention that triggers it.
 **The plan names what it cannot see**, which is the part worth keeping: there is **no
 tracing in the store layer at all**, so SQLite tail latency — the thing most worth knowing —
 is not obtainable without adding code. That gap is itself a finding about the codebase.
+
+**Run 1 was driven on 2026-09-13 and the pile is gone.** Full results, predictions judged
+and all raw numbers are in `md/drain-torture-test-plan.md`. Run 2 (`flush_on_exit`) is
+still outstanding. What matters to this file:
+
+- **Rule 1 held.** 1,767 writes and 1,767 reloads, and the interface stayed responsive
+  throughout with every keystroke instantaneous. That is the strongest evidence the
+  architecture has, and it had never been tested above a handful.
+- **The drain is O(n²), now measured rather than suspected:**
+  `ms_per_entry = 0.0185 × depth + 133.8`. The `pending()` re-read costs **18.5 µs per
+  queued row per iteration** — 33 ms/entry at the peak depth of 1,781, and **~11 % of the
+  268-second run**. So the candidate-selection split `bugs.md` proposes under *Structure*
+  is worth doing and is **not urgent**; it only dominates around 10,000 queued entries.
+- **Correctness was perfect.** 1,767 distinct tasks written, all 3,732 requests `200`,
+  server ends at 0 open / 1,831 done, zero retries, nothing ever deferred.
+- **Two new defects, BUG-21 and BUG-22**, both in `bugs.md`. BUG-22 is BUG-2's named
+  residual reproduced: 17 of 1,767 tasks (0.96 %) were pushed twice because a reload
+  raced a write and re-showed a row the user had already marked. Harmless here only
+  because both writes set `done = true` — `d` is a toggle, and the other resolution of
+  the same race silently un-does the user's work.
+- **Item 10(b) was not reached.** No `SQLITE_BUSY` at any point, from tui-do or from a
+  second process reading the store once a second throughout. That is not evidence the
+  hazard is absent — the sampler only ever read — but sustained write pressure from one
+  process did not produce it.
+- **The plan's own instrumentation had a bug worth remembering:**
+  `TUI_DO_LOG=tui_do=trace` does **not** capture the per-request trace, which is emitted
+  from `tui_do_api`. `EnvFilter` matches on module-path segments and `tui_do_api` is not a
+  child of `tui_do`. All three crate targets are needed.
 
 ### The test for (b), designed 2026-09-13
 
@@ -536,7 +564,8 @@ chose, with `AgentIdentity::Bot` written down beside it as the honest, more expe
 (`runtime/mod.rs:695`) fires `Pass::Full` every interval, and `Sync::once` — what startup
 calls — is `pass(Reach::Full, ..)`. So **every process pulls all 78 pages every five
 minutes**, plus another 78 at startup. Not a cheap delta: the whole listing, ~3,877 tasks,
-about 15 seconds.
+about 15 seconds — **measured at 25.0 s on 2026-09-13**, 78 pages and 83 requests against
+a cold store, so the numbers below understate the cost by two thirds.
 
 That is deliberate and should not be "fixed" by shrinking it. **Only a full pull may
 delete** — a filtered listing cannot tell "unchanged" from "deleted elsewhere" — and
@@ -547,7 +576,7 @@ an open interface:
 
 ```
    4 processes x 78 pages = 312 requests every 5 minutes
-   4 processes x 15s      =  60s of server work per 300s window
+   4 processes x 25s      = 100s of server work per 300s window  (measured)
 
    |####################|........................................|
    0min               1min                                     5min
@@ -561,7 +590,7 @@ an open interface:
 
 ```
    50 x 78 = 3,900 requests / 5 min  ~= 13 req/sec sustained
-   50 x 15s = 750s of work per 300s window
+   50 x 25s = 1250s of work per 300s window  (measured)
 
    The polling alone exceeds capacity. The server never catches up,
    before anybody does any actual work.
@@ -681,7 +710,7 @@ diagram implies.
 
 ### Still open
 
-- **How long is the lease?** Too short and a full pull (78 pages, ~15s against dev) loses it
+- **How long is the lease?** Too short and a full pull (78 pages, **25s measured** against dev) loses it
   mid-sync; too long and a crashed agent blocks the network for that long. The diagram says
   `expires 12:04:30` without naming the interval. Choose it deliberately.
 - **An agent that holds the lease and dies mid-send.** The expiry frees the lease, but the
