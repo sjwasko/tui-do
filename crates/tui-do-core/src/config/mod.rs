@@ -18,6 +18,7 @@
 //! that results is held in memory only.
 
 pub mod columns;
+pub mod keychain;
 pub mod migrate;
 
 use std::path::{Path, PathBuf};
@@ -39,6 +40,47 @@ pub const CONFIG_PATH_ENV: &str = "TUI_DO_CONFIG";
 
 /// Environment variable that supplies the API token, overriding the file.
 pub const API_TOKEN_ENV: &str = "TUI_DO_API_TOKEN";
+
+/// Where a token came from, and anything the user should be told once.
+///
+/// Carries the source because "which credential am I actually using" is a question a
+/// four-source chain makes askable and a bare `Option<String>` does not — and because the
+/// design note's *no silent precedence surprise* rule needs something to print.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenLookup {
+    /// The token, if any source had one.
+    pub token: Option<String>,
+
+    /// Which source answered. `None` exactly when `token` is `None`.
+    pub source: Option<TokenSource>,
+
+    /// Something worth saying once — today only a locked keychain.
+    pub note: Option<String>,
+}
+
+/// Which of the four sources a token came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSource {
+    /// `TUI_DO_API_TOKEN`.
+    Environment,
+    /// The OS keychain.
+    Keychain,
+    /// `server.token_file`, resolved.
+    File(PathBuf),
+    /// `server.token`, inline in the config.
+    Inline,
+}
+
+impl std::fmt::Display for TokenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Environment => write!(f, "{API_TOKEN_ENV}"),
+            Self::Keychain => f.write_str("the OS keychain"),
+            Self::File(ref path) => write!(f, "{}", path.display()),
+            Self::Inline => f.write_str("server.token in the config"),
+        }
+    }
+}
 
 /// Everything tui-do reads from disk at startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,10 +335,80 @@ impl Config {
     /// worth refusing rather than resolving by precedence nobody remembers — when the
     /// token file cannot be read, or when it is empty.
     pub fn api_token(&self, config_path: &Path) -> Result<Option<String>> {
+        Ok(self.resolve_token(config_path)?.token)
+    }
+
+    /// The API token, and where it came from.
+    ///
+    /// Four sources, tried in this order:
+    ///
+    /// ```text
+    /// 1. TUI_DO_API_TOKEN     explicit, ephemeral, deliberate
+    /// 2. OS keychain          ambient, stored          (keyed by server URL)
+    /// 3. server.token_file    the fleet's ordinary case
+    /// 4. server.token         inline, already warned about
+    /// ```
+    ///
+    /// **The environment variable is first, and that is a correction**, decided
+    /// 2026-09-14. `md/2026-09-07-credential-storage-design.md` originally put the keychain
+    /// ahead of it, matching veans. The argument against is that same note's own rule that
+    /// a precedence conflict must never be silent: `TUI_DO_API_TOKEN=tk_x tui-do` is a
+    /// deliberate, visible, one-command act, and of the four sources it is the only one
+    /// that is an act rather than a setting. Having it lose to something stored months ago
+    /// is a debugging session with no thread to pull. It also keeps the behaviour the
+    /// README already documents.
+    ///
+    /// # Errors
+    /// [`CoreError::Config`] when the keychain holds an entry it cannot read — which is
+    /// deliberately *not* a fall-through, because quietly substituting a different
+    /// credential is how somebody ends up authenticated as the wrong account — when both
+    /// `token` and `token_file` are set, when the token file cannot be read, or when it is
+    /// empty.
+    pub fn resolve_token(&self, config_path: &Path) -> Result<TokenLookup> {
         if let Some(from_env) = std::env::var(API_TOKEN_ENV).ok().filter(|t| !t.is_empty()) {
-            return Ok(Some(from_env));
+            return Ok(TokenLookup {
+                token: Some(from_env),
+                source: Some(TokenSource::Environment),
+                note: None,
+            });
         }
 
+        // Every arm but the last leaves this function, so the note is the value of the
+        // match rather than a variable initialised and immediately overwritten.
+        let note = match keychain::read(keychain::SERVICE, &self.server.url) {
+            keychain::Lookup::Found(token) => {
+                return Ok(TokenLookup {
+                    token: Some(token),
+                    source: Some(TokenSource::Keychain),
+                    note: None,
+                })
+            }
+            keychain::Lookup::Failed(reason) => {
+                return Err(CoreError::Config {
+                    path: format!("the OS keychain, entry for {}", self.server.url),
+                    reason: format!(
+                        "there is a keychain entry and it could not be read: {reason}. \
+                         Refusing to fall through to another credential rather than sign \
+                         you in as somebody else."
+                    ),
+                })
+            }
+            other => other.note(),
+        };
+
+        let (token, source) = self.token_from_config(config_path)?;
+        Ok(TokenLookup {
+            token,
+            source,
+            note,
+        })
+    }
+
+    /// The config file's own two credential fields, which are the last two sources.
+    fn token_from_config(
+        &self,
+        config_path: &Path,
+    ) -> Result<(Option<String>, Option<TokenSource>)> {
         match (&self.server.token, &self.server.token_file) {
             (Some(_), Some(_)) => Err(CoreError::Config {
                 path: config_path.display().to_string(),
@@ -310,17 +422,18 @@ impl Config {
                         reason: "server.token is empty".to_string(),
                     });
                 }
-                Ok(Some(token.to_string()))
+                Ok((Some(token.to_string()), Some(TokenSource::Inline)))
             }
             (None, Some(file)) => {
                 let resolved = resolve_relative(file, config_path);
-                Ok(Some(read_token_file(&resolved)?))
+                let token = read_token_file(&resolved)?;
+                Ok((Some(token), Some(TokenSource::File(resolved))))
             }
-            (None, None) => Ok(None),
+            (None, None) => Ok((None, None)),
         }
     }
 
-    /// An example config, for `tui-do init` and for the README.
+    /// An example config, for `tui-do login` and for the README.
     #[must_use]
     pub fn example() -> Self {
         Self {
@@ -433,6 +546,43 @@ fn read_token_file(path: &Path) -> Result<String> {
     Ok(token.to_string())
 }
 
+/// The conventional name of the token file, beside the config.
+///
+/// Named here rather than spelled out at each call site so `tui-do login` writes the file
+/// the README tells people to write by hand, and cannot drift from it.
+pub const TOKEN_FILE: &str = "token";
+
+/// Write an API token to its own file, readable only by its owner.
+///
+/// This is [`write_private`] with a name that says what it is for, exported because the
+/// binary crate needs it: `tui-do login` exists to delete the `printf` and the `chmod 600`
+/// from the README's first-run instructions, and doing that by hand in the binary would be
+/// a second way to get the mode right — which is how SEC-2 happened, where a token reached
+/// a box world-readable and `tui-do add` reported nothing.
+///
+/// The mode is set **at creation**, not afterwards, so there is no window in which the
+/// token exists on disk readable by everyone.
+///
+/// The token is written with no trailing newline. [`read_token_file`] takes the first line
+/// and trims it, so either would work; writing exactly what was given means the file
+/// matches what the user pasted.
+///
+/// # Errors
+/// [`CoreError::Config`] when the parent directory cannot be created or the write fails.
+pub fn write_token_file(path: &Path, token: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| CoreError::Config {
+            path: parent.display().to_string(),
+            reason: format!("could not create the directory for the API token file: {e}"),
+        })?;
+        restrict_to_owner(parent);
+    }
+    write_private(path, token.as_bytes()).map_err(|e| CoreError::Config {
+        path: path.display().to_string(),
+        reason: format!("could not write the API token file: {e}"),
+    })
+}
+
 /// Write a file only its owner can read.
 ///
 /// `std::fs::write` creates at `0o666 & !umask`, which on a default umask is `0o644` —
@@ -530,6 +680,90 @@ mod tests {
             quick_actions: Vec::new(),
         }
     }
+
+    /// The keychain sits between the environment and the file, and today it always
+    /// answers `Unavailable` — so a config with a token file is resolved from the file and
+    /// says so. When the macOS arm is built this test keeps it honest about falling
+    /// through rather than erroring when there is no entry.
+    #[test]
+    fn a_keychain_that_answers_nothing_falls_through_to_the_file() {
+        let dir = std::env::temp_dir().join(format!("tui-do-chain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.yaml");
+        let token_path = dir.join("token");
+        std::fs::write(&token_path, "tk_from_the_file").unwrap();
+
+        let mut config = minimal();
+        config.server.token_file = Some(PathBuf::from("token"));
+
+        let lookup = config.resolve_token(&config_path).unwrap();
+        assert_eq!(lookup.token.as_deref(), Some("tk_from_the_file"));
+        assert_eq!(lookup.source, Some(TokenSource::File(token_path)));
+        assert_eq!(
+            lookup.note, None,
+            "nothing to say when there is no keychain"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An inline token is the last source, and naming it is what lets a caller answer
+    /// "which credential am I actually using" — the question a four-source chain makes
+    /// askable and a bare `Option<String>` does not.
+    #[test]
+    fn an_inline_token_reports_itself_as_the_source() {
+        let mut config = minimal();
+        config.server.token = Some("tk_inline".to_string());
+
+        let lookup = config.resolve_token(Path::new("/tmp/config.yaml")).unwrap();
+        assert_eq!(lookup.token.as_deref(), Some("tk_inline"));
+        assert_eq!(lookup.source, Some(TokenSource::Inline));
+    }
+
+    /// No source at all is not an error: tui-do without a token is a perfectly good
+    /// read-only session against the cache, and refusing to start would be the
+    /// freeze-on-network behaviour this project exists to remove.
+    #[test]
+    fn no_source_at_all_is_no_token_rather_than_an_error() {
+        let lookup = minimal()
+            .resolve_token(Path::new("/tmp/config.yaml"))
+            .unwrap();
+        assert_eq!(lookup.token, None);
+        assert_eq!(lookup.source, None);
+    }
+
+    /// The both-set refusal has to survive the chain being rebuilt around it: resolving a
+    /// precedence nobody remembers is exactly what this file refuses to do elsewhere.
+    #[test]
+    fn setting_both_is_still_refused_through_the_chain() {
+        let mut config = minimal();
+        config.server.token = Some("tk_inline".to_string());
+        config.server.token_file = Some(PathBuf::from("/tmp/token"));
+
+        assert!(config.resolve_token(Path::new("/tmp/config.yaml")).is_err());
+    }
+
+    /// `TokenSource` is printed to a user in a "not syncing" line, so it has to name
+    /// something they can go and look at.
+    #[test]
+    fn every_source_names_somewhere_a_person_can_look() {
+        assert_eq!(TokenSource::Environment.to_string(), "TUI_DO_API_TOKEN");
+        assert_eq!(TokenSource::Keychain.to_string(), "the OS keychain");
+        assert_eq!(
+            TokenSource::File(PathBuf::from("/home/x/.config/tui-do/token")).to_string(),
+            "/home/x/.config/tui-do/token"
+        );
+        assert_eq!(
+            TokenSource::Inline.to_string(),
+            "server.token in the config"
+        );
+    }
+
+    // The `TUI_DO_API_TOKEN` arm is deliberately not unit-tested. It is three lines, it is
+    // unchanged by the 2026-09-14 reordering -- the keychain was inserted *after* it, not
+    // in front of it -- and testing it means mutating a process-global in a suite that
+    // runs tests in parallel, which is how a flaky test gets written. `api_token`'s
+    // existing coverage below exercises everything downstream of it.
 
     #[test]
     fn a_minimal_config_needs_only_a_url() {

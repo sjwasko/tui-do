@@ -340,15 +340,26 @@ fn build_sync(
     config_path: &std::path::Path,
     store: &Store,
 ) -> (Option<Arc<Sync>>, Option<String>) {
-    let token = match config.api_token(config_path) {
-        Ok(Some(token)) => token,
-        Ok(None) => {
+    let lookup = match config.resolve_token(config_path) {
+        Ok(lookup) => lookup,
+        Err(error) => return (None, Some(format!("Not syncing: {error}"))),
+    };
+    // A locked keychain falls through to the file, and saying so is the whole reason the
+    // outcome is distinguished from "there is no keychain": without this line the user is
+    // told "no API token configured" when the true answer is "unlock your keyring", which
+    // is a diagnosis they cannot reach from the message.
+    let token = match lookup.token {
+        Some(token) => token,
+        None => {
+            let reason = lookup.note.map_or_else(
+                || "No API token configured".to_string(),
+                |note| format!("No API token: {note}"),
+            );
             return (
                 None,
-                Some("No API token configured — showing the local cache only.".to_string()),
-            )
+                Some(format!("{reason} — showing the local cache only.")),
+            );
         }
-        Err(error) => return (None, Some(format!("Not syncing: {error}"))),
     };
     match Client::builder(&config.server.url)
         .credentials(tui_do_api::Credentials::api_token(token))
@@ -719,7 +730,7 @@ fn spawn_sync_timer(
 /// `xdg-open` over SSH is worse than useless -- it either fails or opens a browser on the
 /// machine at the far end, which is not where the person is. tui-do is used across a fleet
 /// of boxes over Tailscale, so that is the ordinary case here, not the exotic one.
-fn url_action() -> UrlAction {
+pub(crate) fn url_action() -> UrlAction {
     if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
         return UrlAction::Copy;
     }
@@ -739,9 +750,9 @@ fn url_action() -> UrlAction {
 /// for the same job. Named once so the command and the error messages that quote it cannot
 /// drift apart.
 #[cfg(target_os = "macos")]
-const URL_OPENER: &str = "open";
+pub(crate) const URL_OPENER: &str = "open";
 #[cfg(not(target_os = "macos"))]
-const URL_OPENER: &str = "xdg-open";
+pub(crate) const URL_OPENER: &str = "xdg-open";
 
 /// Put text in the clipboard with OSC 52.
 ///

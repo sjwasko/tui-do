@@ -142,15 +142,37 @@ reads `~/.profile` rather than `~/.bashrc` for those; add the same `export` line
 
 ## REQUIRED - First time setup
 
-**There is no first-run wizard, and no config is written for you.** Without one tui-do stops
-with `could not read …/config.yaml: No such file or directory`. If you'd like to see one
-added, open up an issue.
+Run:
 
-Create an API token in Vikunja under **Settings → API tokens**. Vikunja tokens are scoped,
-and the scopes are not obvious, so see [Token permissions](#token-permissions) below if you
-get *"not authorized: missing, malformed, expired or otherwise invalid token provided"*.
+```sh
+tui-do login
+```
 
-Then, on **Linux**:
+It asks for your server, points you at Vikunja's API-token page, takes the token without
+echoing it, and writes both files for you — the config, and the token at mode `0600`. It is
+the same command on Linux and macOS; only where the files land differs.
+
+**It checks the token before it writes anything.** Vikunja's tokens are scoped, the scopes
+are not obvious, and a token missing `other → user` fails in a way that reads like the token
+is wrong rather than incomplete — see [Token permissions](#token-permissions). `login` asks
+the server who you are and either prints *"Signed in as …"* or tells you what is missing,
+while you are still looking at the checkboxes.
+
+Run it again whenever you rotate a token or move servers. An existing config is read and
+updated, never replaced, so anything you have tuned survives.
+
+To script it, pass the server and pipe the token in:
+
+```sh
+tui-do login --url vikunja.example.com < token
+```
+
+<details>
+<summary>Writing the two files by hand instead</summary>
+
+Nothing about `login` is privileged — it writes ordinary files you can write yourself.
+
+On **Linux**:
 
 ```sh
 mkdir -p ~/.config/tui-do
@@ -170,8 +192,12 @@ chmod 600 "$dir/token"
 $EDITOR "$dir/config.yaml"
 ```
 
+Create the API token in Vikunja under **Settings → API tokens** first.
+
+</details>
+
 A URL and somewhere to find the token is the whole minimum, and this file is the same on
-both platforms:
+both platforms — it is also exactly what `tui-do login` writes:
 
 ```yaml
 server:
@@ -187,6 +213,9 @@ explicit.
 
 Then run `tui-do`. Everything else has a default; see the
 [configuration reference](#configuration-reference) for the rest.
+
+If tui-do stops with `could not read …/config.yaml: No such file or directory`, that is a
+setup that never happened — run `tui-do login`.
 
 Only the first line of the token file is used, and it is trimmed, so a trailing newline is
 harmless. `TUI_DO_API_TOKEN` works instead of the file if you would rather not have one, and

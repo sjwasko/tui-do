@@ -10,6 +10,7 @@ use anyhow::{bail, Context};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use tui_do_core::config::{migrate, Config};
 
+mod login;
 mod runtime;
 
 /// What a redacted token is replaced with when a config is printed.
@@ -73,6 +74,25 @@ enum Command {
     #[command(verbatim_doc_comment)]
     Add(AddArgs),
 
+    /// Set tui-do up: write the config, store the API token, and check it works.
+    ///
+    /// This is the first-run path, and it replaces the `printf`, the `chmod 600` and the
+    /// `$EDITOR config.yaml` in the README's setup section. Run it again whenever a token
+    /// is rotated or a server moves — an existing config is read and updated, never
+    /// replaced, so tuned columns and quick actions survive.
+    ///
+    /// It asks for the server, points you at Vikunja's API-token page, takes the token
+    /// without echoing it, and then **asks the server who you are before writing
+    /// anything**. That last step is the point: `other -> user` is the one permission
+    /// tui-do cannot start without, and a token missing it otherwise fails later as a red
+    /// toast that reads like the token is wrong rather than incomplete.
+    ///
+    /// The token is written to `token` beside the config, readable only by you. Where it
+    /// lands is the one thing that differs by platform, and on macOS it will move to the
+    /// Keychain without this command's shape changing.
+    #[command(verbatim_doc_comment)]
+    Login(LoginArgs),
+
     /// Import a cria configuration into tui-do's own format.
     ///
     /// tui-do is a clean break rather than a drop-in replacement, so this is a one-way
@@ -107,6 +127,25 @@ enum Command {
     /// table as `--help`, so a stale one offers flags that have moved.
     #[command(verbatim_doc_comment)]
     Completions(CompletionsArgs),
+}
+
+/// Options for `tui-do login`.
+#[derive(Debug, Args)]
+struct LoginArgs {
+    /// The Vikunja server, skipping the prompt: `--url vikunja.example.com`.
+    ///
+    /// A bare host is accepted and `https` assumed, since the alternative would put a
+    /// credential on a cleartext connection because somebody omitted five characters.
+    #[arg(long, value_name = "URL")]
+    url: Option<String>,
+
+    /// Do not try to open the token page in a browser.
+    ///
+    /// Only ever attempted on a local desktop session anyway — over SSH `xdg-open` opens a
+    /// browser on the wrong machine, so it is not tried. This is for saying no on a
+    /// machine where it *would* be tried.
+    #[arg(long)]
+    no_browser: bool,
 }
 
 /// Options for `tui-do add`.
@@ -212,6 +251,9 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Command::Add(args)) => run_add(&args, cli.config.as_deref()),
+        Some(Command::Login(args)) => {
+            login::run(args.url.as_deref(), args.no_browser, cli.config.as_deref())
+        }
         Some(Command::Migrate(args)) => run_migrate(&args, cli.config.as_deref()),
         Some(Command::Completions(args)) => {
             run_completions(args.shell);
@@ -251,8 +293,8 @@ fn config_problem(path: &Path) -> String {
         )
     } else {
         format!(
-            "no config at {}. tui-do writes none for you: create that file with a \
-             `server.url` and somewhere to find an API token. {SETUP_URL}",
+            "no config at {}. Run `tui-do login` and it will write one, store your API \
+             token privately, and check the token works before you need it. {SETUP_URL}",
             path.display()
         )
     }
@@ -485,9 +527,12 @@ mod tests {
             message.contains(SETUP_URL),
             "it must point somewhere: {message}"
         );
+        // It used to name `server.url` and leave the reader to write the file. There is a
+        // command for that now, and naming it beats describing the YAML: the error a first
+        // run hits should be one line the reader can act on, not a spec to implement.
         assert!(
-            message.contains("server.url"),
-            "name the one key that is required: {message}"
+            message.contains("tui-do login"),
+            "send a first run to the command that fixes it: {message}"
         );
         // The whole point of the change. This error is the first thing a stranger who
         // installed from a package manager ever reads, and it used to recommend
@@ -512,7 +557,7 @@ mod tests {
         // Telling someone to create a file they can see is worse than saying nothing,
         // so this arm must not offer the write-one-from-scratch advice.
         assert!(
-            !message.contains("writes none for you"),
+            !message.contains("tui-do login"),
             "an existing file is not a missing one: {message}"
         );
         assert!(
