@@ -58,8 +58,8 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-7, BUG-9, BUG-20 |
-| **Accepted, not fixing** | BUG-2 — window is sub-50 µs and the mutations that reach it commute |
+| **Decide, then fix** | BUG-7, BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
+| **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -245,6 +245,53 @@ magnitude outside the measured window.
 could in principle batch two of them. If that ever happened the user would see the
 `Overwrote` toast rather than nothing. Revisit if a "saved over a change made elsewhere"
 report ever arrives that nobody can explain.
+
+**Three things happened on 2026-09-13, and none of them reverses the decision above.** The
+status is still accepted and still not fixed. What has changed is what the acceptance
+*rests on*: the residual is no longer hypothetical, the mutex no longer costs one defect,
+and the ~50 ms floor is no longer a property of every caller.
+
+**The residual was reproduced, and the trigger this entry set has in effect fired.** Holding
+`d` across 1,767 tasks in the drain torture run pushed 17 of them twice — 0.96 %, clustered
+in ids 2082–2118, one window rather than a background rate. That is BUG-22, and it arrived
+under exactly the key auto-repeat the paragraph above named as the thing that might one day
+batch two presses. **It is not this defect and the two must not be merged.** BUG-22 is a
+reload racing a write and re-showing a row the user had already marked, so a held key presses
+it a second time; BUG-2 is two writes for one task taking their `outbox.id`s in the wrong
+order. Fixing the spawn ordering here would not fix BUG-22, which BUG-22's own entry says as
+well. What the reproduction does establish is narrower and still worth having: auto-repeat
+really does batch work through this path under load, so the residual is a measured shape
+rather than a hedge, and "revisit if a report arrives that nobody can explain" is no longer
+a trigger waiting to fire.
+
+**The mutex is implicated twice now.** The `Arc<Mutex<Connection>>` unfairness this entry
+names as its mechanism also starves the outbox push — fifteen seconds with no requests at
+all while a key was held, then four in 350 ms after release, roughly 7 % of the unloaded
+rate. That is BUG-23, and a *human* reaches it today with no agent and no MCP server
+involved. One lock with no fairness guarantee now accounts for two defects rather than one,
+**which is a stronger case for fixing it structurally than either defect makes alone** — and
+the structural fix option 1 above already describes, a single serialized writer, would
+answer both. That does not make BUG-2 urgent on its own terms; it means the fix stops having
+to be justified by BUG-2 alone.
+
+**And the ~50 ms floor is a fact about humans, not about the code.** The load-bearing premise
+of this acceptance is that the fastest human gap is three orders of magnitude wider than the
+measured window. An MCP server looping `update_task` has no such floor — it issues two
+`UpdateTask`s for one task as fast as the runtime will take them, which is the 0 µs row. For
+that caller the premise is not weakened, it is simply gone.
+
+**So the answer is a constraint recorded, not a fix taken.** `crates/tui-do-mcp` does not
+exist — the five crates under `crates/` are `tui-do`, `tui-do-api`, `tui-do-core`,
+`tui-do-smoke` and `tui-do-ui`, and `feature/mcp-server` is an ancestor of `main` carrying
+nothing — so there is no defect here to fix today, only a way to write that crate wrong.
+**The MCP crate must write sequentially, by construction: it awaits each `store.queue()` in order rather than
+`tokio::spawn`-ing each write the way `runtime/mod.rs:253` does**, so within-subject ordering
+holds because of the shape of the code and not because of timing. That is a design
+requirement and not an implementation detail left to whoever writes it — free while the crate
+is unwritten and expensive to retrofit afterwards. It is recorded in `md/TODO.md` item 10(a)
+and in `md/2026-09-08-mcp-server-design.md`, which states it as something a test asserts. The
+one claim this entry retires is the one about no reachable trigger: it stands for the TUI,
+and it will stop standing the day `tui-do mcp` exists without that constraint honoured.
 
 ### ~~BUG-3~~ — FIXED — quitting mid-request can duplicate a task or label
 
@@ -1312,6 +1359,113 @@ reader's completions per second stays above some floor. It fails today. A fair l
 dedicated reader path that does not contend with the writer, makes it deterministic.
 
 ---
+
+### BUG-24 — a decimal number in prose is silently eaten as a date, and sets a due date nobody asked for
+
+`crates/tui-do-core/src/quickadd/dates.rs`, reached from `tui-do add` and from `a` in the
+interface.
+
+Quick-add accepts `D.M` as a date — `27.8` is 27 August, which is an ordinary European
+form and is right to support. What is wrong is that **nothing distinguishes a date from a
+decimal number in a sentence**, so any `N.M` where `M` parses as a month is removed from
+the title and turned into a due date, with no report of either.
+
+**Measured 2026-09-14 against dev**, four strings through `tui-do add --offline`:
+
+| typed | title stored | due date set |
+|---|---|---|
+| `llvm 1.6 GB and rust 432 MB` | `llvm GB and rust 432 MB` | **2027-06-01** |
+| `costs 2.5 hours of work` | `costs hours of work` | **2027-05-02** |
+| `ratio was 16.9 percent` | `ratio was percent` | **2026-09-16** |
+| `budget is 3.50 for this` | unchanged | none — `50` is not a month |
+
+Two separate harms, and the second is the worse one. **The title loses characters the user
+typed** — "1.6 GB" becomes "GB" — and **a due date appears that was never asked for**,
+nearly two years out in the first two rows, because a date that has passed rolls forward to
+next year.
+
+**Both are silent.** `tui-do add` prints `Added "<title>" to Inbox` and then `Sent.`, and
+says nothing about having parsed a date at all. The user's only clue is that the echoed
+title is not what they typed, which is exactly the thing a person skims past. The
+2026-09-13 handoff already recorded the near-miss version of this — *"`tui-do add` prints
+the parsed title, which told us the date parsed, and said nothing about what it parsed
+to"* — and this is a step worse: here it does not even say that a date was parsed.
+
+**Found by accident**, trying to put a test plan containing "llvm 1.6 GB" into a task, which
+is how BUG-20 was found too. Both are quick-add date bugs found by using real prose rather
+than test fixtures, which says something about the fixtures.
+
+**How to fix it is a decision, not a mechanical change**, and it should not be taken here:
+
+1. **Require a word boundary that a decimal does not have.** `27.8` alone is a date;
+   `1.6 GB` is not, because a unit follows. Cheap, and it is a heuristic that will be wrong
+   sometimes in both directions.
+2. **Only treat `D.M` as a date where a date is expected** — after `due`, `start`, or at the
+   end of the line. This is the narrowest rule and probably the right one; it keeps the
+   European form working where someone is deliberately writing a date.
+3. **Drop the `D.M` form.** `27/08/26`, `27aug26` and `2026-08-27` all still work. Simplest,
+   and it removes a form somebody may be relying on.
+
+**Regardless of which, report what was parsed.** `Added "…" to Inbox` should say
+`due 1 June 2027` when it set one. That is a one-line change, it is worth doing on its own,
+and it would have made this bug self-reporting rather than something found two years of
+due-date later.
+
+**How to test it.** Table-driven over the four strings above, asserting both halves — the
+title is unchanged and no due date is set — because a fix that stops setting the date while
+still eating the text would pass a weaker test.
+
+### BUG-25 — starting with stdin not a terminal hangs forever, with the terminal held in raw mode
+
+`crates/tui-do/src/runtime/terminal.rs` (`TerminalGuard::take`) and
+`crates/tui-do/src/runtime/mod.rs` (`spawn_input`).
+
+**Nothing checks that stdin is a terminal before the interface starts.** Grepping the whole
+of `crates/tui-do/src` for `is_terminal`, `IsTerminal` and `isatty` finds *nothing* outside
+the new `login.rs`. So `tui-do < /dev/null`, `tui-do < file`, `echo x | tui-do`, or tui-do
+launched from a script or unit file all reach `TerminalGuard::take`, which succeeds —
+raw mode and the alternate screen only need **stdout** — and the interface comes up against
+an stdin that can never deliver a keystroke.
+
+**There is then no way out from that terminal.** Raw mode clears `ISIG`, so Ctrl-C, Ctrl-\
+and Ctrl-Z are delivered as bytes rather than signals — and the process is not reading bytes
+from the keyboard anyway, because its stdin is elsewhere. The user has to open a second
+terminal and kill the process, and is then left with a terminal still in raw mode on the
+alternate screen unless they know to run `reset`.
+
+**Why it never ends on its own.** `spawn_input`'s thread answers a `poll`/`read` error with
+a bare `return` — the thread exits and the sender it held is dropped, but `tx` is also held
+by the tick thread and by `run`, so the channel never closes. The event loop's
+`while let Some(msg) = rx.recv().await` goes on receiving ticks forever, redrawing a screen
+nobody can interact with.
+
+**Found on `sw-mba`, 2026-09-14**, from a diagnostic command this project's own session
+handed over — `tui-do < /dev/null` — which froze the user's terminal and needed a `pkill`
+from a second window. It reproduces anywhere.
+
+**Two defects, and the second is the more general one:**
+
+1. **No TTY check at startup.** The fix is a few lines: if `std::io::stdin().is_terminal()`
+   is false, refuse before taking the terminal, with a message saying so. `login.rs` already
+   does exactly this check for the opposite reason — it *supports* a non-TTY stdin
+   deliberately — so the idiom is already in the tree.
+2. **The input thread dies silently on any error.** `Err(_) => return` discards the error
+   and tells nobody. A transient read failure therefore ends input **permanently** while the
+   interface carries on drawing, which presents to the user as "my keyboard stopped working"
+   with no message and no log line. It should at minimum send a `Msg` that toasts, and
+   should arguably end the session — an interface that cannot be typed at is not one the
+   user can quit.
+
+**How to test it.** The TTY check is a unit test on the predicate rather than on the
+runtime: the runtime's own wiring is what the manual checks cover. Drive the real thing once
+by hand, from a second terminal, and confirm the process exits on its own rather than
+needing a kill.
+
+**Worth knowing about the Homebrew formula.** Its `test do` block runs
+`shell_output("#{bin}/tui-do 2>&1", 1)` and asserts the output mentions `config.yaml`. That
+passes today only because the test box has no config; on a box that *has* one, `brew test`
+would start the interface under a non-TTY stdin and hit this. The formula's test is resting
+on an assumption it does not state.
 
 ## Minor
 

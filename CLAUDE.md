@@ -402,7 +402,7 @@ field quietly becomes uneditable.
 |---|---|
 | **Dev server** | `https://dev-box.example.net:8443` — use this for everything |
 | **Prod server** | `https://prod-box.example.net:8443` — the author's real task data, daily-driven. **Never an automated test target;** see below |
-| **Vikunja version** | v2.5.0 (dev pinned to match prod) |
+| **Vikunja version** | v2.6.0 on both. They had drifted — prod moved to 2.6.0 and dev sat on 2.5.0 until dev was upgraded on 2026-09-14 — so re-read prod's `/api/v1/info` after any upgrade there rather than trusting this row. Dev is the conformance target for Rule 3, so a spec refresh takes dev's answer, not prod's |
 | **TLS** | Tailscale Serve certs are publicly trusted; never disable certificate verification |
 
 The dev deployment kit — the compose stack, `reset-dev.sh`, `seed-from-prod.sh`,
@@ -463,7 +463,27 @@ same tell the heredoc gave.
 So a path handed over is **absolute or it is nothing**: `/home/swasko/…`, never `~/…`, and
 not `$HOME/…` either — that is one expansion away from the same class of problem.
 
-**`~/tui-do-keys.sh` on `sw-x1` is this procedure, so it stops being retyped.** It asks for
+**`~/tui-do-keys.sh` cannot provision a Mac, and fails silently when pointed at one.**
+Found 2026-09-14 on `sw-mba`: it had `config.yaml` and `prod-token` under
+`~/.config/tui-do/`, and a store under `~/.local/share/tui-do/` — the *Linux* paths. tui-do
+on macOS reads neither. `dirs 6.0.0`'s `mac.rs` is unambiguous — `config_dir()` and
+`data_dir()` both return `$HOME/Library/Application Support`, XDG variables are not
+consulted on that platform at all, and `Config::config_dir` is byte-identical from `v1.0.0`
+through today. So the script deposits a **live production API token** somewhere the client
+will never look, and the box appears provisioned while being unusable.
+
+The proof it was the script rather than a hand-copy is the timestamp: `sw-mba`'s
+`prod-token` is 43 bytes at `Sep 6 16:09`, and `sw-x1`'s is 43 bytes at `Sep 6 16:09` — the
+`-p` this section recommends, preserving mtime across the copy.
+
+Two consequences worth carrying. **An uninstall on a Mac has to clear both path families**,
+or a prod credential survives a cleanup that looked complete. And **this is the strongest
+argument for `tui-do login` there is**: it writes through `Config::resolve_path`, so it puts
+the config and token wherever the platform actually reads them, and the script's whole class
+of error disappears rather than being documented around.
+
+**`~/tui-do-keys.sh` on `sw-x1` is this procedure for Linux hosts, so it stops being
+retyped.** It asks for
 a destination, then copies `config.yaml` and *the token the config names* — it reads
 `token_file:` rather than carrying a filename, so the pair cannot disagree and switching
 between prod and dev needs no edit. It creates the remote directory first, copies with
@@ -471,6 +491,26 @@ between prod and dev needs no edit. It creates the remote directory first, copie
 readable at the absolute path the config names (which silently assumes a matching username
 and home), and `cat`s what landed. It names the server in its confirmation prompt, because
 prod and dev are one line apart in that file.
+
+**A trailing `#` comment is not a comment in zsh, and backticks in one are executed.**
+zsh does not set `interactive_comments` by default — bash does — so a handed-over line like
+
+```
+cargo uninstall tui-do        # if `cargo install` had it
+```
+
+pasted into a stock macOS shell runs the backticks as a command substitution *and* passes
+`#`, `if`, `had`, `it` as arguments. Measured on `sw-mba` 2026-09-14, where exactly that line
+produced two `command not found: cargo` rather than one, and where
+`brew uninstall tui-do  # if brew had it` handed Homebrew five extra formula names and
+triggered an autoremove that uninstalled two unrelated packages.
+
+This is the paste-mangling rule arriving from a third direction — the first was a heredoc
+losing its delimiter, the second a `~` that vanished — and it is the nastiest of the three,
+because the other two *failed* while this one silently did something else. So: **commands
+handed over for pasting carry no trailing comments.** Put the explanation on its own line
+above the block, or tell the reader to `setopt interactive_comments` first. Never put
+backticks in either.
 
 **Scratch files are deleted by whoever made them**, on this workstation, on a remote host,
 and in the working tree. `md/ruflo-audit/`, `md/bloat-detector/` and `md/minify/` are what
@@ -532,8 +572,13 @@ cargo xtask fetch-spec                    # refresh spec/vikunja.json from the d
 scripts/test-ubuntu.sh                    # build + test in the ubuntu:26.04 container
 ```
 
-**`~/.local/bin/tui-do` is a symlink to `target/release/tui-do`**, so that is the binary a
-manual check exercises. A debug build proves the tests pass and changes nothing the user
+**`~/.local/bin/tui-do` is whatever was last installed there, and on `sw-x1` it is a real
+file rather than a symlink** — checked 2026-09-14, when it was a statically linked 1.0.0
+release binary and was replaced with the 1.0.2 one. This paragraph used to state flatly that
+it is a symlink to `target/release/tui-do`; where that is true `cargo build --release` is
+enough to change what a manual check runs, and where it is not, a release build changes
+nothing until it is installed. **Run `ls -l ~/.local/bin/tui-do` rather than assuming
+either.** A debug build proves the tests pass and changes nothing the user
 is looking at: handing over a fix without `--release` means they retest the old code and
 report it still broken. Build release before saying a fix is ready to try.
 
@@ -567,6 +612,14 @@ The config is at `~/.config/tui-do/config.yaml`, the store at
 `target/release/tui-do`. None of the three is inside the repository, so a change here does
 not reach them — which is why a fix has to be built with `--release` before it can be
 tried.
+
+**`--config` does not move the store, and that catches people driving a command by hand.**
+The two are independent: `--config` (and `TUI_DO_CONFIG`) name the config, `TUI_DO_DB` names
+the store. So `tui-do --config /tmp/scratch.yaml add --offline 'probe'` looks contained and
+is not — the task and its outbox entry land in the **real** store, and the next ordinary
+launch pushes them to whatever server *that* run's config names, which on `sw-x1` is prod.
+Done exactly that way on 2026-09-14 while checking a credential change; the stray entry was
+removed from `outbox` and `tasks` by hand before anything sent it. **Set both, or neither.**
 
 `cria` is the *predecessor*, still checked out at `../cria`. Every mention of it is
 deliberate.

@@ -230,6 +230,28 @@ This is already how `tui-do add` behaves, and the README says so:
 > A zero exit means the task is in the local store — **not** that the server has it yet.
 > That is the design, not a limitation.
 
+### Writes go out in order, because they are made in order
+
+**Added 2026-09-13, and it is a requirement rather than a preference.** The crate awaits each
+`store.queue()` in turn. It does **not** `tokio::spawn` a task per write the way the TUI
+runtime does at `crates/tui-do/src/runtime/mod.rs:253`.
+
+`bugs.md` BUG-2 is a write-reordering race in that spawn: two writes issued back to back take
+their `outbox.id`s in the wrong order **18.3 % of the time**, and the push then replays the
+older `after` last, reverting the newer edit on the server. It is accepted and not fixed, on
+the grounds that the harmful pairing needs two distinct user actions and *"the whole
+acceptance rests on a human being slow"* — the measured window is under 50 µs and the fastest
+human gap is a thousand times wider. **That premise is a fact about humans, not about the
+code, and an agent looping `update_task` has no such floor.** For this caller the premise is
+gone, so the acceptance does not carry over and the crate has to decline the race itself.
+
+Awaiting costs nothing here: an MCP tool call is request/response and has no reason to fan
+out, and the ordering contract `CLAUDE.md` states *within* a subject then holds by
+construction rather than by timing. Spawning would inherit the race silently — the only
+symptom is a misleading *"saved over a change made elsewhere"* toast in a TUI nobody is
+watching — which is why this is written down before the crate exists rather than left to
+whoever writes it. It is free now and a retrofit later.
+
 ---
 
 ## 6. Why build it into tui-do rather than as a separate tool
@@ -287,6 +309,14 @@ It gets split into a part that returns a result and a part that prints it.
 > Extract `resolve_or_explain(...) -> Result<Built>` and `report(...)`; `add` drops to ~50 lines.
 
 We do exactly that, with those names.
+
+### And one rule it is written under
+
+**Added 2026-09-13.** Whatever this crate's write path ends up looking like, it awaits each
+`store.queue()` in order and spawns none of them — §5 argues why, and §10 asserts it. It is
+recorded here as well because it is a property of *this crate* rather than of any one tool:
+copying the runtime's `perform` loop as a starting point is the obvious way to get it wrong,
+and that loop is the code BUG-2 lives in.
 
 ---
 
@@ -350,6 +380,13 @@ For now you can tell agent work apart by the `agent:*` labels and the bound proj
   up as a diff in review. The interface has golden screens for the same reason; a changed
   JSON field is *less* visible than a changed screen, not more.
 - **A test that `done` cannot be sent**, which is §2's rule written as an assertion.
+- **A test that writes are issued sequentially**, which is §5's rule written as an assertion,
+  *added 2026-09-13*. Drive a run of tool calls that each queue a mutation against one task,
+  then assert `store.pending()` returns them in issue order. This is the shape `bugs.md`
+  BUG-2 prescribes for a structural fix — *"issues ~100 `Effect::Apply`s as fast as possible
+  and asserts `store.pending()` returns them in issue order"* — applied to the one surface
+  that can be built that way from the start. It is deterministic, unlike the race it guards
+  against, and it fails the moment someone reaches for `tokio::spawn` in the write path.
 
 ---
 

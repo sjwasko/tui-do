@@ -11,7 +11,7 @@ note nobody re-reads.
 Keep it honest. An item moves to **Done** when it ships, and a decision moves to a design
 note in `md/` when it is taken. Items carry the date they were raised.
 
-Last touched 2026-09-13.
+Last touched 2026-09-14.
 
 ## The road map, as of 2026-09-13
 
@@ -44,9 +44,7 @@ is the actual order. Items keep their stable numbers — nothing is renumbered, 
 notes cite them — so this says *what order*, not *what number*.
 
 ```
-  NOW      10(a)+(b)  two-process fixes + the test        ~1 session
-           9          tui-do login                        ~1-2 sessions
-           8(macOS)   keychain, behind a cfg              ~1-2 sessions
+  NOW      8(macOS)   keychain::read's macOS arm     ON A MAC -- see item 8
            ------------------------------------------------------------
            delivers the stated macOS goal in full, plus the foundation
            everything agentic needs
@@ -60,12 +58,19 @@ notes cite them — so this says *what order*, not *what number*.
   DEFER    4 (Kanban), standalone mode, comments, subtasks
 ```
 
-**Why 10(a) and (b) go first.** Both are small, certain, and **silent when wrong**. The
-transaction change is one line; the sequential-write decision in the MCP crate is free if
-taken deliberately and expensive to retrofit. Skipped, they surface weeks later as a
-corrupted store or a duplicated task with no obvious cause. And (b) is a real defect
-*today*, not only under MCP — `tui-do add` alongside the open interface has been two
-processes on one file since Phase 4.
+**Where 10(a) and 10(b) went.** This block used to read `10(a)+(b)` and both are now done,
+across the night of 2026-09-13/14. They went first because they were small, certain, and
+**silent when wrong** — and because (b) was a real defect *today*, not only under MCP, since
+`tui-do add` alongside the open interface has been two processes on one file since Phase 4.
+(a) cost no code at all: it was only ever a decision to record, and there is no MCP crate to
+record it *in*, so it is written into `md/2026-09-08-mcp-server-design.md` and into BUG-2's
+entry instead, where whoever writes the crate will meet it. (b) cost one line and a test that
+was demonstrated to fail without it. Both items keep their letters and are struck through
+below.
+
+**So the road map now starts at item 9**, which with 8(macOS) is the whole of the stated
+macOS goal. What is *not* done is 10(c), 10(e) and 10(f) — and (c) is no longer the free
+follow-on this file claimed it was; see the correction under the test design.
 
 **Why 9 and 8 come before the critical path.** They are the whole of the stated macOS goal,
 they are unblocked by anything, they carry no open design question, and they are
@@ -117,12 +122,35 @@ and it should outrank this ordering.
 ## Now
 
 **1. Wait on the OAuth spec PR, then refresh `spec/vikunja.json`.** *(raised 2026-09-08)*
-[`go-vikunja/vikunja#3837`](https://github.com/go-vikunja/vikunja/pull/3837) is **open** and
-adds `@Router` annotations for `/oauth/authorize` and `/oauth/token` plus the regenerated
-`pkg/swagger` — 126 paths to 128, 521 insertions and no deletions. Nothing to do here until
-it merges *and* a server carrying it is deployed; then `cargo xtask fetch-spec`, because
-Rule 3 checks tui-do's pinned copy and not upstream's. That is the prerequisite for
-anything below that touches OAuth.
+[`go-vikunja/vikunja#3837`](https://github.com/go-vikunja/vikunja/pull/3837) **merged
+2026-09-10** — confirmed against the API on 2026-09-14, not taken from a handoff. It adds
+`@Router` annotations for `/oauth/authorize` and `/oauth/token` plus the regenerated
+`pkg/swagger` — 126 paths to 128, 521 insertions and no deletions.
+
+**Merging upstream changes nothing locally, and that is the trap this item exists for.**
+`cargo xtask fetch-spec` reads `/api/v1/docs.json` from **the dev server**, so the oauth
+paths cannot enter `spec/vikunja.json` — and so cannot satisfy Rule 3's conformance test —
+until dev runs a build carrying that merge.
+
+**Dev was upgraded 2026-09-14 to `v2.6.0`, matching prod, and it did not unblock this.**
+Earlier the same day this entry said what was left was "a deployment, not a wait on a
+review". That was wrong, and the upgrade proved it: the refreshed spec still has **126 paths
+and no `oauth` path at all**. The arithmetic is the whole answer — the `2.6.0` image was
+published **2026-08-31** and the swagger PR merged **2026-09-10**, ten days later. Matching
+prod was never going to be enough, because prod is also behind the merge.
+
+**So this is still blocked, and now on a thing neither of us controls: an upstream release
+cut after 2026-09-10.** Watch for `2.7.0`, or run an `unstable` image on dev if the wait
+becomes the blocker — which would be the first time dev deliberately did *not* match prod,
+and is a decision to take rather than drift into.
+
+What the upgrade did carry: one new operation, `DELETE /notifications`, which tui-do does
+not call, and one new user field, `pending_email`. `spec/vikunja.json` is refreshed and
+`the_spec_is_the_version_we_target` is bumped to `v2.6.0`. The oauth paths cannot enter `spec/vikunja.json`, and so cannot
+satisfy Rule 3's conformance test, until dev runs a build carrying that merge. So what is
+left here is a **deployment**, not a wait on a review: upgrade dev, then `fetch-spec`. That
+is the prerequisite for anything below that touches OAuth — and it is nothing that items 9
+and 8 depend on, because the keychain is storage and OAuth is sign-in.
 
 **2. ~~Drive the rest of the interface on macOS.~~ Done 2026-09-13** — see the Done section.
 The number stays rather than renumbering: `md/2026-09-08-mcp-server-design.md` and item 5
@@ -213,16 +241,68 @@ reason. Worth knowing before the daemon is scoped, not during.
 
 **What actually needs doing, cheapest and most certain first:**
 
-**(a) The MCP crate writes sequentially, by construction.** `bugs.md` BUG-2 is an
+**(a) ~~The MCP crate writes sequentially, by construction.~~ Done 2026-09-13 — a
+constraint recorded, not a defect fixed.** The letter stays rather than being reused or
+re-lettered, for the same reason item 2 keeps its number: `bugs.md` and
+`md/2026-09-13-drain-torture-findings.md` both cite these sub-items by letter, and shifting
+them would break those references silently.
+
+**What was actually done, said plainly.** No code was written and **`crates/tui-do-mcp` does
+not exist** — the five crates under `crates/` are unchanged — so there was never a defect
+here to fix, only a way to build the crate wrong once someone starts.
+`md/2026-09-08-mcp-server-design.md` now carries the requirement in three places: §5 makes
+the argument, §7 records it as a property of the crate rather than of any one tool (copying
+the runtime's `perform` loop as a starting point is the obvious way to get it wrong), and
+§10 states it as something a test asserts, in the same shape as that section's existing *"a
+test that `done` cannot be sent, which is §2's rule written as an assertion"*. A constraint
+nobody can assert is a comment.
+
+**And BUG-2's entry was made honest, which is the other half of what this item asked for.**
+It stays **accepted and not fixed** — that decision of 2026-08-31 is not reversed — but it
+no longer rests on premises that stopped holding on 2026-09-13. It now says that BUG-22
+reproduced its named residual under key auto-repeat (17 of 1,767 tasks, 0.96 %, and a
+different mechanism, so the two are related and not merged); that BUG-23 implicates the same
+`Arc<Mutex<Connection>>` a second time in a way a *human* reaches today; and that the ~50 ms
+floor its acceptance turns on is a fact about humans, so for an MCP caller it is simply gone.
+What it stops claiming is that there is no reachable trigger — that stands for the TUI, and
+stops standing the day `tui-do mcp` ships without the constraint honoured.
+
+**The argument, kept because it is what the constraint rests on.** `bugs.md` BUG-2 is an
 18.3%-at-0µs write-reordering race, accepted and not fixed — and read *why* it was
 accepted: "two distinct user actions, which are at least ~50 ms apart". **The whole
 acceptance rests on a human being slow.** An agent looping `update_task` has no such floor.
-The race lives in the TUI runtime, which `tokio::spawn`s each write; the MCP crate can
-decline to inherit it by awaiting each `store.queue()` in order. Free, but only if it is a
-deliberate decision rather than an accident. BUG-2's entry should stop claiming no
-reachable trigger once `tui-do mcp` exists.
+The race lives in the TUI runtime, which `tokio::spawn`s each write; the MCP crate declines
+to inherit it by awaiting each `store.queue()` in order. Free, but only because it was taken
+as a deliberate decision rather than found later as an accident.
 
-**(b) `Store::write` opens deferred transactions, and should open immediate ones.**
+**(b) ~~`Store::write` opens deferred transactions, and should open immediate ones.~~
+Done 2026-09-14**, in the same session as (a), which ran across midnight. `Store::write` now
+opens `TransactionBehavior::Immediate`, and
+`a_write_that_has_already_read_survives_another_connection_committing` — in `store/mod.rs`'s
+own test module, because `write` is `pub(crate)` — drives two `Store::open` handles on one
+file with the interleaving forced exactly as designed below. **It was demonstrated to catch
+the bug rather than assumed to:** with the one line reverted it fails with
+`SqliteFailure(DatabaseBusy, extended_code: 517, "database is locked")`, and passes with it
+restored. `cargo fmt`, `cargo clippy --workspace --all-targets` and `cargo test --workspace`
+are all clean.
+
+**Both of the backlog's assertions were checked rather than trusted, and both hold.**
+`write()` is the only transaction site outside `schema.rs` — the four occurrences across
+`crates/` are this one, the migration loop at `schema.rs:234`, and two inside schema.rs's own
+`#[cfg(test)]` module, with no `SAVEPOINT` and no raw `BEGIN` anywhere. And there are exactly
+fifteen production callers, in `labels.rs`, `tasks.rs`, `projects.rs`, `state.rs` and
+`outbox.rs`; that they take a `&Transaction<'_>` is not merely true but structurally forced
+by `write`'s own bound, and nothing in any closure touches behaviour-sensitive API.
+
+**One correction to the cost argument below, which overreached.** "One page per transaction,
+capped at 50" describes the task upsert loop and nothing else: `retain_tasks`
+(`sync/mod.rs:978`) is a single transaction over the whole seen set, ~3,900 ids on dev, and
+`pull_lists` applies all projects and all labels in one transaction each. The page size is
+also the server's reported `max_items_per_page` rather than a hard 50 — 50 is what our server
+answers. The conclusion survives, since those writes are small or infrequent; the reason
+given for it did not cover them.
+
+**The original entry, kept because it is what the fix rests on.**
 `crates/tui-do-core/src/store/mod.rs:208` uses `guard.transaction()` — rusqlite's default,
 which is `Deferred`: it takes a read snapshot and upgrades on first write. In WAL, a
 transaction whose snapshot has been overtaken answers **`SQLITE_BUSY_SNAPSHOT`**, and
@@ -385,8 +465,27 @@ the ordering, it is not a race window.
 write lock, B blocks at `BEGIN IMMEDIATE`, and A is waiting for a signal B can never send.
 A generous sleep is what keeps the test honest in both directions.
 
-**The same shape proves (c) for free:** stand up a store one version behind, let A read
-`user_version` and B migrate and commit, then let A apply. It errors today.
+**Driven 2026-09-14, and the design held in every particular but one.** The 517 arrives
+before the fix and both transactions commit after it, exactly as written. What the design
+did not predict is the *order* they commit in: after the fix A holds the write lock from
+`BEGIN`, so **B is serialised after A and commits last**, and a first version of the test
+that asserted A's value was the one left on disk failed with `left: Some("written by B")`.
+The test therefore writes two **different** keys — A takes `LAST_PULL` and B takes
+`LAST_RECONCILE` — which is both more honest and a stronger assertion, since it shows the
+snapshot is invalidated by any commit on the database rather than only by one to the same
+row.
+
+**~~The same shape proves (c) for free.~~ It does not, corrected 2026-09-14** while writing
+(b)'s test. The *technique* transfers — two connections on one file, the interleaving forced
+by a channel and a generous sleep — but three things differ and together they cost a morning
+rather than nothing. `migrate` reads `PRAGMA user_version` in **autocommit**
+(`schema.rs:215`), so no read snapshot is held and the loser does not fail with 517 at all:
+its first statement is already a write, taking a fresh snapshot, so it fails with a plain
+`SQLITE_ERROR` from the re-applied `CREATE TABLE`. `migrate` takes no caller-supplied
+closure, so there is no seam to interleave through the way `Store::write` offers one. And
+`Store::open` migrates before any handle exists, so (b)'s two-`Store::open` setup cannot be
+reused — the test has to drive `schema::migrate` directly on two hand-built connections stood
+up one version behind. Still cheap, still worth doing, and no longer free.
 
 ### A documentation correction this turned up, true regardless of MCP
 
@@ -403,6 +502,35 @@ the two processes do not fight."* The two statements contradict each other, and 
 one is correct. MCP does not create this; it widens it from "two processes you start by
 hand, seconds apart" to "four that launch when you open the laptop."
 
+**11. `tui-do add` cannot set a description, and an agent will want one.**
+*(raised 2026-09-14)*
+Verified rather than assumed: there is no `--description` flag, no quick-add token for one,
+and `runtime::add` takes `text`, `offline` and `create_labels` and nothing else. The whole of
+what `tui-do add` can express is a title plus the quick-add tokens.
+
+**Found by trying to use it.** A test plan was to be filed as a task with the plan itself as
+the description; there is no mechanism, so the 754-character plan went into the *title*
+instead — and took BUG-24 with it, silently losing "1.6" and acquiring a due date in June
+2027.
+
+**It matters more for item 3 than for people.** A human has the interface, where `e` edits a
+description properly. An MCP `add_task` has nothing: an agent filing a task with a body of
+context — a stack trace, a spec, what it tried — is the *ordinary* case for the agent
+surface, not an edge one, and `tui_do_core::agent` cannot render what `add` cannot carry.
+So this is really a prerequisite of 3a rather than a separate feature.
+
+**Three things to decide, and none is hard:**
+
+- **`--description` alone, or `--description-file` too?** A description is multi-line, and
+  `CLAUDE.md`'s "Driving another box by hand" is an essay on what happens to multi-line
+  content that is retyped rather than moved. `-` for stdin is the shape that does not make
+  the user quote anything.
+- **Does the interface's markdown story apply?** Descriptions are Markdown, plain text or
+  TipTap HTML on the wire, and `markdown::looks_like_html` already decides which. `add`
+  should write what it was given and not guess.
+- **What does it print back?** Not the description — it is long by nature. A character count
+  is enough, and it is the same "say what you actually did" fix BUG-24 asks for.
+
 ---
 
 ## Auth and credentials
@@ -414,8 +542,42 @@ neither of which is ours to clear; the keychain is blocked on nothing. Recorded 
 `md/2026-09-07-credential-storage-design.md`.
 
 **8. Keychain credential storage.** *(raised 2026-09-07 — unblocked 2026-09-08)*
-Designed, not built. Strictly additive: keychain → `TUI_DO_API_TOKEN` → `token_file` →
-inline.
+**The seam is built, 2026-09-14; the Security.framework calls are not.** Strictly additive,
+and the order is **`TUI_DO_API_TOKEN` → keychain → `token_file` → inline** — corrected from
+the keychain-first order this entry used to state, for the reasons now in
+`md/2026-09-07-credential-storage-design.md`.
+
+**What landed.** `crates/tui-do-core/src/config/keychain.rs` is the platform seam, in the
+shape the macOS port proved rather than a trait — a `cfg`-selected function pair, since
+`URL_OPENER` is two constants and a `cfg` and Phase 5's `MarkdownRenderer` trait was dropped
+for being an abstraction over one implementation. `Config::resolve_token` is the four-source
+chain, returning the token, **which source answered**, and any note worth printing once;
+`api_token` is now a thin wrapper over it, so the only production call site (`build_sync`)
+was the only thing that had to change. Eight tests, clippy clean, 726 passing.
+
+**The four outcomes are the actual design content, and they are implemented.** `Unavailable`,
+`Absent` and `Locked` all fall through; only `Failed` stops the search, because quietly
+substituting a different credential is how somebody ends up authenticated as the wrong
+account. `Locked` is the one that falls through *and says so* — the runtime now surfaces it,
+so a locked ring reports "unlock your keyring" instead of "no API token configured", which
+is the diagnosis the design note says the user cannot otherwise reach.
+
+**Entries are keyed by server URL**, not by a fixed name: prod and dev are two tokens and a
+single `tui-do` entry would hand the wrong one to whichever config was loaded.
+
+**What is left is one function, and it cannot be written here.** `keychain::read` answers
+`Unavailable` on both arms today. The macOS arm needs `keyring` (or Security.framework
+directly) and the mapping from its errors onto the four outcomes. **This workstation cannot
+compile it** — only `x86_64-unknown-linux-gnu` is installed, there is no rustup, and Apple's
+SDK is not redistributable, which the release workflow already says. So that arm wants a
+session on the Mac, where it can also settle the one unmeasured fact the money question turns
+on: whether macOS re-prompts for Keychain access after a rebuild.
+
+**The Linux arm is deliberately not a gap.** 53 net-new crates and a second async runtime,
+for a Secret Service that is absent on every headless box in the fleet and locked on most of
+the rest. Leaving it `Unavailable` permanently would be a fine outcome.
+
+The original entry follows, because its measurements are what the above rests on.
 
 The musl worry turned out to be the wrong question, measured 2026-09-08: there is no
 libsecret in this at all, and `keyring v3.6.3` offers three Linux backends that link three
@@ -436,11 +598,55 @@ Two things left before code:
   against the present 412. That may change which backend is worth having.
 
 
-**9. `tui-do login` — it does not exist, and it is the cheap half of the macOS goal.**
+**9. ~~`tui-do login` — it does not exist, and it is the cheap half of the macOS goal.~~
+Built 2026-09-14.** The binary has **four** subcommands now. `crates/tui-do/src/login.rs`
+asks for the server, prints and opens Vikunja's API-token page, reads the token without
+echoing it, **checks it against `GET /user`**, and only then writes the config and the token
+at `0600`. Driven against dev end to end: a good token answers *"Signed in as admin"*, a bad
+one is refused with the `other → user` hint and **nothing is written**, and a second login
+over a hand-tuned config preserved `interval_seconds: 42` and a quick action. 718 tests pass
+and clippy is clean.
+
+**Three decisions taken while building it, each recorded where it belongs rather than only
+here.**
+
+**The token source order is `TUI_DO_API_TOKEN`, then keychain, then `token_file`, then
+inline** — *not* the keychain-first order
+`md/2026-09-07-credential-storage-design.md` decided on 2026-09-08. That note now carries the
+correction and the argument: an explicit act beats ambient state, and of the four sources the
+environment variable is the only one that is an act rather than a setting. Keychain-first
+would have let a stored credential silently beat `TUI_DO_API_TOKEN=tk_x tui-do`, which is the
+"silent precedence surprise" that same note forbids. **Item 8 must implement this order**, and
+it is the one thing about item 8 that is now fixed rather than open.
+
+**No new dependency.** The hidden input is `crossterm` in raw mode — already in the crate for
+the interface — rather than `rpassword`. Bracketed pastes arrive as one `Paste` event and
+unbracketed ones as a run of `Char`s, and both are handled, because a pasted token is the
+expected input rather than the exotic case.
+
+**The deep link to the token page is unverifiable and is treated as such.**
+`/user/settings/api-tokens` is a *front-end* route, and Vikunja's SPA answers the same
+`index.html` for every path it owns — which is exactly how the credential note reached a
+wrong conclusion about OAuth once. Probing it would prove nothing, so the breadcrumb
+*Settings → API tokens* is printed beside the link and the route is documented as unprovable
+at the one place it is written down.
+
+**One defect found by driving it, which no test would have caught.** With stdin piped and no
+`--url`, the server prompt consumed the piped token as the URL and the token read then hit
+end-of-input — so the command failed with *"no token given"* while naming a server nobody
+typed. Piped stdin now requires `--url` and says so. **The general lesson is the one the
+macOS plan already taught: a green suite is not a driven command.**
+
+**What it did to the README.** The setup section is now `tui-do login`, with the
+`printf`/`chmod`/`$EDITOR` dance moved into a collapsed "by hand instead" block rather than
+deleted — it is still true, and it is what the command does for you. *"There is no first-run
+wizard"* is gone, and the error a first run actually hits (`no config at …`) names the
+command instead of describing the YAML to write.
+
 *(raised 2026-09-13)*
-Verified rather than assumed: the binary has **three** subcommands — `add`, `migrate`,
-`completions`. Item 8 and `md/2026-09-07-credential-storage-design.md` both talk about
-`tui-do login` as though it were a place to put things. There is no such place yet.
+Verified rather than assumed at the time: the binary had **three** subcommands — `add`,
+`migrate`, `completions`. Item 8 and `md/2026-09-07-credential-storage-design.md` both talked
+about `tui-do login` as though it were a place to put things. There was no such place yet.
 
 **Build it for both platforms, decided 2026-09-13.** The first instinct was macOS-only,
 since the goal that prompted it is a Mac one. Wrong instinct: the command's job is *writing
@@ -830,6 +1036,41 @@ not be fixed. None are Critical.
 ---
 
 ## Done
+
+- **2026-09-14** — **Item 8's seam, and the token-source order.** `config::keychain` is the
+  platform seam with its four outcomes implemented, and `Config::resolve_token` is the
+  four-source chain that reports which source answered. What is left is `keychain::read`'s
+  macOS arm, which this workstation cannot compile. **The half that could be verified here
+  was built here and the half that could not was left as one function with a known
+  signature** — which is the same split that made the macOS port cheap, applied deliberately
+  rather than discovered.
+
+- **2026-09-14** — **Item 9: `tui-do login` exists, on both platforms.** It writes the
+  config, stores the token at `0600`, and checks the token against `GET /user` *before*
+  writing anything — which turns the project's most confusing failure (a token missing
+  `other → user`, which reads like a wrong token rather than an incomplete one) into a
+  sentence while the user is still looking at the permission checkboxes. No new dependency;
+  the hidden input is `crossterm` in raw mode. The token source order was settled against the
+  credential note and **the environment variable stays first**. Driving it found a defect the
+  suite could not: piped stdin with no `--url` ate the token as the server URL.
+
+- **2026-09-14** — **Item 10(b): `Store::write` opens an immediate transaction, and the
+  deterministic two-connection test exists.** One line of production change, 85 of test.
+  Reverting the line makes the test fail with extended code **517**, which is the only reason
+  to believe it guards anything — an absent race and a test that cannot see it look identical
+  otherwise. Both of the backlog's load-bearing assertions were checked and hold: `write()` is
+  the only transaction site outside `schema.rs`, and all fifteen production callers take a
+  `&Transaction<'_>` by a bound that makes it structural rather than coincidental. Two things
+  the work corrected are recorded above: the cost argument's "one page per transaction"
+  covered only the task upsert loop, and 10(c) is **not** proved for free by the same shape.
+
+- **2026-09-13** — **Item 10(a) closed with no code: the MCP crate's sequential-write
+  requirement is written down.** It is in `md/2026-09-08-mcp-server-design.md` §5, §7 and
+  §10 — the last of those as a test that asserts it — and in `bugs.md` BUG-2, whose
+  acceptance was re-argued against BUG-22, BUG-23 and the absence of any ~50 ms floor for an
+  agent, and **still holds**. Nothing under `crates/` was touched and `crates/tui-do-mcp`
+  still does not exist, which is exactly why this was cheap: a constraint costs nothing while
+  the code it constrains is unwritten, and is a retrofit the moment it is not.
 
 - **2026-09-13** — **macOS is driven, and the README's platform claim is backed.** Rendering
   including tmux, keybindings, sync from inside the interface, sleep/wake, and `o`'s copy

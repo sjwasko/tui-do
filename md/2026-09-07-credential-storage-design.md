@@ -149,15 +149,41 @@ they meet.
 
 ## The decision: add a source, do not replace one
 
-**Keychain first, then the environment variable, then the file.** Exactly veans's order,
-arrived at independently for reasons this project can name.
+~~**Keychain first, then the environment variable, then the file.** Exactly veans's order,
+arrived at independently for reasons this project can name.~~
+
+**Corrected 2026-09-14: the environment variable stays first, and the keychain goes second.**
+The order below is what ships.
 
 ```
-1. OS keychain          -- if present and unlocked
-2. TUI_DO_API_TOKEN     -- already exists; CI, containers, one-off overrides
+1. TUI_DO_API_TOKEN     -- already exists; CI, containers, one-off overrides
+2. OS keychain          -- if present and unlocked
 3. server.token_file    -- already exists; the fleet's ordinary case
 4. server.token         -- already exists, already warned about, unchanged
 ```
+
+**The reason is this note's own rule, two sections down.** *"No silent precedence surprise"*
+says that where two sources disagree the user is authenticated as somebody and must be able
+to tell who. Keychain-first breaks that in the one case where the user has been most
+explicit: `TUI_DO_API_TOKEN=tk_x tui-do` is a deliberate, visible, one-command act, and
+having it silently lose to something stored months ago is a debugging session with no thread
+to pull. **An explicit act beats ambient state**, and of the four sources the environment
+variable is the only one that is an act rather than a setting.
+
+It also preserves behaviour rather than changing it. `Config::api_token` checks the
+environment first today, and the README documents that; keychain-first would have made a
+`brew install` user's first `tui-do login` quietly redefine what their existing override
+does.
+
+**What is given up is the match with veans**, which is a weaker reason than it looked: the
+order was described here as "arrived at independently", and the independent argument is the
+one above, which points the other way. Copying the order and then finding a justification
+for it is not the same thing.
+
+**The other consumer this protects is the one two sections down.** For an MCP server with no
+graphical session, `TUI_DO_API_TOKEN` and `token_file` are the *primary* path, not a legacy
+one. Putting a keychain the process cannot unlock ahead of the variable its supervisor set
+is precisely the wrong order for that caller.
 
 **The file must stay, and this is not a compatibility concession.** It is the case tui-do is
 actually used in. The fleet is boxes reached over SSH — `sw-x280`, `sw-pi`, `sw-mini-pi`,
