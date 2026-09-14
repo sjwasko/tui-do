@@ -205,7 +205,19 @@ impl Store {
         let connection = Arc::clone(&self.connection);
         tokio::task::spawn_blocking(move || {
             let mut guard = connection.lock().unwrap_or_else(PoisonError::into_inner);
-            let transaction = guard.transaction()?;
+            // Immediate, not rusqlite's deferred default. A deferred transaction takes
+            // a read snapshot and upgrades on first write, and in WAL a snapshot another
+            // connection has overtaken answers `SQLITE_BUSY_SNAPSHOT` -- which
+            // `busy_timeout` does *not* retry away, because waiting could only deadlock.
+            // `Store::queue` is exactly that shape: `next_local_id` reads `sync_state`
+            // and then writes it, inside the caller's transaction. Invisible while one
+            // process holds the only connection; reachable the moment two do
+            // (`tui-do add` beside a running interface, and later an MCP server).
+            //
+            // The cost is a marginally longer lock hold, taken from the first statement
+            // rather than the first write.
+            let transaction =
+                guard.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let value = work(&transaction)?;
             transaction.commit()?;
             Ok(value)
@@ -387,5 +399,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// Item 10(b). `write()` opened rusqlite's default *deferred* transaction, which
+    /// takes a read snapshot and upgrades on the first write. In WAL, a transaction
+    /// whose snapshot another connection has overtaken answers `SQLITE_BUSY_SNAPSHOT`
+    /// (extended code 517) -- and `busy_timeout` does **not** retry that one away, since
+    /// waiting could only deadlock. It is `Store::queue`'s exact shape: `next_local_id`
+    /// reads `sync_state` and then writes it, in the caller's transaction.
+    ///
+    /// **Two `Store` handles on one file, not two processes.** SQLite locks per
+    /// *connection*, so two connections reproduce the multi-process case exactly and can
+    /// be driven deterministically -- and the interleaving is forced, never sampled:
+    ///
+    /// ```text
+    ///   connection A                      connection B
+    ///   BEGIN; read sync_state            (waiting)
+    ///   signal "read done"  ----------->  BEGIN; write sync_state; COMMIT
+    ///   sleep 250ms                          (WAL advances past A's snapshot)
+    ///   write sync_state    <- SQLITE_BUSY_SNAPSHOT before the fix
+    /// ```
+    ///
+    /// **The sleep is load-bearing and must not become a wait for B.** After the fix A
+    /// holds the write lock from `BEGIN`, B blocks at its own `BEGIN IMMEDIATE`, and an
+    /// A that waited for B's commit would wait forever. 250 ms against a 5000 ms
+    /// `busy_timeout` is a 20x margin: it sets the ordering, it is not a race window.
+    #[tokio::test]
+    async fn a_write_that_has_already_read_survives_another_connection_committing() {
+        let dir = std::env::temp_dir().join(format!("tui-do-snapshot-{}", std::process::id()));
+        let path = dir.join("tui-do.db");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Two `open`s, not two clones: a clone shares the one connection and the mutex
+        // around it, which is precisely what hides this today.
+        let a = Store::open(&path).await.unwrap();
+        let b = Store::open(&path).await.unwrap();
+
+        let (read_done, wait_for_read) = tokio::sync::oneshot::channel::<()>();
+
+        let writer = tokio::spawn(async move {
+            a.write(move |tx| {
+                let before = state::read_state(tx, LAST_PULL)?;
+                assert_eq!(before, None, "the store should start with no watermark");
+                let _ = read_done.send(());
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                state::write_state(tx, LAST_PULL, "written by A")?;
+                Ok(())
+            })
+            .await
+        });
+
+        wait_for_read.await.expect("A never reported its read");
+        // A different key, so both writes are visible afterwards; the snapshot is
+        // invalidated by any commit on the database, not only by one to the same row.
+        b.set_state(LAST_RECONCILE, "written by B").await.unwrap();
+
+        writer
+            .await
+            .unwrap()
+            .expect("A's write was refused: a deferred snapshot B overtook answers 517");
+
+        assert_eq!(
+            b.state(LAST_PULL).await.unwrap().as_deref(),
+            Some("written by A"),
+            "A's write did not land"
+        );
+        assert_eq!(
+            b.state(LAST_RECONCILE).await.unwrap().as_deref(),
+            Some("written by B"),
+            "B's write did not land"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
