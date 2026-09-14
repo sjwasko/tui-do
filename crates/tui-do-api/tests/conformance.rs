@@ -162,10 +162,16 @@ fn model_fields_exist_in_the_spec() {
 fn the_spec_is_the_version_we_target() {
     // A spec refreshed from a different server version should be a deliberate act, not
     // something that slips in. Bump this when the dev instance is upgraded.
+    //
+    // v2.5.0 -> v2.6.0 on 2026-09-14, when dev was upgraded to stop it lagging prod. The
+    // refresh carried one new operation, `DELETE /notifications`, which tui-do does not
+    // call, and one new user field, `pending_email`. Worth knowing: **2.6.0 still has no
+    // `oauth` paths**, because the image was published 2026-08-31 and the swagger PR that
+    // adds them merged on 2026-09-10. Matching prod did not unblock OAuth.
     let spec = spec();
     assert_eq!(
         spec.pointer("/info/version").and_then(Value::as_str),
-        Some("v2.5.0"),
+        Some("v2.6.0"),
         "spec/vikunja.json was captured from a different Vikunja version"
     );
 }
