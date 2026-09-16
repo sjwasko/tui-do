@@ -585,6 +585,38 @@ report it still broken. Build release before saying a fix is ready to try.
 Workspace lints deny `unwrap`, `panic`, `todo`, `dbg!` and forbid `unsafe`. Tests may
 `allow` them at module level; production code may not.
 
+## Commit messages
+
+Subject says what changed. Body says why.
+
+- Under 50 characters. One idea.
+- **If the subject needs "and", it is two commits.**
+- No "because", "so that", or "before someone" in the subject. That is body text.
+- Body is two to four plain sentences. Numbers if something was measured. Then stop.
+
+Words that make it read like a machine wrote it, because one did: *scaffold*,
+*guardrails*, *seam*, *surface* as a noun, *worth keeping*, *deliberately*, *honestly*.
+Openers to avoid: *Say that…*, *Record that…*, *Note that…* — three of the first thirteen
+commits in the log start that way.
+
+```
+bad   Say that GitHub is a mirror, before someone writes a patch
+good  Note GitHub is a read-only mirror
+
+bad   Scaffold tui-do workspace with architectural guardrails
+good  Set up the workspace with lints and CI
+
+bad   Add a social preview card, and correct the status line's version
+good  Add the social preview card          (the version fix is its own commit)
+```
+
+`Version 1.0.2` and `Rename the project to tui-do` are already right. Aim there.
+
+**The first 304 commits do not follow this and are not being rewritten.** The tags
+`v1.0.0`, `v1.0.1` and `v1.0.2` point at specific SHAs, carry published GitHub releases,
+and are what the four crates.io versions were cut from. Rewriting orphans all of it, for
+prose.
+
 **Releases are tag-triggered.** `git tag v1.2.3 && git push origin v1.2.3` runs
 `.github/workflows/release.yml`, which gates on the full suite, builds a static musl binary
 for `x86_64` and `aarch64`, refuses to publish one that is not statically linked, and
