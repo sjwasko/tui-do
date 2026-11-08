@@ -26,7 +26,7 @@ tracing.workspace = true
 wiremock.workspace = true
 # Real zone rules, to test that quick-add resolves a date at the offset in force on that
 # date (BUG-20). Tests only: the runtime gets its rules from `chrono::Local`.
-chrono-tz = "0.10"
+chrono-tz.workspace = true
 
 [lints]
 workspace = true

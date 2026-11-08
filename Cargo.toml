@@ -65,6 +65,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 wiremock = "0.6"
+# Real zone rules for tests only (BUG-20). Never a runtime dependency: the binary gets its
+# rules from `chrono::Local`, which reads TZ and /etc/localtime itself.
+chrono-tz = "0.10"
 
 # Lints apply to every crate in the workspace. Each crate opts in with `[lints] workspace = true`.
 #
