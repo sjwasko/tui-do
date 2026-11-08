@@ -4,11 +4,11 @@
 //! terminal events, store answers and [`tui_do_core::SyncEvent`]s into these; `update`
 //! turns them into state changes and [`crate::Effect`]s. Nothing else crosses the line.
 
-use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
 use tui_do_core::models::{Label, Project, Task, TaskId};
 use tui_do_core::store::{ProjectCounts, QueueHealth};
 use tui_do_core::SyncEvent;
+use tui_do_core::ZonedTime;
 
 use crate::query::QueryId;
 
@@ -26,7 +26,7 @@ pub enum Msg {
     ///
     /// Carries the time rather than reading it, because `update` is pure: "two minutes
     /// ago" and "overdue" are decisions about now, and now has to arrive from outside.
-    Tick(DateTime<FixedOffset>),
+    Tick(ZonedTime),
 
     /// The store answered a task query.
     TasksLoaded {

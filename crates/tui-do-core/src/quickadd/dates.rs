@@ -857,4 +857,136 @@ mod tests {
         assert_eq!(unit("fortnight"), None);
         assert_eq!(Unit::Week.seconds(), 604_800);
     }
+
+    /// Dates across a daylight-saving boundary: BUG-20.
+    ///
+    /// Each of these renders the result at the offset genuinely in force on the target
+    /// date, never back through `now`'s zone. Rendering through `now` is a round trip
+    /// that returns the day asked for however wrong the stored instant is, which is why
+    /// the tests above could not see this.
+    mod across_dst {
+        use super::*;
+        use chrono_tz::America::{Havana, New_York};
+        use chrono_tz::Tz;
+
+        /// Friday 2027-01-15, 10:00 in New York: EST, -05:00.
+        fn in_winter() -> DateTime<Tz> {
+            New_York.with_ymd_and_hms(2027, 1, 15, 10, 0, 0).unwrap()
+        }
+
+        /// Wednesday 2026-08-26, 10:00 in New York: EDT, -04:00.
+        fn in_summer() -> DateTime<Tz> {
+            New_York.with_ymd_and_hms(2026, 8, 26, 10, 0, 0).unwrap()
+        }
+
+        fn at<T: TimeZone>(input: &str, now: &DateTime<T>) -> DateTime<Utc> {
+            find(&split(input), now)
+                .into_iter()
+                .next()
+                .expect("a date should be found")
+                .at
+        }
+
+        /// What New York's wall clock reads at the matched instant.
+        fn shown<T: TimeZone>(input: &str, now: &DateTime<T>) -> String {
+            at(input, now)
+                .with_timezone(&New_York)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        }
+
+        #[test]
+        fn a_summer_due_date_typed_in_winter_is_due_that_day() {
+            // With winter's offset frozen this was 2027-07-05 00:59: a day late.
+            assert_eq!(shown("due 2027-07-04", &in_winter()), "2027-07-04 23:59");
+            assert_eq!(
+                at("due 2027-07-04", &in_winter()).to_rfc3339(),
+                "2027-07-05T03:59:00+00:00",
+            );
+        }
+
+        #[test]
+        fn a_winter_due_date_typed_in_summer_is_due_that_day() {
+            // Frozen: 2027-02-24 22:59, the right day by luck and an hour early.
+            assert_eq!(shown("due 2027-02-24", &in_summer()), "2027-02-24 23:59");
+            assert_eq!(
+                at("due 2027-02-24", &in_summer()).to_rfc3339(),
+                "2027-02-25T04:59:00+00:00",
+            );
+        }
+
+        #[test]
+        fn a_summer_start_date_typed_in_winter_starts_that_day() {
+            // Frozen: 2027-07-04 01:00, the right day by luck and an hour late.
+            assert_eq!(shown("start 2027-07-04", &in_winter()), "2027-07-04 00:00");
+            assert_eq!(
+                at("start 2027-07-04", &in_winter()).to_rfc3339(),
+                "2027-07-04T04:00:00+00:00",
+            );
+        }
+
+        #[test]
+        fn a_winter_start_date_typed_in_summer_starts_that_day() {
+            // With summer's offset frozen this was 2027-02-23 23:00: a day early.
+            assert_eq!(shown("start 2027-02-24", &in_summer()), "2027-02-24 00:00");
+            assert_eq!(
+                at("start 2027-02-24", &in_summer()).to_rfc3339(),
+                "2027-02-24T05:00:00+00:00",
+            );
+        }
+
+        #[test]
+        fn a_frozen_offset_is_why_the_runtime_carries_a_zone() {
+            // The test bugs.md proposed, run against what the runtime used to pass: a
+            // winter `now` reduced to its offset. Rendered at -04:00, the offset New York
+            // is on that day, the July date comes out as the 5th. This pins why
+            // `runtime::now()` must not be a fixed offset; nobody wants this result.
+            let in_force = FixedOffset::west_opt(4 * 3600).unwrap();
+            let frozen = crate::zone::pinned(in_winter().fixed_offset());
+            let day =
+                |at: DateTime<Utc>| at.with_timezone(&in_force).format("%Y-%m-%d").to_string();
+
+            assert_eq!(day(at("due 2027-07-04", &frozen)), "2027-07-05");
+            assert_eq!(
+                day(at("due 2027-07-04", &in_winter())),
+                "2027-07-04",
+                "a July date typed in January must still be a July date",
+            );
+        }
+
+        #[test]
+        fn a_skipped_hour_moves_to_the_first_real_instant() {
+            // 2027-03-14 02:00 EST jumps to 03:00 EDT, so 02:30 never happens. Typed in
+            // summer, so a frozen -04:00 would have read it as 01:30 EST.
+            assert_eq!(
+                shown("due 2027-03-14 at 2:30am", &in_summer()),
+                "2027-03-14 03:30"
+            );
+        }
+
+        #[test]
+        fn a_start_at_a_skipped_midnight_starts_at_the_first_real_hour() {
+            // Cuba springs forward at midnight, so START_TIME itself does not exist on
+            // that day: 2027-03-14 00:00 CST becomes 01:00 CDT. Typed in summer, so a
+            // frozen -04:00 would have put it at 23:00 on the 13th.
+            let now = Havana.with_ymd_and_hms(2026, 8, 26, 10, 0, 0).unwrap();
+            assert_eq!(
+                at("start 2027-03-14", &now)
+                    .with_timezone(&Havana)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string(),
+                "2027-03-14 01:00"
+            );
+        }
+
+        #[test]
+        fn an_ambiguous_hour_takes_the_earlier_reading() {
+            // 2027-11-07 01:30 happens twice in New York: first at EDT, then at EST.
+            // Typed in winter, so a frozen -05:00 would have taken the later one.
+            assert_eq!(
+                at("due 2027-11-07 at 1:30am", &in_winter()).to_rfc3339(),
+                "2027-11-07T05:30:00+00:00",
+            );
+        }
+    }
 }

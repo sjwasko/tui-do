@@ -331,14 +331,28 @@ the task. The helper stays as belt and braces — one measurement of one shape, 
 silent failure — but it is no longer the load-bearing step its comment claimed.
 
 **Dates the user sees are resolved in the user's zone, not UTC.** `Model.now` is a
-`DateTime<FixedOffset>` stamped from `Local::now()` by `runtime::now()`, and it is the
-only clock the interface sees. It was `Utc::now()`, which meant `due today` resolved to
-23:59 UTC — 18:59 the same evening for a UTC-5 user, so every task turned overdue hours
-early — and `relative_date` compared UTC calendar days, so a task due this evening read
-as "Tomorrow" and then flipped to "Today" at midnight UTC. This is the bug cria has, and
-`quickadd/dates.rs`'s own doc comment claims to have fixed it; the parser always was
-correct, and only the wiring was wrong. Anything asking "what day is it" converts into
-`now.timezone()` first. Anything asking "has this instant passed" does not need to.
+`ZonedTime` — `DateTime<tui_do_core::Zone>` — stamped by `runtime::now()` in
+`Zone::Local`, and it is the only clock the interface sees. It was `Utc::now()`, which
+meant `due today` resolved to 23:59 UTC — 18:59 the same evening for a UTC-5 user, so
+every task turned overdue hours early — and `relative_date` compared UTC calendar days,
+so a task due this evening read as "Tomorrow" and then flipped to "Today" at midnight
+UTC. This is the bug cria has, and `quickadd/dates.rs`'s own doc comment claims to have
+fixed it; the parser always was correct, and only the wiring was wrong. Anything asking
+"what day is it" converts into `now.timezone()` first. Anything asking "has this instant
+passed" does not need to.
+
+**A zone, not an offset (BUG-20).** It was `Local::now().fixed_offset()` until
+2026-11-08, which froze *today's* offset: `due 2027-07-04` typed in January resolved at
+-05:00 and was 00:59 on the 5th once July's -04:00 was in force, because 23:59 and 00:00
+sit one hour from a day boundary. `Zone` is `Local` or `Fixed(FixedOffset)` and
+implements `TimeZone` by delegating, so `to_utc`'s ambiguous and skipped-hour arms are
+reachable again. Two things about it are load-bearing. Its offset type carries the
+variant, because `DateTime<Tz>` stores only the offset and rebuilds the zone with
+`from_offset` — a bare `FixedOffset` there would turn `now.timezone()` back into a fixed
+offset, which is the bug. And no zone database is involved: `chrono::Local` on unix
+parses `TZ` and `/etc/localtime` itself and caches the result per thread, which works in
+the static musl binary; `chrono-tz` is a dev-dependency only, for the tests. Tests pin
+`Zone::Fixed` through `zone::pinned`, so they do not depend on the machine's zone.
 
 **Opening a link is the runtime's job, and whether to open at all is the environment's.**
 `o` reaches `markdown`-adjacent `urls::extract`, which is pure string work over the task's

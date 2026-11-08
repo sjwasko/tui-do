@@ -86,7 +86,8 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// A harness against `uri`, with an empty in-memory store.
+    /// A harness against `uri`, with an empty in-memory store, its clock pinned to `now`
+    /// at `now`'s fixed offset so a run does not depend on the machine's zone.
     ///
     /// # Errors
     ///
@@ -96,7 +97,12 @@ impl Harness {
             .credentials(Credentials::api_token("tk_test"))
             .build()?;
         Ok(Self {
-            model: Model::new(&Config::example(), Scope::All, now, (160, 40)),
+            model: Model::new(
+                &Config::example(),
+                Scope::All,
+                tui_do_core::zone::pinned(now),
+                (160, 40),
+            ),
             store: Store::in_memory()?,
             client,
             pending_push: false,

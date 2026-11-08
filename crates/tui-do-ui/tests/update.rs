@@ -25,8 +25,8 @@ fn now() -> chrono::DateTime<chrono::Utc> {
 }
 
 /// The same instant, carrying an offset, which is what the model holds.
-fn here() -> chrono::DateTime<chrono::FixedOffset> {
-    now().fixed_offset()
+fn here() -> tui_do_core::ZonedTime {
+    tui_do_core::zone::pinned(now().fixed_offset())
 }
 
 fn task(id: i64, title: &str) -> Task {

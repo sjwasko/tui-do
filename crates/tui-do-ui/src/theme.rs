@@ -8,8 +8,9 @@
 //! knows whether it is talking to a truecolor terminal, and `tui-do-ui` stays a pure
 //! function of what it is told.
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use ratatui::style::{Color, Modifier, Style};
+use tui_do_core::ZonedTime;
 
 /// How much colour the terminal can show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -206,7 +207,7 @@ impl Theme {
 
     /// How a due date reads, relative to `now`.
     #[must_use]
-    pub fn due(self, due: Option<DateTime<Utc>>, done: bool, now: DateTime<FixedOffset>) -> Style {
+    pub fn due(self, due: Option<DateTime<Utc>>, done: bool, now: ZonedTime) -> Style {
         let Some(due) = due else {
             return self.muted();
         };
@@ -331,8 +332,8 @@ mod tests {
     }
 
     /// The same instant as the reader's clock shows it.
-    fn here() -> DateTime<FixedOffset> {
-        now().fixed_offset()
+    fn here() -> ZonedTime {
+        tui_do_core::zone::pinned(now().fixed_offset())
     }
 
     #[test]

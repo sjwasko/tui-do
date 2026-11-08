@@ -8,10 +8,11 @@
 //! Only the visible window is laid out. A 1,900-row query must not re-wrap 1,900 titles
 //! to draw thirty of them.
 
-use chrono::{DateTime, Datelike, FixedOffset, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use ratatui::text::{Line, Span};
 use tui_do_core::config::columns::{Column, ColumnLayout, ColumnSpec};
 use tui_do_core::models::{Project, Task, TaskId};
+use tui_do_core::ZonedTime;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
@@ -182,7 +183,7 @@ pub struct RowContext<'a> {
     /// The colours.
     pub theme: Theme,
     /// The time the runtime last reported.
-    pub now: DateTime<FixedOffset>,
+    pub now: ZonedTime,
 }
 
 /// Lay out `tasks` into rows.
@@ -618,7 +619,7 @@ pub const fn priority_name(priority: i64) -> &'static str {
 
 /// A due date as a person would say it.
 #[must_use]
-pub fn relative_date(date: Option<DateTime<Utc>>, now: DateTime<FixedOffset>) -> String {
+pub fn relative_date(date: Option<DateTime<Utc>>, now: ZonedTime) -> String {
     let Some(date) = date else {
         return "—".to_string();
     };
@@ -653,8 +654,8 @@ mod tests {
     /// The same instant as the reader's clock shows it. Zero offset, so the existing
     /// expectations below are unchanged; `a_date_is_read_in_the_users_own_zone` is the
     /// one that puts a real offset on it.
-    fn here() -> DateTime<FixedOffset> {
-        now().fixed_offset()
+    fn here() -> ZonedTime {
+        tui_do_core::zone::pinned(now().fixed_offset())
     }
 
     fn layout(columns: Vec<ColumnSpec>) -> ColumnLayout {
@@ -778,16 +779,18 @@ mod tests {
         // the question in UTC and the two instants land on different calendar days, so
         // the row says "Tomorrow" about this evening. The same mislabelling is what makes
         // a task due tonight read as overdue at midnight UTC rather than at midnight.
-        let eastern = FixedOffset::west_opt(5 * 3600).unwrap();
+        let eastern = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
         // 21:00 on the 26th where the reader is; 02:00 on the 27th in UTC.
         let evening = Utc.with_ymd_and_hms(2026, 8, 27, 2, 0, 0).unwrap();
 
-        let before = eastern.with_ymd_and_hms(2026, 8, 26, 16, 0, 0).unwrap();
+        let before =
+            tui_do_core::zone::pinned(eastern.with_ymd_and_hms(2026, 8, 26, 16, 0, 0).unwrap());
         assert_eq!(relative_date(Some(evening), before), "Today");
 
         // And the day turns over at the reader's midnight, not at UTC's: an hour past it,
         // that same evening is behind them.
-        let after = eastern.with_ymd_and_hms(2026, 8, 27, 1, 0, 0).unwrap();
+        let after =
+            tui_do_core::zone::pinned(eastern.with_ymd_and_hms(2026, 8, 27, 1, 0, 0).unwrap());
         assert_eq!(relative_date(Some(evening), after), "Yesterday");
     }
 
