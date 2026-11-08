@@ -310,6 +310,13 @@ pub struct Sync {
     /// Reproduced by hand on 2026-08-31 with the dev container paused: two tasks, ids 3889
     /// and 3891, both `Bug #3 - pause container test`.
     pushing: Arc<AtomicBool>,
+    /// Whether a push has ever ended by panicking. Set once, never cleared.
+    ///
+    /// A panicking push unwinds through [`Pushing`]'s `Drop`, so [`Sync::pushing`] reads
+    /// false afterwards -- exactly as if the push had finished. It did not, and its last
+    /// request may already have reached the server, so the runtime must not send the
+    /// queue again on the way out (BUG-7, and the BUG-3 duplicate it would reopen).
+    interrupted: Arc<AtomicBool>,
 }
 
 /// Holds [`Sync::pushing`] true for as long as it lives.
@@ -317,18 +324,28 @@ pub struct Sync {
 /// A plain `store(false)` at the end of `push_with` would never run when the task is
 /// aborted -- and an aborted push is the whole reason the flag exists. Dropping is the one
 /// thing that still happens.
-struct Pushing<'a>(&'a AtomicBool);
+struct Pushing<'a> {
+    running: &'a AtomicBool,
+    interrupted: &'a AtomicBool,
+}
 
 impl<'a> Pushing<'a> {
-    fn armed(flag: &'a AtomicBool) -> Self {
-        flag.store(true, Ordering::SeqCst);
-        Self(flag)
+    fn armed(running: &'a AtomicBool, interrupted: &'a AtomicBool) -> Self {
+        running.store(true, Ordering::SeqCst);
+        Self {
+            running,
+            interrupted,
+        }
     }
 }
 
 impl Drop for Pushing<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        // Dropped mid-unwind means the push panicked, possibly after a request went out.
+        if std::thread::panicking() {
+            self.interrupted.store(true, Ordering::SeqCst);
+        }
+        self.running.store(false, Ordering::SeqCst);
     }
 }
 
@@ -342,6 +359,13 @@ impl Sync {
         self.pushing.load(Ordering::SeqCst)
     }
 
+    /// Whether a push has ended by panicking, so its last request may have been sent
+    /// without its entry being settled. See [`Sync::interrupted`].
+    #[must_use]
+    pub fn push_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+
     /// Build an engine over a client and a store.
     #[must_use]
     pub fn new(client: Client, store: Store) -> Self {
@@ -350,6 +374,7 @@ impl Sync {
             store,
             events: None,
             pushing: Arc::new(AtomicBool::new(false)),
+            interrupted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -426,7 +451,7 @@ impl Sync {
         // Cleared by `Drop` as well as on the way out, so an *aborted* push still says it
         // is no longer running. The flag exists to be read at quit time, and quitting is
         // exactly when this future gets dropped.
-        let _pushing = Pushing::armed(&self.pushing);
+        let _pushing = Pushing::armed(&self.pushing, &self.interrupted);
         let mut report = PushReport::default();
         // Ordering is a contract *per task*: two edits to one task must arrive in the
         // order they were made, or the server ends in a state the queue never described.

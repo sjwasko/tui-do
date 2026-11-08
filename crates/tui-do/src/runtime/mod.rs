@@ -724,6 +724,14 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     // entries are settled and the push below has nothing left to duplicate. If it does not,
     // the entry stays queued for the next launch -- which is the right trade: a change that
     // arrives late is better than a task that exists twice.
+    //
+    // A push that *panicked* is the same case, reached without the flag: unwinding cleared
+    // it, but the request may still have gone out. There is nothing left to wait for, so
+    // it goes straight to walking away.
+    if sync.push_interrupted() {
+        println!("A send stopped partway; leaving the rest queued for next time.");
+        return;
+    }
     if sync.is_pushing() {
         // The same budget the dots below get: five seconds, one per tick.
         let deadline = FLUSH_TICK * FLUSH_DOTS;
@@ -1509,6 +1517,64 @@ mod tests {
         assert!(
             model.running,
             "the loop left on the fatal report, not because update was told to quit"
+        );
+    }
+
+    /// A push that panics unwinds through `Pushing`'s `Drop`, so `is_pushing` reads false
+    /// afterwards as if it had finished. `flush_on_exit` then pushed the queue again, and
+    /// if the panic came after the request reached the server that is the BUG-3 duplicate
+    /// -- which BUG-7's fix made happen on every panicked push rather than never.
+    ///
+    /// The panic is a real one, through the real `push`: polled with no tokio runtime,
+    /// the push's first store read calls `spawn_blocking` and panics, with the push
+    /// already marked as running. The server is a closed loopback port, so a push that
+    /// should not have happened shows up as a failed attempt on the entry rather than as
+    /// a request to anything.
+    #[test]
+    fn a_push_that_panicked_is_not_sent_again_on_the_way_out() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = scratch_store();
+        runtime.block_on(async {
+            store
+                .upsert_projects(vec![a_project(1, "Inbox")])
+                .await
+                .unwrap();
+            store
+                .queue(Mutation::CreateTask {
+                    task: Box::new(tui_do_core::models::Task {
+                        project_id: ProjectId(1),
+                        title: "sent, then panicked".to_string(),
+                        ..tui_do_core::models::Task::default()
+                    }),
+                })
+                .await
+                .unwrap();
+        });
+        let client = Client::builder("http://127.0.0.1:9")
+            .credentials(tui_do_api::Credentials::api_token("tk_test"))
+            .build()
+            .unwrap();
+        let sync = Arc::new(Sync::new(client, store.clone()));
+
+        let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut push = Box::pin(sync.push());
+            let _ = push
+                .as_mut()
+                .poll(&mut TaskContext::from_waker(std::task::Waker::noop()));
+        }));
+        assert!(panicked.is_err(), "the push was meant to panic");
+        assert!(!sync.is_pushing(), "unwinding clears the running flag");
+
+        runtime.block_on(flush_on_exit(&store, &sync));
+
+        let queued = runtime.block_on(store.pending(None)).unwrap();
+        assert_eq!(queued.len(), 1, "the entry stays queued for the next run");
+        assert_eq!(
+            queued[0].attempts, 0,
+            "flush_on_exit pushed again after a push had panicked partway"
         );
     }
 

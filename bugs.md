@@ -561,6 +561,14 @@ Tests, each checked to fail with the fix reverted: `a_task_that_panics_reports_i
 render thread itself — in `update` or `view` — is not covered and never was silent: it
 unwinds out of `block_on` and ends the process, though without the final flush.
 
+**Found in review: the fix made a panicked push send twice.** A push that panics unwinds
+through `Pushing`'s `Drop`, so `is_pushing()` read false and `flush_on_exit` pushed the queue
+again — the BUG-3 duplicate, whenever the panic came after the request had gone out. `Drop`
+now sets a sticky `Sync::push_interrupted()` when it runs mid-unwind, and `flush_on_exit`
+leaves the queue alone when it is set. `a_push_that_panicked_is_not_sent_again_on_the_way_out`
+panics a real `push` (polled with no runtime, so its first store read panics) and fails
+without the check: the entry comes back with one attempt instead of none.
+
 ### ~~BUG-8~~ — FIXED — `tui-do add --offline` swallows a real configuration error
 
 `crates/tui-do/src/runtime/mod.rs:743, 852-855`. `--offline` discards the `build_sync`
