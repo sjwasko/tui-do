@@ -49,7 +49,7 @@ throughout, both learned the hard way in this pass:
 | BUG-4 | classifier table + one 408 integration test | yes |
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
-| BUG-9 | grapheme table against `truncate`/`wrap` | yes |
+| ~~BUG-9~~ | FIXED — grapheme table against `truncate`/`wrap` | yes |
 | BUG-14 | store-level rollback sequence | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
@@ -58,7 +58,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-7, BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
+| **Decide, then fix** | BUG-7, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
 | **Verify first** | BUG-14 |
@@ -542,7 +542,7 @@ it" reassurance is then false, because the next run cannot authenticate either.
 `Queued, but not syncing later either: {problem}`. `--offline` means "do not send it now",
 not "do not tell me sending is broken".
 
-### BUG-9 — `truncate` and `wrap` split graphemes
+### ~~BUG-9~~ — FIXED — `truncate` and `wrap` split graphemes
 
 `crates/tui-do-ui/src/rows.rs:472-494, 540-556`. Both operate per-`char`, not per-grapheme
 (there is no `unicode-segmentation` dependency), so a flag or ZWJ emoji sequence can be cut
@@ -568,6 +568,15 @@ for text in [format!("{family} tail"), format!("{flag} tail")] {
 
 The same table against `wrap`. Fixing it means taking `unicode-segmentation` and iterating
 graphemes rather than `char`s — which is the decision, since it is a new dependency.
+
+**Fixed.** It was not a new dependency after all: `unicode-segmentation` 1.13.3 was already
+in `Cargo.lock` by way of crossterm, so declaring it directly added one line to the lock
+and nothing to the build. `truncate` and `wrap`'s long-word break now both cut through one
+helper, `take_graphemes`, which measures each grapheme with `UnicodeWidthStr::width`. A
+word whose first glyph is wider than the column now becomes `…` instead of pushing blank
+rows. Three table tests — a ZWJ family, a flag, a combining mark, and a word of four flags,
+across widths 1 to 6 — assert the width, no trailing ZWJ or lone regional indicator, and
+that every line is whole graphemes of the input. All three failed on the old code.
 
 ### ~~BUG-10~~ — FIXED — a percent-width column can collapse to width 1
 

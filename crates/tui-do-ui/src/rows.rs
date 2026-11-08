@@ -12,6 +12,7 @@ use chrono::{DateTime, Datelike, FixedOffset, Utc};
 use ratatui::text::{Line, Span};
 use tui_do_core::config::columns::{Column, ColumnLayout, ColumnSpec};
 use tui_do_core::models::{Project, Task, TaskId};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
@@ -487,18 +488,25 @@ pub fn truncate(text: &str, width: u16) -> String {
     if width == 1 {
         return "…".to_string();
     }
-    let mut out = String::new();
-    let mut used = 0u16;
-    for c in text.chars() {
-        let w = display_width(&c.to_string());
-        if used + w > width - 1 {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
+    let mut out = take_graphemes(text, width - 1).to_string();
     out.push('…');
     out
+}
+
+/// The longest prefix of `text` that fits in `width`, cut between graphemes.
+///
+/// Per grapheme rather than per `char`: a flag is two regional indicators and a family
+/// emoji is five `char`s joined by ZWJs, and cutting inside either leaves half a glyph
+/// in the cell.
+fn take_graphemes(text: &str, width: u16) -> &str {
+    let mut used = 0u16;
+    for (at, grapheme) in text.grapheme_indices(true) {
+        used = used.saturating_add(display_width(grapheme));
+        if used > width {
+            return &text[..at];
+        }
+    }
+    text
 }
 
 /// Wrap `text` at word boundaries into at most `max_lines` lines.
@@ -550,13 +558,12 @@ pub fn wrap(text: &str, width: u16, max_lines: u16) -> Vec<String> {
                 lines.push(std::mem::take(&mut current));
             }
             while display_width(&word) > width && (lines.len() as u16) < max_lines - 1 {
-                let head: String = word
-                    .chars()
-                    .scan(0u16, |used, c| {
-                        *used += display_width(&c.to_string());
-                        (*used <= width).then_some(c)
-                    })
-                    .collect();
+                let head = take_graphemes(&word, width).to_string();
+                if head.is_empty() {
+                    // Not even the first glyph fits: say so rather than push blank rows.
+                    word = truncate(&word, width);
+                    break;
+                }
                 word = word[head.len()..].to_string();
                 lines.push(head);
             }
@@ -747,6 +754,96 @@ mod tests {
         assert_eq!(truncate("a longer title", 8), "a longe…");
         assert_eq!(truncate("anything", 1), "…");
         assert_eq!(truncate("anything", 0), "");
+    }
+
+    /// Text whose first glyph is several `char`s, each followed by an ordinary word.
+    fn multi_char_glyphs() -> Vec<String> {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // one glyph, five chars
+        let flag = "\u{1F1EC}\u{1F1E7}"; // one glyph, two regional indicators
+        let accented = "e\u{0301}"; // one glyph, a base and a combining mark
+        vec![
+            format!("{family} tail"),
+            format!("{flag} tail"),
+            format!("{accented}{accented}{accented} tail"),
+            format!("x{family}{flag}{family} tail"),
+        ]
+    }
+
+    fn ends_with_lone_regional_indicator(text: &str) -> bool {
+        let trailing = text
+            .chars()
+            .rev()
+            .take_while(|c| ('\u{1F1E6}'..='\u{1F1FF}').contains(c))
+            .count();
+        trailing % 2 == 1
+    }
+
+    /// Whether `line`, less any ellipsis, is a run of whole graphemes of `text`.
+    fn is_whole_graphemes_of(line: &str, text: &str) -> bool {
+        let kept = line.strip_suffix('…').unwrap_or(line).trim_end();
+        if kept.is_empty() {
+            return true;
+        }
+        let boundaries: Vec<usize> = text
+            .grapheme_indices(true)
+            .map(|(at, _)| at)
+            .chain([text.len()])
+            .collect();
+        text.match_indices(kept)
+            .any(|(at, _)| boundaries.contains(&at) && boundaries.contains(&(at + kept.len())))
+    }
+
+    fn assert_cut_cleanly(line: &str, text: &str, width: u16) {
+        assert!(
+            display_width(line) <= width,
+            "{line:?} is wider than {width}"
+        );
+        assert!(
+            !line.ends_with('\u{200D}'),
+            "cut on a zero-width joiner: {line:?}"
+        );
+        assert!(
+            !ends_with_lone_regional_indicator(line),
+            "split a flag: {line:?}"
+        );
+        assert!(
+            is_whole_graphemes_of(line, text),
+            "{line:?} is not whole graphemes of {text:?}"
+        );
+    }
+
+    #[test]
+    fn truncation_never_splits_a_glyph() {
+        for text in multi_char_glyphs() {
+            for width in 1..=6 {
+                assert_cut_cleanly(&truncate(&text, width), &text, width);
+            }
+        }
+    }
+
+    #[test]
+    fn wrapping_never_splits_a_glyph() {
+        for text in multi_char_glyphs() {
+            for width in 1..=6 {
+                for max_lines in 1..=3 {
+                    for line in wrap(&text, width, max_lines) {
+                        assert_cut_cleanly(&line, &text, width);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_word_of_glyphs_breaks_between_them() {
+        let flag = "\u{1F1EC}\u{1F1E7}";
+        let word = flag.repeat(4);
+        for width in 1..=6 {
+            for line in wrap(&word, width, 4) {
+                assert_cut_cleanly(&line, &word, width);
+            }
+        }
+        assert_eq!(wrap(&word, 4, 4), vec![flag.repeat(2), flag.repeat(2)]);
     }
 
     #[test]

@@ -46,6 +46,9 @@ fuzzy-matcher = "0.3"
 # The same version ratatui measures with, so the width this crate computes for a column
 # and the width ratatui draws it at cannot disagree.
 unicode-width = "0.2"
+# Cutting text at a grapheme rather than a `char`, so a flag or a ZWJ emoji is never split.
+# Already in the tree by way of crossterm, so declaring it directly costs nothing new.
+unicode-segmentation = "1.13"
 # OSC 52 carries the clipboard payload base64-encoded. Already in the tree by way of
 # the HTTP stack, so declaring it directly costs nothing new.
 base64 = "0.22"

@@ -3286,6 +3286,7 @@ dependencies = [
  "ratatui",
  "tracing",
  "tui-do-core",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
