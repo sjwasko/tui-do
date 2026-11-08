@@ -248,7 +248,7 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
         SyncEvent::Started(phase) => {
             model.status.sync = SyncStatus::Working {
                 detail: match phase {
-                    Phase::Push => "sending".to_string(),
+                    Phase::Push => sending(model.status.queued),
                     Phase::Pull => "fetching".to_string(),
                 },
             };
@@ -273,7 +273,7 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             model.status.queued = remaining;
             model.status.failing = model.status.failing.min(remaining);
             model.status.sync = SyncStatus::Working {
-                detail: format!("sending, {remaining} left"),
+                detail: sending(remaining),
             };
             Vec::new()
         }
@@ -363,6 +363,19 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             model.status.sync = SyncStatus::Failed { message };
             Vec::new()
         }
+    }
+}
+
+/// What the indicator says while a push is draining `queued` entries.
+///
+/// "queued" rather than "left": an entry that is blocked or inside its backoff stays in
+/// the count, so a drain can stop short of zero, and "3 left" would then promise sends
+/// that this pass is not going to make.
+fn sending(queued: usize) -> String {
+    if queued == 0 {
+        "sending".to_string()
+    } else {
+        format!("sending, {queued} queued")
     }
 }
 

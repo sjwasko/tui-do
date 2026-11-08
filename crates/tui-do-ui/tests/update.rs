@@ -1042,6 +1042,13 @@ fn a_long_drain_counts_down_as_it_sends() {
         }),
     );
     update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Push)));
+    assert_eq!(
+        model.status.sync,
+        SyncStatus::Working {
+            detail: "sending, 1781 queued".to_string()
+        },
+        "the start of a push and its progress say it the same way"
+    );
 
     let effects = update(
         &mut model,
@@ -1059,7 +1066,7 @@ fn a_long_drain_counts_down_as_it_sends() {
     assert_eq!(
         model.status.sync,
         SyncStatus::Working {
-            detail: "sending, 1203 left".to_string()
+            detail: "sending, 1203 queued".to_string()
         }
     );
 

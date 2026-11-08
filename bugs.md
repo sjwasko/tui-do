@@ -1262,7 +1262,7 @@ per `sync::PROGRESS_EVERY` (250 ms), timed from the start of the pass, so the on
 push after an edit emits nothing extra. Reusing `LoadPending` was rejected: it would put a
 store read on the runtime for every tick, when the drain already holds the count. The
 interface sets `queued` from it, clamps `failing` to fit inside it, and shows
-`sending, 1203 left`; `Pushed` still reloads the true figures from the store at the end.
+`sending, 1203 queued`; `Pushed` still reloads the true figures from the store at the end.
 `a_long_drain_reports_what_is_left_as_it_goes` failed before the emit with no events at
 all; `a_fast_drain_is_throttled_to_far_fewer_events_than_entries` pins the throttle.
 
