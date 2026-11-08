@@ -202,9 +202,21 @@ impl LoopTx {
         self.msg.send(msg)
     }
 
-    /// Tell the loop to stop. A loop that has already gone has nothing left to stop.
-    fn report(&self, why: String) {
-        let _ = self.fatal.send(why);
+    /// Run `work`, and if it panics, tell the loop to stop and answer `None`.
+    ///
+    /// The one place a panic is caught. `AssertUnwindSafe` is sound because nothing that
+    /// `work` may have left half-updated is looked at again: a caught panic ends the task
+    /// or thread it happened on -- a future that panicked is never polled again -- and the
+    /// payload is only turned into text. The session then ends on the loop's next turn.
+    fn guarded<T>(&self, work: impl FnOnce() -> T) -> Option<T> {
+        match std::panic::catch_unwind(AssertUnwindSafe(work)) {
+            Ok(value) => Some(value),
+            Err(payload) => {
+                // A loop that has already gone has nothing left to stop.
+                let _ = self.fatal.send(describe_panic(payload.as_ref()));
+                None
+            }
+        }
     }
 }
 
@@ -222,20 +234,21 @@ fn describe_panic(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// A future that turns a panic during its poll into an `Err`, the async counterpart of
-/// `std::panic::catch_unwind`. Boxed so it is `Unpin` and needs no pin projection.
-struct CatchUnwind<F>(Pin<Box<F>>);
+/// A future run under [`LoopTx::guarded`], one poll at a time. A panicking poll finishes
+/// it, so it is never polled again. Boxed so it is `Unpin` and needs no pin projection.
+struct Guarded<F> {
+    tx: LoopTx,
+    future: Pin<Box<F>>,
+}
 
-impl<F: Future> Future for CatchUnwind<F> {
-    type Output = Result<F::Output, Box<dyn std::any::Any + Send>>;
+impl<F: Future<Output = ()>> Future for Guarded<F> {
+    type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        let inner = self.0.as_mut();
-        match std::panic::catch_unwind(AssertUnwindSafe(|| inner.poll(cx))) {
-            Ok(Poll::Pending) => Poll::Pending,
-            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
-            Err(payload) => Poll::Ready(Err(payload)),
-        }
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        this.tx
+            .guarded(|| this.future.as_mut().poll(cx))
+            .unwrap_or(Poll::Ready(()))
     }
 }
 
@@ -254,10 +267,9 @@ fn spawn_effect<F>(tx: LoopTx, future: F) -> tokio::task::JoinHandle<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    tokio::spawn(async move {
-        if let Err(payload) = CatchUnwind(Box::pin(future)).await {
-            tx.report(describe_panic(payload.as_ref()));
-        }
+    tokio::spawn(Guarded {
+        tx,
+        future: Box::pin(future),
     })
 }
 
@@ -266,11 +278,7 @@ fn spawn_blocking_effect<F>(tx: LoopTx, work: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    tokio::task::spawn_blocking(move || {
-        if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(work)) {
-            tx.report(describe_panic(payload.as_ref()));
-        }
-    });
+    tokio::task::spawn_blocking(move || tx.guarded(work));
 }
 
 /// Read messages, update, draw. The only loop in tui-do.
@@ -800,12 +808,7 @@ fn longer_project(projects: &[tui_do_core::models::Project], name: &str) -> Opti
 /// restores the terminal, and the interface carries on with no keyboard, so `q` can no
 /// longer reach it. So this thread reports its panic the way a task does.
 fn spawn_input(tx: LoopTx, stop: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        let reading = AssertUnwindSafe(|| read_input(&tx, &stop));
-        if let Err(payload) = std::panic::catch_unwind(reading) {
-            tx.report(describe_panic(payload.as_ref()));
-        }
-    });
+    std::thread::spawn(move || tx.guarded(|| read_input(&tx, &stop)));
 }
 
 /// The input thread's body: forward keys and resizes until told to stop.
