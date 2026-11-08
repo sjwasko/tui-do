@@ -127,7 +127,8 @@ impl Parsed {
 /// Read one line of quick-add input.
 ///
 /// `now` supplies both the current instant and the timezone relative dates resolve
-/// against, so the caller passes `Local::now()` and tests pass whatever they like.
+/// against, so the runtime passes its clock in `Zone::Local` (see [`crate::zone`]) and
+/// tests pass whatever zone they like.
 pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
     let mut parsed = Parsed::default();
     let mut consumed: Vec<Range<usize>> = Vec::new();
