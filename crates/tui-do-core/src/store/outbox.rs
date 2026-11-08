@@ -40,7 +40,7 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use tui_do_api::models::{Label, LabelId, Task, TaskId};
 
-use super::labels::upsert_label;
+use super::labels::{attach_label, upsert_label};
 use super::state::{read_state, write_state};
 use super::tasks::upsert_task;
 use super::Store;
@@ -374,11 +374,7 @@ impl Mutation {
                 tx.execute("DELETE FROM tasks WHERE id = ?1", params![before.id.get()])?;
             }
             Self::AttachLabel { task, label } => {
-                upsert_label(tx, label, now)?;
-                tx.execute(
-                    "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
-                    params![task.get(), label.id.get()],
-                )?;
+                attach_label(tx, *task, label, now)?;
             }
             Self::DetachLabel { task, label } => {
                 tx.execute(
@@ -407,11 +403,7 @@ impl Mutation {
                 )?;
             }
             Self::DetachLabel { task, label } => {
-                upsert_label(tx, label, now)?;
-                tx.execute(
-                    "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
-                    params![task.get(), label.id.get()],
-                )?;
+                attach_label(tx, *task, label, now)?;
             }
             Self::CreateLabel { label } => {
                 tx.execute("DELETE FROM labels WHERE id = ?1", params![label.id.get()])?;
@@ -560,7 +552,8 @@ impl Store {
 
             let mut first = None;
             for part in mutation.decompose() {
-                part.apply(tx, now)?;
+                // The entry goes in before the change is applied, or `attach_label`'s
+                // guard would refuse the label a `CreateLabel` is creating.
                 tx.execute(
                     "INSERT INTO outbox (created, kind, payload, subject_id, subject_kind)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -572,8 +565,11 @@ impl Store {
                         part.subject().kind(),
                     ],
                 )?;
+                // Read before `apply`, whose own inserts would move it.
+                let id = tx.last_insert_rowid();
+                part.apply(tx, now)?;
                 let entry = OutboxEntry {
-                    id: tx.last_insert_rowid(),
+                    id,
                     created: now,
                     mutation: part,
                     attempts: 0,
@@ -1852,5 +1848,161 @@ mod tests {
         let read = store.task(TaskId(7)).await.unwrap().unwrap();
         assert_eq!(read.labels.len(), 1, "the attachment was cascaded away");
         assert_eq!(read.labels[0].id, LabelId(41));
+    }
+
+    /// Queue a provisional label, attach it to stored task 1, and hand back the create
+    /// entry with the task as it now reads -- carrying label `-1`.
+    async fn task_carrying_a_provisional_label(store: &Store) -> (OutboxEntry, Task) {
+        store.upsert_tasks(vec![task(1, "chores")]).await.unwrap();
+        let create = store
+            .queue(Mutation::CreateLabel {
+                label: Box::new(label(0, "errands")),
+            })
+            .await
+            .unwrap();
+        let Mutation::CreateLabel { label: created } = &create.mutation else {
+            panic!("the create changed shape");
+        };
+        assert_eq!(created.id, LabelId(-1));
+        store
+            .queue(Mutation::AttachLabel {
+                task: TaskId(1),
+                label: created.clone(),
+            })
+            .await
+            .unwrap();
+        let carrying = store.task(TaskId(1)).await.unwrap().expect("the task");
+        assert_eq!(carrying.labels.len(), 1);
+        assert_eq!(carrying.labels[0].id, LabelId(-1));
+        (create, carrying)
+    }
+
+    async fn negative_label_ids(store: &Store) -> Vec<i64> {
+        store
+            .read(|connection| {
+                let mut statement = connection.prepare("SELECT id FROM labels WHERE id < 0")?;
+                let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_rolled_back_delete_does_not_resurrect_a_rolled_back_label() {
+        // BUG-14. `references` leaves a `DeleteTask` out of a rejected create's discard,
+        // so its `before` still names label -1 after the create's rollback deleted it.
+        // Rolling the delete back re-ran `upsert_task(before)` and wrote label -1 again:
+        // a row with no queued create, so it never settles and never syncs.
+        let store = Store::in_memory().unwrap();
+        let (create, carrying) = task_carrying_a_provisional_label(&store).await;
+        let delete = store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(carrying),
+            })
+            .await
+            .unwrap();
+
+        store.discard(&create).await.unwrap();
+        store.discard(&delete).await.unwrap();
+
+        assert_eq!(negative_label_ids(&store).await, Vec::<i64>::new());
+        let restored = store.task(TaskId(1)).await.unwrap().expect("restored");
+        assert_eq!(restored.title, "chores");
+        assert!(restored.labels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rolled_back_update_does_not_resurrect_a_rolled_back_label() {
+        // The same hole through `UpdateTask`: its rollback also runs
+        // `upsert_task(before)`, and `references` leaves it queued for the same reason.
+        let store = Store::in_memory().unwrap();
+        let (create, carrying) = task_carrying_a_provisional_label(&store).await;
+        let mut renamed = carrying.clone();
+        renamed.title = "chores, renamed".into();
+        let update = store
+            .queue(Mutation::UpdateTask {
+                before: Box::new(carrying),
+                after: Box::new(renamed),
+            })
+            .await
+            .unwrap();
+
+        store.discard(&create).await.unwrap();
+        store.discard(&update).await.unwrap();
+
+        assert_eq!(negative_label_ids(&store).await, Vec::<i64>::new());
+        let restored = store.task(TaskId(1)).await.unwrap().expect("restored");
+        assert_eq!(restored.title, "chores");
+        assert!(restored.labels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rolled_back_detach_does_not_resurrect_a_rolled_back_label() {
+        // `DetachLabel`'s rollback writes the label back too. A detach queued while the
+        // create is alive is discarded with it, but one queued after -- an undo of the
+        // attach, built from a copy still naming -1 -- is not.
+        let store = Store::in_memory().unwrap();
+        let (create, carrying) = task_carrying_a_provisional_label(&store).await;
+        store.discard(&create).await.unwrap();
+        let detach = store
+            .queue(Mutation::DetachLabel {
+                task: TaskId(1),
+                label: Box::new(carrying.labels[0].clone()),
+            })
+            .await
+            .unwrap();
+
+        store.discard(&detach).await.unwrap();
+
+        assert_eq!(negative_label_ids(&store).await, Vec::<i64>::new());
+    }
+
+    #[tokio::test]
+    async fn a_provisional_label_still_being_created_survives_a_rolled_back_delete() {
+        // The guard keys on the queued create, not on the sign of the id: while the
+        // `CreateLabel` is queued, label -1 is real local state and a restored task has
+        // to get it back.
+        let store = Store::in_memory().unwrap();
+        let (_create, carrying) = task_carrying_a_provisional_label(&store).await;
+        let delete = store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(carrying),
+            })
+            .await
+            .unwrap();
+
+        store.discard(&delete).await.unwrap();
+
+        assert_eq!(negative_label_ids(&store).await, vec![-1]);
+        let restored = store.task(TaskId(1)).await.unwrap().expect("restored");
+        assert_eq!(restored.labels.len(), 1);
+        assert_eq!(restored.labels[0].id, LabelId(-1));
+    }
+
+    #[tokio::test]
+    async fn a_queued_task_create_does_not_pass_for_a_label_create() {
+        // `subject_id` is untyped: provisional task -1 and label -1 share a value, so a
+        // queued `CreateTask` for task -1 must not keep label -1 alive.
+        let store = Store::in_memory().unwrap();
+        let (create, carrying) = task_carrying_a_provisional_label(&store).await;
+        store.discard(&create).await.unwrap();
+        let made = store
+            .queue(Mutation::CreateTask {
+                task: Box::new(task(0, "other")),
+            })
+            .await
+            .unwrap();
+        assert_eq!(made.mutation.subject().task(), Some(TaskId(-1)));
+        let delete = store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(carrying),
+            })
+            .await
+            .unwrap();
+
+        store.discard(&delete).await.unwrap();
+
+        assert_eq!(negative_label_ids(&store).await, Vec::<i64>::new());
     }
 }

@@ -103,10 +103,12 @@ scheduled full pass outrank an asked-for delta and silently drop the force.
 untyped `subject_id` makes provisional task `-1` and provisional label `-1` the same value
 in the same column — and nothing about that fails loudly. `retain_tasks`'s delete guard
 would spare a task because a *label* was queued; `settle_create`, adopting task `-1`,
-would rewrite the payload of a `CreateLabel` whose subject is label `-1`. Seven SQL sites
-read that column and all seven filter on the kind; the plan that added it named five, and
-the sixth (`upsert_tasks_from_server`'s pending check) and seventh (`retain_projects`'s
-task cascade) came out of review.
+would rewrite the payload of a `CreateLabel` whose subject is label `-1`. Eight SQL sites
+read that column and all eight filter on the kind; the plan that added it named five, the
+sixth (`upsert_tasks_from_server`'s pending check) and seventh (`retain_projects`'s task
+cascade) came out of review, and the eighth is `labels::is_being_created`, the BUG-14
+guard that lets `upsert_label` write a provisional label only while its `CreateLabel` is
+queued.
 
 **A `CreateLabel` that has already failed reads before it writes.** `is_already_done` has
 arms for a replayed attach, detach and label rename, and deliberately **no arm for a

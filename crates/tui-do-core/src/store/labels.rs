@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
-use tui_do_api::models::{Label, LabelId};
+use tui_do_api::models::{Label, LabelId, TaskId};
 
 use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
@@ -211,8 +211,42 @@ impl Store {
 
 /// Write one label.
 ///
-/// Shared with the task upsert, which sees labels embedded in tasks.
+/// Shared with the task upsert, which sees labels embedded in tasks. A provisional label
+/// whose `CreateLabel` is no longer queued is skipped; see [`attach_label`].
 pub(super) fn upsert_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Result<()> {
+    write_label(tx, label, now).map(|_| ())
+}
+
+/// Write a label and attach it to a task.
+///
+/// **A provisional label is written only while its `CreateLabel` is queued**, and is
+/// attached only if it was written. A queued `DeleteTask` or `UpdateTask` carries the
+/// task's labels in `before`, and `sync::references` leaves both queued when the create
+/// is rejected, so rolling either back used to re-write label `-1` after the create's
+/// rollback had deleted it: a row that never settles and never syncs (BUG-14).
+///
+/// `Store::queue` inserts a create's outbox row *before* applying it, so the create
+/// itself passes this check.
+pub(super) fn attach_label(
+    tx: &Transaction<'_>,
+    task: TaskId,
+    label: &Label,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    if write_label(tx, label, now)? {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
+            params![task.get(), label.id.get()],
+        )?;
+    }
+    Ok(())
+}
+
+/// The write behind both, answering whether the label was written.
+fn write_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Result<bool> {
+    if label.id.get() < 0 && !is_being_created(tx, label.id)? {
+        return Ok(false);
+    }
     if let Some(creator) = &label.created_by {
         upsert_user(tx, creator)?;
     }
@@ -240,7 +274,21 @@ pub(super) fn upsert_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Ut
             now.to_rfc3339(),
         ],
     )?;
-    Ok(())
+    Ok(true)
+}
+
+/// Whether a `CreateLabel` for this label is still queued.
+///
+/// Filters on `subject_kind`: provisional task `-1` and label `-1` share a value in the
+/// untyped `subject_id` column, and a queued `CreateTask` must not keep a label alive.
+fn is_being_created(tx: &Transaction<'_>, label: LabelId) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT exists(SELECT 1 FROM outbox
+                        WHERE subject_id = ?1 AND subject_kind = 'label'
+                          AND kind = 'create_label')",
+        params![label.get()],
+        |row| row.get::<_, i64>(0),
+    )? == 1)
 }
 
 /// The labels attached to a task.
