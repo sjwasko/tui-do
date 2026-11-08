@@ -62,7 +62,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start` |
+| **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-22, BUG-23 — new 2026-09-13, both need fixing. ~~BUG-21~~ is fixed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
@@ -1546,10 +1546,13 @@ edit form's Due, the `d` prompt — goes through the new `quickadd::parse_due`, 
 the keyword as given, so `27.8` typed there still works. The interface's live highlighting
 reads `Parsed.tokens` from the same `parse`, so it cannot disagree with what is stored.
 
-Tests: `a_number_in_prose_is_not_a_date` asserts title unchanged, no due, no start and no
-token over every row above plus the original four; it failed on the old code.
-`a_bare_numeric_date_after_a_keyword_still_parses`, `an_unambiguous_date_needs_no_keyword`
-and `a_due_field_reads_a_bare_numeric_date` cover the rest.
+**`tui-do add` now names what it parsed**: `Added "call mom" to Inbox, due Fri 27 Aug 2027`,
+with `, starts …` the same way and `at HH:MM` only when the time is not the field's default,
+in the local zone (`runtime::dates_said`). Tests: `a_number_in_prose_is_not_a_date` asserts
+title unchanged, no due, no start and no token over every row above plus the original four;
+it failed on the old code. `a_bare_numeric_date_after_a_keyword_still_parses`,
+`an_unambiguous_date_needs_no_keyword`, `a_due_field_reads_a_bare_numeric_date`, and
+`the_add_line_says_which_dates_were_set` cover the rest.
 
 ### BUG-25 — starting with stdin not a terminal hangs forever, with the terminal held in raw mode
 

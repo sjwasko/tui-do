@@ -780,6 +780,40 @@ fn project_label(
         .map_or_else(|| id.to_string(), |project| printable(&project.title))
 }
 
+/// The dates a quick-add set, as the tail of `tui-do add`'s confirmation line.
+///
+/// `, due Fri 27 Aug 2027` — empty when neither was set. A parsed date used to be
+/// silent: the only sign of one was an echoed title shorter than what was typed, which
+/// is how `llvm 1.6 GB` came to be due in June 2027 (BUG-24). The time of day is shown
+/// only when it is not the field's default, so a plain date stays short.
+fn dates_said<Tz: chrono::TimeZone>(
+    due: Option<chrono::DateTime<chrono::Utc>>,
+    start: Option<chrono::DateTime<chrono::Utc>>,
+    zone: &Tz,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let say = |word: &str, at: chrono::DateTime<chrono::Utc>, default: (u32, u32)| {
+        use chrono::Timelike as _;
+        let local = at.with_timezone(zone);
+        let day = local.format("%a %-d %b %Y");
+        if (local.hour(), local.minute()) == default {
+            format!(", {word} {day}")
+        } else {
+            format!(", {word} {day} at {}", local.format("%H:%M"))
+        }
+    };
+    let mut said = String::new();
+    if let Some(at) = due {
+        said.push_str(&say("due", at, (23, 59)));
+    }
+    if let Some(at) = start {
+        said.push_str(&say("starts", at, (0, 0)));
+    }
+    said
+}
+
 /// A project whose title begins with `name` and carries on, if exactly one does.
 ///
 /// Exactly one, because two would make the suggestion a guess; and the first *word* has
@@ -1065,13 +1099,14 @@ pub async fn add(
 
     // Named with its id when the name is ambiguous, because a task added to the wrong
     // Inbox is a task the user will not find.
+    let dates = dates_said(parsed.due_date, parsed.start_date, &chrono::Local);
     if queued.ambiguous_project {
         println!(
-            "Added \"{}\" to {project} (#{project_id}) — more than one project has that name",
+            "Added \"{}\" to {project} (#{project_id}){dates} — more than one project has that name",
             queued.title
         );
     } else {
-        println!("Added \"{}\" to {project}", queued.title);
+        println!("Added \"{}\" to {project}{dates}", queued.title);
     }
     if let Some(note) = queued.backdated {
         println!("Note: {note}.");
@@ -1286,6 +1321,54 @@ mod tests {
             project_label(&projects, tui_do_core::models::ProjectId(9)),
             "9"
         );
+    }
+
+    #[test]
+    fn the_add_line_says_which_dates_were_set() {
+        use chrono::{FixedOffset, TimeZone as _, Utc};
+        // Five hours behind UTC, so a date shown in UTC would be visibly a day out.
+        let zone = FixedOffset::west_opt(5 * 3600).expect("a valid offset");
+        let local = |y, m, d, h, min| {
+            zone.with_ymd_and_hms(y, m, d, h, min, 0)
+                .single()
+                .expect("an unambiguous instant")
+                .with_timezone(&Utc)
+        };
+        assert_eq!(dates_said(None, None, &zone), "");
+        assert_eq!(
+            dates_said(Some(local(2027, 8, 27, 23, 59)), None, &zone),
+            ", due Fri 27 Aug 2027"
+        );
+        assert_eq!(
+            dates_said(Some(local(2026, 8, 27, 9, 0)), None, &zone),
+            ", due Thu 27 Aug 2026 at 09:00"
+        );
+        assert_eq!(
+            dates_said(
+                Some(local(2026, 8, 28, 23, 59)),
+                Some(local(2026, 8, 24, 0, 0)),
+                &zone
+            ),
+            ", due Fri 28 Aug 2026, starts Mon 24 Aug 2026"
+        );
+    }
+
+    #[test]
+    fn the_add_line_reports_what_the_parser_took() {
+        // Through the parser: `due 27.8` is a date, and `1.6 GB` is not.
+        use chrono::TimeZone as _;
+        let zone = chrono::FixedOffset::west_opt(5 * 3600).expect("a valid offset");
+        let at = zone
+            .with_ymd_and_hms(2026, 8, 26, 10, 0, 0)
+            .single()
+            .expect("a fixed now");
+        let parsed = tui_do_core::quickadd::parse("call mom due 27.8", &at);
+        assert_eq!(
+            dates_said(parsed.due_date, parsed.start_date, &zone),
+            ", due Thu 27 Aug 2026"
+        );
+        let parsed = tui_do_core::quickadd::parse("llvm 1.6 GB", &at);
+        assert_eq!(dates_said(parsed.due_date, parsed.start_date, &zone), "");
     }
 
     #[test]

@@ -382,7 +382,8 @@ Tokens may appear anywhere in the line and are taken out of the title.
 year. `call mom due 27.8` is due on 27 August; `llvm 1.6 GB`, `add 1/2 cup` and
 `upgrade to 2.6.10` keep their numbers and get no date, because without the keyword those
 read as a decimal, a fraction or a version as readily as a day. A month name or a
-four-digit year is never ambiguous and works anywhere.
+four-digit year is never ambiguous and works anywhere. `tui-do add` names any date it set,
+so a misread one shows up at once: `Added "call mom" to Inbox, due Fri 27 Aug 2027`.
 
 Wrap a name containing spaces in brackets or quotes; brackets are usually easier from a
 shell, which strips quotes before tui-do sees them:

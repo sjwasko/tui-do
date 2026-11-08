@@ -529,7 +529,8 @@ So this is really a prerequisite of 3a rather than a separate feature.
   TipTap HTML on the wire, and `markdown::looks_like_html` already decides which. `add`
   should write what it was given and not guess.
 - **What does it print back?** Not the description — it is long by nature. A character count
-  is enough, and it is the same "say what you actually did" fix BUG-24 asks for.
+  is enough, and it is the same "say what you actually did" fix BUG-24 got: `add` now names
+  any due or start date it set.
 
 ---
 

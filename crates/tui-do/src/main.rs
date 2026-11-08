@@ -55,7 +55,8 @@ enum Command {
     /// A date in digits alone needs `due` or `start` in front of it, unless it has a
     /// four-digit year: `call mom due 27.8` is due on 27 August, while `llvm 1.6 GB`
     /// and `add 1/2 cup` keep their numbers and get no date. A month name or a
-    /// four-digit year works anywhere.
+    /// four-digit year works anywhere. Any date that was set is named in the
+    /// confirmation line, so a misread one shows at once.
     ///
     /// NAMES WITH SPACES
     ///
