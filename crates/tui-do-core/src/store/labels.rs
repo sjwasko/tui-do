@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
-use tui_do_api::models::{Label, LabelId};
+use tui_do_api::models::{Label, LabelId, TaskId};
 
 use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
@@ -209,26 +209,41 @@ impl Store {
     }
 }
 
-/// Write one label, and answer whether it was written.
+/// Write one label.
 ///
-/// Shared with the task upsert, which sees labels embedded in tasks.
+/// Shared with the task upsert, which sees labels embedded in tasks. A provisional label
+/// whose `CreateLabel` is no longer queued is skipped; see [`attach_label`].
+pub(super) fn upsert_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Result<()> {
+    write_label(tx, label, now).map(|_| ())
+}
+
+/// Write a label and attach it to a task.
 ///
-/// **A provisional label is written only while its `CreateLabel` is queued.** Without
-/// that, a label is only as dead as the last copy of it: a queued `DeleteTask` or
-/// `UpdateTask` carries the task's labels in `before`, `sync::references` leaves both
-/// queued when the create is rejected (a task body's labels never reach the wire), and
-/// rolling either back later re-wrote label `-1` after the create's rollback had deleted
-/// it -- a row that never settles and never syncs (BUG-14). A skipped label answers
-/// `false`, and the caller must not attach it either: `task_labels` would reference a
-/// row that does not exist.
+/// **A provisional label is written only while its `CreateLabel` is queued**, and is
+/// attached only if it was written. A queued `DeleteTask` or `UpdateTask` carries the
+/// task's labels in `before`, and `sync::references` leaves both queued when the create
+/// is rejected, so rolling either back used to re-write label `-1` after the create's
+/// rollback had deleted it: a row that never settles and never syncs (BUG-14).
 ///
 /// `Store::queue` inserts a create's outbox row *before* applying it, so the create
 /// itself passes this check.
-pub(super) fn upsert_label(
+pub(super) fn attach_label(
     tx: &Transaction<'_>,
+    task: TaskId,
     label: &Label,
     now: DateTime<Utc>,
-) -> Result<bool> {
+) -> Result<()> {
+    if write_label(tx, label, now)? {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
+            params![task.get(), label.id.get()],
+        )?;
+    }
+    Ok(())
+}
+
+/// The write behind both, answering whether the label was written.
+fn write_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Result<bool> {
     if label.id.get() < 0 && !is_being_created(tx, label.id)? {
         return Ok(false);
     }

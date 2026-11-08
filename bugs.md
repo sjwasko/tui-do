@@ -52,6 +52,7 @@ throughout, both learned the hard way in this pass:
 | BUG-9 | grapheme table against `truncate`/`wrap` | yes |
 | ~~BUG-14~~ | FIXED — five store-level rollback tests, four that failed before the fix | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
+| BUG-27 | UI-level undo/redo sequence after a rejected label create | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 
 ## What is left, at a glance
@@ -61,6 +62,7 @@ throughout, both learned the hard way in this pass:
 | **Decide, then fix** | BUG-7, BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
+| **Found fixing BUG-14** | BUG-27 — an undo built before a rejected label create can send label id `-1`; diagnosed, the server's answer not yet measured |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
@@ -88,10 +90,9 @@ Plus two of the four structural items, leaving three.
 Two things came back clean that were expected to be the weak points, and both were checked
 properly rather than assumed:
 
-- **All seven `subject_id` SQL sites correctly filter on `subject_kind`** — verified
-  crate-wide, not just in `outbox.rs`. There is no eighth unfiltered site. (The BUG-14
-  fix added an eighth, `labels::is_being_created`, and it filters on the kind too.) This is the
-  invariant `CLAUDE.md` says has already been got wrong twice.
+- **All eight `subject_id` SQL sites filter on `subject_kind`** — verified crate-wide,
+  not just in `outbox.rs`, and none reads the column unfiltered. The eighth,
+  `labels::is_being_created`, came with the BUG-14 fix. This is the invariant `CLAUDE.md` says has already been got wrong twice.
 - **`Reach::Incremental` never runs the retain step.** The delete-safety separation holds on
   every path, `is_archived=true` is still passed, and all three `is_already_done` arms plus
   the deliberately-absent create arm are correct.
@@ -630,8 +631,8 @@ BUG-4. **Collapsing them into one is not done**, because which classification is
 ### ~~BUG-14~~ — FIXED — a rolled-back `DeleteTask` can resurrect a phantom label row
 
 **Fixed.** `upsert_label` now writes a provisional label (id < 0) only while a
-`CreateLabel` for it is still queued, and answers whether it wrote; `upsert_task`, an
-attach, and a detach's rollback skip the `task_labels` row when it did not. `UpdateTask`
+`CreateLabel` for it is still queued, and `labels::attach_label` (used by `upsert_task`,
+an attach, and a detach's rollback) adds the `task_labels` row only when it did. `UpdateTask`
 had the same hole, since its rollback is also `upsert_task(before)`, and so did a
 `DetachLabel` queued after the create was gone (an undo built from a stale copy). `Store::queue`
 now inserts each outbox row before applying it, so a create passes its own check. The
@@ -1477,6 +1478,40 @@ needing a kill.
 passes today only because the test box has no config; on a box that *has* one, `brew test`
 would start the interface under a non-TTY stdin and hit this. The formula's test is resting
 on an assumption it does not state.
+
+### BUG-27 — an undo can queue a label change naming a provisional id no server issued
+
+`crates/tui-do-ui/src/update.rs:148` (`on_rejected`'s undo-stack prune), with
+`sync/mod.rs` `is_already_done` and `is_permanent`. Found while fixing BUG-14; diagnosed,
+not fixed, and the server's answer is **not measured**.
+
+When a `CreateLabel` is rejected, the UI drops undo and redo entries whose subject is
+that label. An attach's inverse is a `DetachLabel` whose subject is the *task*, so it
+survives the prune still naming label `-1`. The store no longer writes a phantom row for
+it (BUG-14's guard), but the entry is still queued and goes on the wire:
+
+1. Create label `L` (provisional `-1`) and attach it to task `T`. The undo stack holds
+   `DetachLabel { T, -1 }`.
+2. The create is rejected. The store discards it and the attach (`references`); the UI
+   prunes `Subject::Label(-1)` only, so the detach stays on the stack.
+3. `u` queues `DetachLabel { T, -1 }` and sends `DELETE /tasks/T/labels/-1`. The redo
+   stack now holds `AttachLabel { T, -1 }`.
+4. Redo queues that attach and sends `PUT /tasks/T/labels` with `label_id: -1`.
+
+The likely answers are a `404` (code `8002`, "label does not exist") or a `403`. For the
+detach in step 3 either one matches an `is_already_done` arm, so it is completed
+silently: wrong but harmless, since nothing changes beyond an undo toast for a change that never happened. For the
+attach in step 4, neither matches an arm (only `400`/`8001` does), so it is a permanent
+rejection, and the discard takes **every queued entry for `T`**, including unrelated
+edits. That is the same failure CLAUDE.md records for an attach sent ahead of its create.
+Undoing a delete of a task that carried `-1` reaches the same attach: the inverse
+`CreateTask` is split into `AttachLabel` entries.
+
+**Suggested test — a UI-level sequence, deterministic.** Feed `update` a `CreateLabel`
+plus `AttachLabel`, then a `SyncEvent::Rejected` for `Subject::Label(-1)`, then `Action::Undo` and
+`Action::Redo`. Assert that no effect queues a mutation naming a negative label id whose
+create is no longer on the stack. A fix is probably to prune by `references` as the sync
+engine does, not by subject alone, but that is a decision for whoever takes it.
 
 ## Minor
 

@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use tui_do_api::models::{ProjectId, Task, TaskId, TaskReminder, User};
 
-use super::labels::{labels_for, upsert_label};
+use super::labels::{attach_label, labels_for};
 use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
 use crate::error::Result;
@@ -503,14 +503,7 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
         params![task.id.get()],
     )?;
     for label in &task.labels {
-        // A provisional label whose create is gone is dropped, not resurrected (BUG-14).
-        if !upsert_label(tx, label, now)? {
-            continue;
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
-            params![task.id.get(), label.id.get()],
-        )?;
+        attach_label(tx, task.id, label, now)?;
     }
 
     tx.execute(

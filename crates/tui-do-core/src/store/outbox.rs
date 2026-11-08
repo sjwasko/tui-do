@@ -40,7 +40,7 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use tui_do_api::models::{Label, LabelId, Task, TaskId};
 
-use super::labels::upsert_label;
+use super::labels::{attach_label, upsert_label};
 use super::state::{read_state, write_state};
 use super::tasks::upsert_task;
 use super::Store;
@@ -374,12 +374,7 @@ impl Mutation {
                 tx.execute("DELETE FROM tasks WHERE id = ?1", params![before.id.get()])?;
             }
             Self::AttachLabel { task, label } => {
-                if upsert_label(tx, label, now)? {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
-                        params![task.get(), label.id.get()],
-                    )?;
-                }
+                attach_label(tx, *task, label, now)?;
             }
             Self::DetachLabel { task, label } => {
                 tx.execute(
@@ -387,12 +382,8 @@ impl Mutation {
                     params![task.get(), label.id.get()],
                 )?;
             }
-            Self::CreateLabel { label } => {
-                upsert_label(tx, label, now)?;
-            }
-            Self::UpdateLabel { after, .. } => {
-                upsert_label(tx, after, now)?;
-            }
+            Self::CreateLabel { label } => upsert_label(tx, label, now)?,
+            Self::UpdateLabel { after, .. } => upsert_label(tx, after, now)?,
         }
         Ok(())
     }
@@ -412,19 +403,12 @@ impl Mutation {
                 )?;
             }
             Self::DetachLabel { task, label } => {
-                if upsert_label(tx, label, now)? {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
-                        params![task.get(), label.id.get()],
-                    )?;
-                }
+                attach_label(tx, *task, label, now)?;
             }
             Self::CreateLabel { label } => {
                 tx.execute("DELETE FROM labels WHERE id = ?1", params![label.id.get()])?;
             }
-            Self::UpdateLabel { before, .. } => {
-                upsert_label(tx, before, now)?;
-            }
+            Self::UpdateLabel { before, .. } => upsert_label(tx, before, now)?,
         }
         Ok(())
     }
@@ -568,9 +552,8 @@ impl Store {
 
             let mut first = None;
             for part in mutation.decompose() {
-                // The entry goes in before the change is applied. `upsert_label` writes a
-                // provisional label only while its `CreateLabel` is queued, so applying a
-                // create first would have it refuse the very label being created.
+                // The entry goes in before the change is applied, or `attach_label`'s
+                // guard would refuse the label a `CreateLabel` is creating.
                 tx.execute(
                     "INSERT INTO outbox (created, kind, payload, subject_id, subject_kind)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
