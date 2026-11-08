@@ -1103,9 +1103,13 @@ mod tests {
 
 /// Lay a value out for an edit box, and say where the caret lands.
 ///
-/// Character-wrapped rather than word-wrapped, and deliberately: in a box the user is
+/// Grapheme-wrapped rather than word-wrapped, and deliberately: in a box the user is
 /// typing into, a caret offset has to map to exactly one cell, and re-flowing words
-/// breaks that mapping. Explicit newlines are hard breaks.
+/// breaks that mapping. Per grapheme rather than per `char`, so a flag or a ZWJ sequence
+/// is never split across two rows. Explicit newlines are hard breaks.
+///
+/// `cursor` is a byte offset into `text` on a grapheme boundary, as
+/// [`crate::modal::TextInput::cursor`] gives it.
 ///
 /// Returns at most `max_lines` rows, windowed so the caret is always among them, and the
 /// caret's position *within that window* as (row, column).
@@ -1129,23 +1133,24 @@ pub fn edit_layout(
         }
         let mut current = String::new();
         let mut used = 0_u16;
-        for (offset, c) in paragraph.chars().enumerate() {
-            let w = display_width(&c.to_string()).max(1);
-            if used + w > width {
+        for (offset, grapheme) in paragraph.grapheme_indices(true) {
+            let w = display_width(grapheme).max(1);
+            // A glyph wider than the whole box still takes a row of its own rather than
+            // leaving an empty one ahead of it.
+            if used > 0 && used.saturating_add(w) > width {
                 rows.push(std::mem::take(&mut current));
                 used = 0;
             }
             if seen + offset == cursor {
                 caret = (u16::try_from(rows.len()).unwrap_or(u16::MAX), used);
             }
-            current.push(c);
-            used += w;
+            current.push_str(grapheme);
+            used = used.saturating_add(w);
         }
-        let chars = paragraph.chars().count();
-        if seen + chars == cursor {
+        if seen + paragraph.len() == cursor {
             caret = (u16::try_from(rows.len()).unwrap_or(u16::MAX), used);
         }
-        seen += chars;
+        seen += paragraph.len();
         rows.push(current);
     }
     if rows.is_empty() {
@@ -1207,8 +1212,36 @@ mod edit_layout_tests {
         // Five rows of content in a four-row box: the box scrolls rather than hiding the
         // line being typed on.
         let text = "a\nb\nc\nd\ne";
-        let (rows, caret) = edit_layout(text, 40, 4, text.chars().count());
+        let (rows, caret) = edit_layout(text, 40, 4, text.len());
         assert_eq!(rows, vec!["b", "c", "d", "e"]);
         assert_eq!(caret, (3, 1));
+    }
+
+    #[test]
+    fn a_run_of_flags_wraps_between_glyphs() {
+        // Five flags, two cells each, in a five-cell box: two per row, never half of one.
+        let flag = "\u{1F1EC}\u{1F1E7}";
+        let text = flag.repeat(5);
+        let (rows, _) = edit_layout(&text, 5, 4, text.len());
+        assert_eq!(rows, vec![flag.repeat(2), flag.repeat(2), flag.to_string()]);
+        for row in &rows {
+            assert!(display_width(row) <= 5);
+            assert_eq!(row.len() % flag.len(), 0, "a split flag: {row:?}");
+        }
+    }
+
+    #[test]
+    fn the_caret_maps_a_byte_offset_to_a_cell() {
+        let flag = "\u{1F1EC}\u{1F1E7}";
+        let text = flag.repeat(5);
+        // After the third flag: the first glyph of row two, so one glyph (two cells) in.
+        let (_, caret) = edit_layout(&text, 5, 4, flag.len() * 3);
+        assert_eq!(caret, (1, 2));
+        let (_, caret) = edit_layout(&text, 5, 4, text.len());
+        assert_eq!(caret, (2, 2));
+        // Wide CJK after a newline: the column is cells, not bytes or chars.
+        let text = "a\n日本x";
+        let (_, caret) = edit_layout(text, 40, 4, text.len() - 1);
+        assert_eq!(caret, (1, 4));
     }
 }
