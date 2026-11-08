@@ -46,21 +46,20 @@ const TICK: Duration = Duration::from_secs(1);
 /// How long the input reader waits before checking whether it should stop.
 const INPUT_POLL: Duration = Duration::from_millis(100);
 
-/// The current time, carrying this machine's UTC offset.
+/// The current time, in this machine's zone.
 ///
-/// The only clock in the program that the interface sees, and the offset is the point of
+/// The only clock in the program that the interface sees, and the zone is the point of
 /// it. `due today` is resolved against this, and so is the decision to call a date
 /// "Today" — both are claims about the calendar the user is living in, and both answer
 /// wrongly if the instant arrives labelled UTC. Stamped as `Utc::now()`, `due today`
 /// lands at 23:59 UTC, which west of Greenwich is that same evening: the task turns
 /// overdue hours early, every day. That is the bug in the project tui-do replaces.
 ///
-/// `fixed_offset` rather than `DateTime<Local>` so the value carries its offset with it
-/// rather than depending on the reader's zone, which is what lets `tui-do-ui` stay pure
-/// and its tests stay deterministic. Re-read on every tick, so a DST change is picked up
-/// within a second without restarting.
-fn now() -> chrono::DateTime<chrono::FixedOffset> {
-    chrono::Local::now().fixed_offset()
+/// `Zone::Local` rather than today's fixed offset, because a date typed for the far side
+/// of a daylight-saving change must be resolved at the offset in force on that date
+/// (BUG-20). Tests pin `Zone::Fixed` instead, so they do not depend on the machine.
+fn now() -> tui_do_core::ZonedTime {
+    chrono::Utc::now().with_timezone(&tui_do_core::Zone::Local)
 }
 
 /// How long the flush on exit waits between dots.

@@ -8,8 +8,9 @@
 //! knows whether it is talking to a truecolor terminal, and `tui-do-ui` stays a pure
 //! function of what it is told.
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use ratatui::style::{Color, Modifier, Style};
+use tui_do_core::ZonedTime;
 
 /// How much colour the terminal can show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -206,7 +207,7 @@ impl Theme {
 
     /// How a due date reads, relative to `now`.
     #[must_use]
-    pub fn due(self, due: Option<DateTime<Utc>>, done: bool, now: DateTime<FixedOffset>) -> Style {
+    pub fn due(self, due: Option<DateTime<Utc>>, done: bool, now: ZonedTime) -> Style {
         let Some(due) = due else {
             return self.muted();
         };
@@ -324,16 +325,7 @@ fn luminance(r: u8, g: u8, b: u8) -> f32 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
-    }
-
-    /// The same instant as the reader's clock shows it.
-    fn here() -> DateTime<FixedOffset> {
-        now().fixed_offset()
-    }
+    use crate::test_clock::{here, now};
 
     #[test]
     fn no_colour_means_no_colour() {

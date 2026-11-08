@@ -9,6 +9,7 @@ pub mod error;
 pub mod quickadd;
 pub mod store;
 pub mod sync;
+pub mod zone;
 
 /// The wire models, re-exported.
 ///
@@ -22,3 +23,4 @@ pub use config::Config;
 pub use error::{CoreError, Result};
 pub use store::Store;
 pub use sync::{Reach, Sync, SyncEvent, SyncReport};
+pub use zone::{Zone, ZonedTime};

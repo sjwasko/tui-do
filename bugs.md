@@ -52,7 +52,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-9~~ | FIXED — grapheme table against `truncate`/`wrap` | yes |
 | ~~BUG-14~~ | FIXED — five store-level rollback tests, four that failed before the fix | yes |
 | ~~BUG-26~~ | FIXED — pure `TextInput` and `edit_layout` tests, eight | yes |
-| BUG-20 | render at the offset in force on the target date | yes |
+| ~~BUG-20~~ | FIXED — four rows of the table, plus skipped and ambiguous hours, all failing on the old wiring | yes |
 | BUG-27 | UI-level undo/redo sequence after a rejected label create | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
@@ -61,7 +61,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-20 and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
+| **Decide, then fix** | BUG-24 — new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-22, BUG-23 — new 2026-09-13, both need fixing. ~~BUG-21~~ is fixed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
@@ -726,7 +726,34 @@ If `labels_with_negative_ids` does not exist, the same check is one `SELECT id F
 WHERE id < 0` in a test helper. The row it finds will never settle and never sync, which is
 what makes it a phantom rather than merely stale.
 
-### BUG-20 — a date typed across a DST boundary lands on the wrong day
+### ~~BUG-20~~ — FIXED — a date typed across a DST boundary lands on the wrong day
+
+**Fixed 2026-11-08, with no new runtime dependency.** The decision below was taken the
+cheap way: not `chrono-tz` plus `iana-time-zone`, but `tui_do_core::Zone`, an enum of
+`Local` and `Fixed(FixedOffset)` that implements `TimeZone` by delegating to
+`chrono::Local` or the offset. `runtime::now()` stamps `Zone::Local`, and `Model.now`,
+`Msg::Tick`, `last_sync`, `past_due_note`, `relative_date` and `Theme::due` all take
+`ZonedTime` (`DateTime<Zone>`); tests pin `Zone::Fixed` through `zone::pinned`. Its
+offset type carries the variant, because `DateTime<Tz>` rebuilds the zone from the
+offset alone and a bare `FixedOffset` would hand `now.timezone()` back without rules.
+`chrono::Local` parses `TZ` and `/etc/localtime` itself (chrono 0.4.45's
+`offset/local/unix.rs`; `iana-time-zone` is already in the tree through chrono's `clock`
+feature and is only its fallback for naming the zone), so the musl binary needs nothing
+extra. `chrono-tz` is a dev-dependency of `tui-do-core` and drives the four rows of the
+table below in `quickadd::dates::tests::across_dst`, plus a skipped hour, Cuba's skipped
+midnight under `START_TIME`, and an ambiguous hour; all eight failed with `now` reduced to
+a fixed offset and pass with real rules. Those cover the parser, which was always generic,
+so they passed before the fix as well. What proves the wiring is `tests/zone.rs`, which
+re-runs itself with `TZ=EST5EDT,M3.2.0,M11.1.0` and puts the same six cases through a
+clock built the way `runtime::now()` builds it. All six fail when that clock is reduced to
+a fixed offset.
+
+**That test found a second defect, in chrono rather than here.** For an ambiguous hour
+chrono's POSIX-rule code returns the *later* instant first, and `chrono::Local` uses that
+code for every date past the last transition stored in the zone file. On this machine that
+is every future date, under `TZ=America/New_York` as much as under the rule string. So
+`to_utc`, which took the first slot as "earlier", resolved `due 2027-11-07 at 1:30am` to
+01:30 EST. It compares the two instants now.
 
 `crates/tui-do-core/src/quickadd/dates.rs:575` (`to_utc`), with the cause at
 `crates/tui-do/src/runtime/mod.rs:58`:
