@@ -677,8 +677,18 @@ feature and is only its fallback for naming the zone), so the musl binary needs 
 extra. `chrono-tz` is a dev-dependency of `tui-do-core` and drives the four rows of the
 table below in `quickadd::dates::tests::across_dst`, plus a skipped hour, Cuba's skipped
 midnight under `START_TIME`, and an ambiguous hour; all eight failed with `now` reduced to
-a fixed offset and pass with real rules. `tests/zone.rs` re-runs itself with
-`TZ=EST5EDT,M3.2.0,M11.1.0` to prove `Zone::Local` end to end.
+a fixed offset and pass with real rules. Those cover the parser, which was always generic,
+so they passed before the fix as well. What proves the wiring is `tests/zone.rs`, which
+re-runs itself with `TZ=EST5EDT,M3.2.0,M11.1.0` and puts the same six cases through a
+clock built the way `runtime::now()` builds it. All six fail when that clock is reduced to
+a fixed offset.
+
+**That test found a second defect, in chrono rather than here.** For an ambiguous hour
+chrono's POSIX-rule code returns the *later* instant first, and `chrono::Local` uses that
+code for every date past the last transition stored in the zone file. On this machine that
+is every future date, under `TZ=America/New_York` as much as under the rule string. So
+`to_utc`, which took the first slot as "earlier", resolved `due 2027-11-07 at 1:30am` to
+01:30 EST. It compares the two instants now.
 
 `crates/tui-do-core/src/quickadd/dates.rs:575` (`to_utc`), with the cause at
 `crates/tui-do/src/runtime/mod.rs:58`:
