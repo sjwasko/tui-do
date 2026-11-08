@@ -1537,10 +1537,13 @@ taken, anywhere in the line — fractions, ranges and version numbers as well as
 
 The rule now: **a date written in digits alone, with no four-digit year** (`27.8`, `27/08`,
 `27-8`, `1.2.3`, `27.08.26`), is a date only after `due`, `start`, `starts`, `starting` or
-`start:`. Anywhere else it stays in the title. A four-digit year (`2026-08-27`,
-`27/08/2026`), a month name (`27aug`, `aug 27`, `27 aug 2026`) and words (`tomorrow`,
+`start:`. Anywhere else it stays in the title. So does a dotted one that leads with a
+four-digit year (`2026.1.5`), which is a version number's shape — decided in review, since
+an ISO date uses dashes. Any other four-digit year (`2026-08-27`, `27/08/2026`,
+`27.8.2026`), a month name (`27aug`, `aug 27`, `27 aug 2026`) and words (`tomorrow`,
 `in 3 days`) are unambiguous and still work anywhere. The spaced all-digit form (`1 2 3`)
-falls under the same rule. `dates::Keyword` carries the decision from `find` down to
+falls under the same rule. The keyword is decisive in the other direction too: `due 2.5
+hours` is due 2 May, title `hours`. `dates::Keyword` carries the decision from `find` down to
 `literal_date` and the spaced three-part form. A field that holds nothing but a date — the
 edit form's Due, the `d` prompt — goes through the new `quickadd::parse_due`, which treats
 the keyword as given, so `27.8` typed there still works. The interface's live highlighting

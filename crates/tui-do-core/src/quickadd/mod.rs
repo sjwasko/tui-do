@@ -543,6 +543,9 @@ mod tests {
             "budget is 3.50 for this",
             "pages 27.08.26",
             "pick 1 2 3",
+            // A four-digit year first and dots between is a version number's shape.
+            "release 2026.1.5",
+            "release 2026.08.27",
         ] {
             let parsed = p(input);
             assert_eq!(parsed.title, input, "{input:?} lost text to a date");
@@ -574,12 +577,23 @@ mod tests {
             ("Call mom start 27/08", "none", "2026-08-27 00:00"),
             ("Call mom starting 27.8", "none", "2026-08-27 00:00"),
             ("Call mom start:27.8", "none", "2026-08-27 00:00"),
+            ("Call mom due 2026.1.5", "2026-01-05 23:59", "none"),
+            ("Call mom due 2026.08.27", "2026-08-27 23:59", "none"),
         ] {
             let parsed = p(input);
             assert_eq!(parsed.title, "Call mom", "{input:?}");
             assert_eq!(local(parsed.due_date), due, "{input:?}");
             assert_eq!(local(parsed.start_date), start, "{input:?}");
         }
+    }
+
+    #[test]
+    fn the_keyword_is_decisive_even_before_a_decimal() {
+        // The rule is the keyword, not a guess at what follows it: `due 2.5 hours` is a
+        // date, 2 May, and leaves `hours` in the title. Typing `due` is asking for one.
+        let parsed = p("due 2.5 hours");
+        assert_eq!(parsed.title, "hours");
+        assert_eq!(local(parsed.due_date), "2027-05-02 23:59");
     }
 
     #[test]

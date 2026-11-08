@@ -102,8 +102,10 @@ pub fn find<Tz: TimeZone>(
 /// A date written only in digits with no four-digit year -- `27.8`, `1/2`, `3-5`,
 /// `2.6.10` -- is a date only when it was. Without the keyword it reads just as well as a
 /// decimal, a fraction, a range or a version, and taking it silently removes those
-/// characters from the title and sets a due date nobody asked for (BUG-24). A month name,
-/// a four-digit year or a word is unambiguous and needs no keyword.
+/// characters from the title and sets a due date nobody asked for (BUG-24). So is a dotted
+/// one that leads with its four-digit year, `2026.1.5`, which is a version number's shape;
+/// an ISO date is written with dashes. A month name, any other four-digit-year form, or a
+/// word is unambiguous and needs no keyword.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     /// `due 27.8`, `start 27/08`, or a field that holds nothing but a date.
@@ -265,7 +267,7 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
 
     // The spaced form of the same date: `27 aug 2026`, `august 27 2026`. Placed after
     // `in 3 days` so it cannot steal that phrase.
-    if words.len() == 3 && allowed(words, keyword) {
+    if words.len() == 3 && allowed(words, false, keyword) {
         if let Some(date) = three_part_date(&words[0], &words[1], &words[2]) {
             return Some(date);
         }
@@ -384,7 +386,7 @@ fn day_number(word: &str) -> Option<u32> {
 /// days in the two clients.
 fn literal_date(word: &str, today: NaiveDate, keyword: Keyword) -> Option<NaiveDate> {
     let parts = date_parts(word)?;
-    if !allowed(&parts, keyword) {
+    if !allowed(&parts, word.contains('.'), keyword) {
         return None;
     }
     match parts.len() {
@@ -488,12 +490,16 @@ fn two_part_date(a: &str, b: &str, today: NaiveDate) -> Option<NaiveDate> {
 
 /// Whether a date written as `parts` may be read here at all.
 ///
-/// Digits alone with no four-digit year need a keyword; anything with a month name or a
-/// four-digit year in it does not. See [`Keyword`].
-fn allowed(parts: &[String], keyword: Keyword) -> bool {
-    keyword == Keyword::Given
-        || !parts.iter().all(|part| is_number(part))
-        || parts.iter().any(|part| part.len() == 4)
+/// Digits alone need a keyword when no part is a four-digit year, or when they are joined
+/// by dots and the year comes first, `2026.1.5`. Anything with a month name in it does
+/// not. See [`Keyword`].
+fn allowed(parts: &[String], dotted: bool, keyword: Keyword) -> bool {
+    if keyword == Keyword::Given || !parts.iter().all(|part| is_number(part)) {
+        return true;
+    }
+    let year_first = parts.first().is_some_and(|part| part.len() == 4);
+    let has_year = parts.iter().any(|part| part.len() == 4);
+    has_year && !(dotted && year_first)
 }
 
 /// Whether every character is a digit.
