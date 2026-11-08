@@ -1027,7 +1027,8 @@ pub async fn add(
         .await
         .with_context(|| format!("could not open the store at {}", store_path.display()))?;
 
-    let parsed = tui_do_core::quickadd::parse(text, &now());
+    let clock = now();
+    let parsed = tui_do_core::quickadd::parse(text, &clock);
     if parsed.title.trim().is_empty() {
         anyhow::bail!("nothing to add");
     }
@@ -1103,9 +1104,9 @@ pub async fn add(
     let project = project_label(&projects, project_id);
     let queued = queue_add(&store, built, create_labels).await?;
 
-    // BUG-20: switch this to the clock's `Zone` once it lands, so the echo and the parser
-    // agree on the offset in force on the target date.
-    let dates = dates_suffix(parsed.due_date, parsed.start_date, &chrono::Local);
+    // In the zone the parser resolved them in, so a date across a daylight-saving change
+    // is echoed on the day it was typed for (BUG-20).
+    let dates = dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone());
     // Named with its id when the name is ambiguous, because a task added to the wrong
     // Inbox is a task the user will not find.
     if queued.ambiguous_project {
@@ -1361,22 +1362,51 @@ mod tests {
         );
     }
 
+    /// Parse `text` against `clock` and echo it in the clock's zone, the way `add` does.
+    fn echo(text: &str, clock: &tui_do_core::ZonedTime) -> String {
+        let parsed = tui_do_core::quickadd::parse(text, clock);
+        dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone())
+    }
+
     #[test]
     fn the_add_line_reports_what_the_parser_took() {
         // Through the parser: `due 27.8` is a date, and `1.6 GB` is not.
         use chrono::TimeZone as _;
-        let zone = chrono::FixedOffset::west_opt(5 * 3600).expect("a valid offset");
-        let at = zone
-            .with_ymd_and_hms(2026, 8, 26, 10, 0, 0)
-            .single()
-            .expect("a fixed now");
-        let parsed = tui_do_core::quickadd::parse("call mom due 27.8", &at);
-        assert_eq!(
-            dates_suffix(parsed.due_date, parsed.start_date, &zone),
-            ", due Thu 27 Aug 2026"
+        let clock = tui_do_core::zone::pinned(
+            chrono::FixedOffset::west_opt(5 * 3600)
+                .and_then(|zone| zone.with_ymd_and_hms(2026, 8, 26, 10, 0, 0).single())
+                .expect("a fixed now"),
         );
-        let parsed = tui_do_core::quickadd::parse("llvm 1.6 GB", &at);
-        assert_eq!(dates_suffix(parsed.due_date, parsed.start_date, &zone), "");
+        assert_eq!(echo("call mom due 27.8", &clock), ", due Thu 27 Aug 2026");
+        assert_eq!(echo("llvm 1.6 GB", &clock), "");
+    }
+
+    #[test]
+    fn a_date_across_daylight_saving_is_echoed_on_its_own_day() {
+        // Typed in January in New York (-05:00) for a day in July (-04:00). The parser
+        // resolves 23:59 and 00:00 at July's offset, and the echo must read them back by
+        // the same rules. In January's fixed offset both are an hour earlier: the due
+        // date gains a time nobody typed, and the start date moves to the day before.
+        use chrono::TimeZone as _;
+        use chrono_tz::America::New_York;
+        let january = New_York
+            .with_ymd_and_hms(2027, 1, 15, 10, 0, 0)
+            .single()
+            .expect("an unambiguous instant");
+        let text = "fireworks start 2027-07-04 due 2027-07-04";
+        let parsed = tui_do_core::quickadd::parse(text, &january);
+        assert_eq!(
+            dates_suffix(parsed.due_date, parsed.start_date, &New_York),
+            ", due Sun 4 Jul 2027, starts Sun 4 Jul 2027"
+        );
+
+        // The same instants echoed in a frozen January offset -- what a clock pinned to
+        // today's offset would print, and what `add` must not.
+        let frozen = tui_do_core::zone::pinned(january.fixed_offset());
+        assert_eq!(
+            dates_suffix(parsed.due_date, parsed.start_date, &frozen.timezone()),
+            ", due Sun 4 Jul 2027 at 22:59, starts Sat 3 Jul 2027 at 23:00"
+        );
     }
 
     #[test]

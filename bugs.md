@@ -1551,11 +1551,14 @@ reads `Parsed.tokens` from the same `parse`, so it cannot disagree with what is 
 
 **`tui-do add` now names what it parsed**: `Added "call mom" to Inbox, due Fri 27 Aug 2027`,
 with `, starts …` the same way and `at HH:MM` only when the time is not the field's default
-(`DateField::default_time`), in the local zone (`runtime::dates_suffix`). Tests: `a_number_in_prose_is_not_a_date` asserts
+(`DateField::default_time`), read in the clock's own `Zone` — the one the parser resolved
+in — so a date across a daylight-saving change is echoed on its own day, with no stray
+` at 23:00` (`runtime::dates_suffix`). Tests: `a_number_in_prose_is_not_a_date` asserts
 title unchanged, no due, no start and no token over every row above plus the original four;
 it failed on the old code. `a_bare_numeric_date_after_a_keyword_still_parses`,
-`an_unambiguous_date_needs_no_keyword`, `a_due_field_reads_a_bare_numeric_date`, and
-`the_add_line_says_which_dates_were_set` cover the rest.
+`an_unambiguous_date_needs_no_keyword`, `a_due_field_reads_a_bare_numeric_date`,
+`the_add_line_says_which_dates_were_set` and
+`a_date_across_daylight_saving_is_echoed_on_its_own_day` cover the rest.
 
 ### BUG-25 — starting with stdin not a terminal hangs forever, with the terminal held in raw mode
 
