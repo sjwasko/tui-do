@@ -399,7 +399,9 @@ agent) has history expansion off regardless.
 ## From the shell
 
 `tui-do add` applies locally and queues for the server exactly as the interface does, so it
-works on a plane. Two flags matter:
+works on a plane. It is also the way to use tui-do from a script: the interface itself needs a
+terminal on both stdin and stdout, and refuses to start, with a message saying which is
+missing, when either is redirected. Two flags matter:
 
 - **`--create-labels`** creates any label the line names that does not exist yet. The
   interface asks instead of assuming.
