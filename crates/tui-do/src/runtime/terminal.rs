@@ -85,6 +85,12 @@ impl<B: Backend> TerminalGuard<B> {
         Ok(Self { terminal })
     }
 
+    /// The backend, for a test to read what was drawn.
+    #[cfg(test)]
+    pub fn backend(&self) -> &B {
+        self.terminal.backend()
+    }
+
     /// Draw a frame, unless the terminal has already been given back.
     ///
     /// Returns whether anything was drawn. After the panic hook has restored the
@@ -123,7 +129,7 @@ fn restore() {
 
 /// [`restore`], writing its escape sequences to `out`. Returns whether it did anything:
 /// only the first call after [`TerminalGuard::take`] does.
-fn restore_to(out: &mut impl Write) -> bool {
+pub(super) fn restore_to(out: &mut impl Write) -> bool {
     if !RAW.swap(false, Ordering::SeqCst) {
         return false;
     }
@@ -140,6 +146,15 @@ fn restore_to(out: &mut impl Write) -> bool {
     true
 }
 
+/// Serialise the tests that hold a guard. `RAW` is process-global, and two tests taking
+/// and releasing it in parallel would each see the other's changes.
+#[cfg(test)]
+pub(super) fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -151,10 +166,10 @@ mod tests {
     /// The panic hook fires while the interface is still running, because tokio caught
     /// the panic and the process carried on. The restore it does must be the only one,
     /// and the guard must stop drawing from that moment -- a frame drawn after it lands
-    /// on the user's shell. This is the only test that touches `RAW`, so it does not race
-    /// another for the global.
+    /// on the user's shell.
     #[test]
     fn after_the_hook_restores_the_terminal_nothing_draws_or_restores_again() {
+        let _terminal = lock_for_test();
         let mut guard = TerminalGuard::over(TestBackend::new(20, 3)).unwrap();
         let hello =
             |frame: &mut Frame<'_>| frame.render_widget(Paragraph::new("hello"), frame.area());

@@ -274,25 +274,13 @@ struct Channels<'a> {
     fatal_rx: UnboundedReceiver<String>,
 }
 
-/// Where the loop draws: the terminal, or in a test something that counts frames.
-trait Canvas {
-    /// Draw `model`, unless the terminal is no longer ours.
-    fn draw(&mut self, model: &Model) -> anyhow::Result<()>;
-}
-
-impl Canvas for TerminalGuard {
-    fn draw(&mut self, model: &Model) -> anyhow::Result<()> {
-        Self::draw(self, |frame| view(model, frame)).map(|_| ())
-    }
-}
-
 /// Read messages, update, draw. The only loop in tui-do.
 ///
 /// A panicked task is checked for first, every time round, and ends the loop the same
 /// way `q` does -- by returning -- so everything after the loop in [`run`] still runs.
-async fn event_loop(
+async fn event_loop<B: ratatui::backend::Backend>(
     model: &mut Model,
-    screen: &mut impl Canvas,
+    guard: &mut TerminalGuard<B>,
     channels: Channels<'_>,
     store: &Store,
     sync: Option<&Arc<Sync>>,
@@ -306,7 +294,7 @@ async fn event_loop(
     for effect in reload_everything(model) {
         perform(effect, store, sync, tx, fatal);
     }
-    screen.draw(model)?;
+    guard.draw(|frame| view(model, frame))?;
 
     loop {
         let msg = tokio::select! {
@@ -328,7 +316,7 @@ async fn event_loop(
         if !model.running {
             break;
         }
-        screen.draw(model)?;
+        guard.draw(|frame| view(model, frame))?;
     }
     Ok(Exit::Quit)
 }
@@ -1259,6 +1247,7 @@ async fn queue_add(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use ratatui::backend::TestBackend;
     use tokio::sync::mpsc;
     use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
     use tui_do_core::SyncEvent;
@@ -1418,19 +1407,6 @@ mod tests {
         }
     }
 
-    /// A screen that counts the frames drawn on it.
-    #[derive(Default)]
-    struct CountingScreen {
-        frames: usize,
-    }
-
-    impl Canvas for CountingScreen {
-        fn draw(&mut self, _model: &Model) -> anyhow::Result<()> {
-            self.frames += 1;
-            Ok(())
-        }
-    }
-
     /// How long a test waits for a panic to be reported before calling it lost. Generous:
     /// on the unfixed code it is never reported at all, so this only bounds the failure.
     const REPORTED_WITHIN: Duration = Duration::from_secs(5);
@@ -1481,20 +1457,26 @@ mod tests {
     /// not draw again on the way, because the panic hook has already given the terminal
     /// back. On the unfixed code the loop never returned at all.
     #[tokio::test]
+    // The lock only keeps the other guard-holding test off `RAW`; nothing else in this
+    // runtime wants it, so holding it across the loop's awaits cannot deadlock.
+    #[allow(clippy::await_holding_lock)]
     async fn a_panicked_task_ends_the_loop_through_the_normal_exit() {
+        let _terminal = terminal::lock_for_test();
         let store = scratch_store();
         let config = Config::example();
         let mut model = Model::new(&config, tui_do_ui::Scope::All, now(), (120, 40));
         let (tx, rx) = mpsc::unbounded_channel::<Msg>();
         let (fatal, fatal_rx) = Fatal::channel();
+        let mut guard = TerminalGuard::over(TestBackend::new(40, 5)).unwrap();
 
-        // Something already queued behind the panic must not be drawn: the fatal report
-        // is read first.
+        // The task panics, and the panic hook gives the terminal back -- `over` installs
+        // no hook, so this does what it would. A message already queued behind the panic
+        // must not be drawn: the fatal report is read first.
         spawn_effect(&fatal, async { panic!("the sync pass fell over") });
         tokio::time::sleep(Duration::from_millis(50)).await;
+        terminal::restore_to(&mut io::sink());
         tx.send(Msg::Tick(now())).unwrap();
 
-        let mut screen = CountingScreen::default();
         let channels = Channels {
             tx: &tx,
             rx,
@@ -1503,16 +1485,18 @@ mod tests {
         };
         let exit = tokio::time::timeout(
             REPORTED_WITHIN,
-            event_loop(&mut model, &mut screen, channels, &store, None),
+            event_loop(&mut model, &mut guard, channels, &store, None),
         )
         .await
         .expect("the loop kept running after a task panicked")
         .unwrap();
 
         assert_eq!(exit, Exit::Fatal("the sync pass fell over".to_string()));
+        let blank = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 5));
         assert_eq!(
-            screen.frames, 1,
-            "only the first frame, drawn before anything was read, may be drawn"
+            guard.backend().buffer(),
+            &blank,
+            "a frame was drawn after the panic hook gave the terminal back"
         );
         assert!(
             model.running,
