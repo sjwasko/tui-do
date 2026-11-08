@@ -576,7 +576,12 @@ fn to_utc<Tz: TimeZone>(naive: chrono::NaiveDateTime, now: &DateTime<Tz>) -> Opt
     let zone = now.timezone();
     match zone.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
-        chrono::LocalResult::Ambiguous(earlier, _) => Some(earlier.with_timezone(&Utc)),
+        // The earlier instant, compared rather than taken from the first slot: chrono's
+        // own POSIX-rule code, which `chrono::Local` uses for any date past the last
+        // transition in the zone file, returns the later instant first.
+        chrono::LocalResult::Ambiguous(a, b) => {
+            Some(a.with_timezone(&Utc).min(b.with_timezone(&Utc)))
+        }
         chrono::LocalResult::None => {
             // The hour was skipped. Step forward until a real instant appears.
             for extra in 1..=4 {
