@@ -647,16 +647,9 @@ mod tests {
     use chrono::TimeZone;
     use tui_do_core::config::columns::ColumnSpec;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
-    }
-
-    /// The same instant as the reader's clock shows it. Zero offset, so the existing
-    /// expectations below are unchanged; `a_date_is_read_in_the_users_own_zone` is the
-    /// one that puts a real offset on it.
-    fn here() -> ZonedTime {
-        tui_do_core::zone::pinned(now().fixed_offset())
-    }
+    // Zero offset, so the expectations below are unchanged;
+    // `a_date_is_read_in_the_users_own_zone` is the one that puts a real offset on it.
+    use crate::test_clock::{here, now};
 
     fn layout(columns: Vec<ColumnSpec>) -> ColumnLayout {
         ColumnLayout {

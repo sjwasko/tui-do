@@ -325,16 +325,7 @@ fn luminance(r: u8, g: u8, b: u8) -> f32 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap()
-    }
-
-    /// The same instant as the reader's clock shows it.
-    fn here() -> ZonedTime {
-        tui_do_core::zone::pinned(now().fixed_offset())
-    }
+    use crate::test_clock::{here, now};
 
     #[test]
     fn no_colour_means_no_colour() {

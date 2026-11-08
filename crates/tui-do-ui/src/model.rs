@@ -591,12 +591,7 @@ mod tests {
     fn the_active_layout_comes_from_the_config_by_name() {
         let mut config = Config::example();
         config.view.active_layout = Some("compact".to_string());
-        let model = Model::new(
-            &config,
-            Scope::All,
-            tui_do_core::zone::pinned(chrono::Utc::now().fixed_offset()),
-            (120, 40),
-        );
+        let model = Model::new(&config, Scope::All, crate::test_clock::here(), (120, 40));
         assert_eq!(model.layout().name, "compact");
     }
 }

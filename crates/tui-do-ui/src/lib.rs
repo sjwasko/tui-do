@@ -52,6 +52,9 @@ pub mod update;
 pub mod urls;
 pub mod view;
 
+#[cfg(test)]
+mod test_clock;
+
 pub use effect::Effect;
 pub use keymap::{Action, Binding, Key, KEYMAP};
 pub use modal::{Modal, ModalView};
