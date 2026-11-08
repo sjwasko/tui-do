@@ -27,7 +27,10 @@ use chrono::{
 pub enum Zone {
     /// The machine's zone, with its daylight-saving rules. What the runtime uses.
     Local,
-    /// A single offset with no rules. What tests pin `now` to.
+    /// A single offset with no rules, for tests and the smoke harness only.
+    ///
+    /// Production always uses [`Zone::Local`]. A fixed offset is exactly what BUG-20
+    /// was: a date across a daylight-saving change resolved at the wrong offset.
     Fixed(FixedOffset),
 }
 
@@ -36,6 +39,9 @@ pub type ZonedTime = DateTime<Zone>;
 
 /// Pin an instant to its own fixed offset, for a `now` that does not depend on the
 /// machine's zone.
+///
+/// For tests and the smoke harness only. Production always stamps its clock in
+/// [`Zone::Local`]; see [`Zone::Fixed`] for why.
 #[must_use]
 pub fn pinned(at: DateTime<FixedOffset>) -> ZonedTime {
     at.with_timezone(&Zone::Fixed(*at.offset()))
