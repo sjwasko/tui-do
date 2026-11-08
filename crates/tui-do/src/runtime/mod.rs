@@ -1552,14 +1552,23 @@ mod tests {
     fn a_closed_loop_ends_the_input_thread_quietly() {
         // Nobody left to send to is not a failure worth reporting -- the session is
         // already over.
-        let (tx, rx) = LoopTx::channel();
-        drop(rx);
-        let stop = AtomicBool::new(false);
-        read_input(&tx, &stop, |_| {
-            Ok(Some(crossterm::event::Event::Key(
-                crossterm::event::KeyCode::Down.into(),
-            )))
+        // On its own thread, so a reader that ignored the failed send fails this test
+        // rather than hanging the run.
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (tx, rx) = LoopTx::channel();
+            drop(rx);
+            let stop = AtomicBool::new(false);
+            read_input(&tx, &stop, |_| {
+                Ok(Some(crossterm::event::Event::Key(
+                    crossterm::event::KeyCode::Down.into(),
+                )))
+            });
+            let _ = done.send(());
         });
+        finished
+            .recv_timeout(REPORTED_WITHIN)
+            .expect("the input thread kept reading after the loop had gone");
     }
 
     /// A push that panics unwinds through `Pushing`'s `Drop`, so `is_pushing` reads false
