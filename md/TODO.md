@@ -53,7 +53,7 @@ notes cite them — so this says *what order*, not *what number*.
            3b         the MCP server, rendering from that same module
 
   DECIDE   BUG-20 before November. The --json contract before 3a ships.
-           BUG-7 and BUG-9 need a decision, not work.
+           BUG-9 needs a decision, not work. BUG-7 is fixed.
 
   DEFER    4 (Kanban), standalone mode, comments, subtasks
 ```
@@ -1020,7 +1020,7 @@ they are commitments rather than ideas.
 ## Open defects
 
 Tracked in full in `bugs.md`; listed here only so this file is a complete picture.
-BUG-7 and BUG-9 need a decision, BUG-14 needs a measurement, BUG-2 is accepted and will
+BUG-7 is fixed. BUG-9 needs a decision, BUG-14 needs a measurement, BUG-2 is accepted and will
 not be fixed. None are Critical.
 
 ---
