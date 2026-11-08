@@ -1550,8 +1550,8 @@ the keyword as given, so `27.8` typed there still works. The interface's live hi
 reads `Parsed.tokens` from the same `parse`, so it cannot disagree with what is stored.
 
 **`tui-do add` now names what it parsed**: `Added "call mom" to Inbox, due Fri 27 Aug 2027`,
-with `, starts …` the same way and `at HH:MM` only when the time is not the field's default,
-in the local zone (`runtime::dates_said`). Tests: `a_number_in_prose_is_not_a_date` asserts
+with `, starts …` the same way and `at HH:MM` only when the time is not the field's default
+(`DateField::default_time`), in the local zone (`runtime::dates_suffix`). Tests: `a_number_in_prose_is_not_a_date` asserts
 title unchanged, no due, no start and no token over every row above plus the original four;
 it failed on the old code. `a_bare_numeric_date_after_a_keyword_still_parses`,
 `an_unambiguous_date_needs_no_keyword`, `a_due_field_reads_a_bare_numeric_date`, and

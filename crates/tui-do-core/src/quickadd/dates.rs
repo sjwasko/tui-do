@@ -54,6 +54,18 @@ const DUE_TIME: (u32, u32) = (23, 59);
 /// Monday morning.
 const START_TIME: (u32, u32) = (0, 0);
 
+impl DateField {
+    /// The time of day a date for this field means when none was written, as
+    /// `(hour, minute)` local.
+    #[must_use]
+    pub fn default_time(self) -> (u32, u32) {
+        match self {
+            Self::Due => DUE_TIME,
+            Self::Start => START_TIME,
+        }
+    }
+}
+
 /// Find every date phrase in `words`.
 ///
 /// Later phrases for the same field win, so a user who retypes a date gets the one they
@@ -172,10 +184,7 @@ fn at_time<Tz: TimeZone>(
     after: usize,
     now: &DateTime<Tz>,
 ) -> Option<DateTime<Utc>> {
-    let (hour, minute) = time_at(words, after).unwrap_or(match field {
-        DateField::Due => DUE_TIME,
-        DateField::Start => START_TIME,
-    });
+    let (hour, minute) = time_at(words, after).unwrap_or(field.default_time());
     let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
     to_utc(date.and_time(time), now)
 }
