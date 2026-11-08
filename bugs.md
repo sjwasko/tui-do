@@ -48,7 +48,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
-| BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
+| ~~BUG-7~~ | FIXED — three tests, each fails without the fix | yes |
 | BUG-9 | grapheme table against `truncate`/`wrap` | yes |
 | BUG-14 | store-level rollback sequence | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
@@ -58,7 +58,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-7, BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
+| **Decide, then fix** | BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
 | **Verify first** | BUG-14 |
@@ -78,11 +78,11 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | Sync engine | 0 | 5 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
-| Runtime and CLI | 0 | 4 → 3 | 3 |
+| Runtime and CLI | 0 | 4 → 2 | 3 |
 | API client | 0 | 1 → 0 | 1 |
 | **found** | **1** | **17** | **15** |
-| **fixed** | **1** | **8** | **2** |
-| **open** | **0** | **9** | **13** |
+| **fixed** | **1** | **9** | **2** |
+| **open** | **0** | **8** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -490,7 +490,7 @@ The IP row is the one that fails now. Note the fix needs a decision first — wh
 counts as production" is a hostname list, a resolved address, or an explicit config flag —
 because a substring match cannot be made correct.
 
-### BUG-7 — a panicking effect leaves the screen garbled instead of exiting
+### ~~BUG-7~~ — FIXED — a panicking effect leaves the screen garbled instead of exiting
 
 `crates/tui-do/src/runtime/terminal.rs:36-40`. The global panic hook restores the terminal
 on any thread's panic, but tokio catches a spawned effect's panic at the task boundary and
@@ -530,6 +530,36 @@ assert!(matches!(msg, Msg::EffectFailed(_)));
 
 Plus a unit test that `restore()` is idempotent *and* that the guard can still restore after
 the hook has run — the second half is what is broken today.
+
+**Fixed 2026-11-08. A panicking task now ends the session through the same exit `q` takes.**
+Every task the runtime spawns — each effect in `perform`, the sync pass and its event
+forwarder, the tick and timer loops, and `xdg-open`'s blocking call — goes through
+`spawn_effect` (or `spawn_blocking_effect`), which catches the panic inside the task and
+sends its message on a second channel the event loop reads first. The loop returns
+`Exit::Fatal`, `run` drops the guard and still runs `flush_on_exit`, and the panic then
+reaches stderr through `main`'s ordinary error path, exit code 1. The input thread is a
+plain `std::thread` whose panic was just as silent — it would have left an interface with no
+keyboard — so it reports the same way. `TerminalGuard::draw` also refuses to draw once the
+hook has given the terminal back, which closes the one-frame window between the hook firing
+and the loop reading the report.
+
+The report is not a `Msg`. There is nothing for `update` to decide, and a variant would put
+a message in `tui-do-ui`'s vocabulary that the interface must never act on, so the runtime
+handles it before `update` sees anything. The panic is caught *inside* the task rather than
+by a watcher awaiting its `JoinHandle`, because `flush_on_exit` aborts or awaits the running
+sync pass through that handle, and aborting a watcher would only have detached the pass.
+
+**On "the guard can still restore after the hook has run":** that half was a misreading. The
+guard's `Drop` being a no-op after the hook is correct — the hook already restored, and
+nothing re-enters raw mode. What was broken was the loop drawing on, and never exiting.
+
+Tests, each checked to fail with the fix reverted: `a_task_that_panics_reports_it_to_the_loop`
+(a plain `tokio::spawn` reports nothing and the five-second wait runs out),
+`a_panicked_task_ends_the_loop_through_the_normal_exit` (the loop never returns), and
+`after_the_hook_restores_the_terminal_nothing_draws_or_restores_again` in
+`runtime/terminal.rs` (the guard draws onto a terminal the hook gave back). A panic on the
+render thread itself — in `update` or `view` — is not covered and never was silent: it
+unwinds out of `block_on` and ends the process, though without the final flush.
 
 ### ~~BUG-8~~ — FIXED — `tui-do add --offline` swallows a real configuration error
 

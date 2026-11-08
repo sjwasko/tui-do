@@ -11,9 +11,13 @@
 
 mod terminal;
 
+use std::future::Future;
 use std::io::{self, Write};
+use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -83,6 +87,7 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         .with_context(|| format!("could not open the store at {}", store_path.display()))?;
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let (fatal, fatal_rx) = Fatal::channel();
 
     // The interface starts against the cache, whether or not a server is reachable. A
     // missing or unreadable credential costs the user sync, not the application: an
@@ -105,10 +110,7 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     };
 
     let mut guard = TerminalGuard::take()?;
-    let size = guard
-        .terminal()
-        .size()
-        .map_or((120, 40), |s| (s.width, s.height));
+    let size = guard.size().unwrap_or((120, 40));
 
     let mut model = Model::new(&config, scope, now(), size);
     model.theme = Theme::new(color_depth());
@@ -125,38 +127,194 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     }
 
     let stop = Arc::new(AtomicBool::new(false));
-    spawn_input(tx.clone(), Arc::clone(&stop));
-    spawn_ticks(tx.clone(), Arc::clone(&stop));
+    spawn_input(tx.clone(), fatal.clone(), Arc::clone(&stop));
+    spawn_ticks(tx.clone(), &fatal, Arc::clone(&stop));
     if let Some(sync) = sync.clone() {
-        spawn_sync_timer(sync, config.sync.clone(), Arc::clone(&stop), tx.clone());
+        spawn_sync_timer(
+            sync,
+            config.sync.clone(),
+            Arc::clone(&stop),
+            tx.clone(),
+            &fatal,
+        );
     }
 
-    let result = event_loop(&mut model, &mut guard, rx, &tx, &store, sync.as_ref()).await;
+    let channels = Channels {
+        tx: &tx,
+        rx,
+        fatal: &fatal,
+        fatal_rx,
+    };
+    let result = event_loop(&mut model, &mut guard, channels, &store, sync.as_ref()).await;
     stop.store(true, Ordering::SeqCst);
 
-    // The terminal goes back to the user before anything is printed to it.
+    // The terminal goes back to the user before anything is printed to it. After a
+    // panic the hook has done this already, and the drop is a no-op.
     drop(guard);
+    // A panicked task ends the session here too, rather than in the panic hook, so the
+    // last push still gets its chance: the edit made before the panic is usually the one
+    // the user most wants to have landed.
     if let Some(sync) = &sync {
         flush_on_exit(&store, sync).await;
     }
-    result
+    match result? {
+        Exit::Quit => Ok(()),
+        // Returned rather than printed, so `main` reports it on stderr and exits
+        // non-zero, the way every other failure to keep running does.
+        Exit::Fatal(why) => Err(anyhow::anyhow!(
+            "tui-do stopped because a background task panicked: {why}"
+        )),
+    }
+}
+
+/// How the session ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Exit {
+    /// The user quit, or every sender went away.
+    Quit,
+    /// A spawned task panicked. Carries what it said.
+    Fatal(String),
+}
+
+/// The way a panicking task tells the event loop to stop.
+///
+/// Its own channel rather than a [`Msg`] variant. `Msg` belongs to `tui-do-ui`, which is
+/// pure, and there is nothing for `update` to decide here: the process is no longer in a
+/// state anyone can reason about, the panic hook has already handed the terminal back,
+/// and the only correct answer is to stop -- which is the runtime's job, as drawing is.
+/// A variant would put a message into the interface's vocabulary that the interface must
+/// never act on.
+#[derive(Debug, Clone)]
+struct Fatal(UnboundedSender<String>);
+
+impl Fatal {
+    fn channel() -> (Self, UnboundedReceiver<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self(tx), rx)
+    }
+
+    /// Tell the loop to stop. A loop that has already gone has nothing left to stop.
+    fn report(&self, why: String) {
+        let _ = self.0.send(why);
+    }
+}
+
+/// What a panic said, where it said anything readable.
+///
+/// `panic!("literal")` carries a `&str` and `panic!("{x}")` a `String`; anything else
+/// came from `panic_any` and cannot be printed.
+fn describe_panic(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "a panic that carried no message".to_string()
+    }
+}
+
+/// A future that turns a panic during its poll into an `Err`, the async counterpart of
+/// `std::panic::catch_unwind`. Boxed so it is `Unpin` and needs no pin projection.
+struct CatchUnwind<F>(Pin<Box<F>>);
+
+impl<F: Future> Future for CatchUnwind<F> {
+    type Output = Result<F::Output, Box<dyn std::any::Any + Send>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let inner = self.0.as_mut();
+        match std::panic::catch_unwind(AssertUnwindSafe(|| inner.poll(cx))) {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+            Err(payload) => Poll::Ready(Err(payload)),
+        }
+    }
+}
+
+/// Spawn a task whose panic ends the session instead of vanishing.
+///
+/// A plain `tokio::spawn` with its `JoinHandle` dropped is what BUG-7 was: tokio catches
+/// the panic at the task boundary, the panic hook has already restored the terminal, and
+/// the loop goes on drawing over the user's shell. Every task the runtime spawns goes
+/// through here or through [`spawn_blocking_effect`].
+///
+/// The panic is caught inside the task rather than by a second task awaiting this one's
+/// `JoinHandle`, so the handle returned is the task itself. `flush_on_exit` aborts or
+/// awaits the running sync pass through that handle, and aborting a watcher would only
+/// have detached the pass from it.
+fn spawn_effect<F>(fatal: &Fatal, future: F) -> tokio::task::JoinHandle<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let fatal = fatal.clone();
+    tokio::spawn(async move {
+        if let Err(payload) = CatchUnwind(Box::pin(future)).await {
+            fatal.report(describe_panic(payload.as_ref()));
+        }
+    })
+}
+
+/// [`spawn_effect`] for work that blocks a thread.
+fn spawn_blocking_effect<F>(fatal: &Fatal, work: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let fatal = fatal.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(work)) {
+            fatal.report(describe_panic(payload.as_ref()));
+        }
+    });
+}
+
+/// Everything the event loop reads from, and hands to the effects it runs.
+struct Channels<'a> {
+    tx: &'a UnboundedSender<Msg>,
+    rx: UnboundedReceiver<Msg>,
+    fatal: &'a Fatal,
+    fatal_rx: UnboundedReceiver<String>,
+}
+
+/// Where the loop draws: the terminal, or in a test something that counts frames.
+trait Canvas {
+    /// Draw `model`, unless the terminal is no longer ours.
+    fn draw(&mut self, model: &Model) -> anyhow::Result<()>;
+}
+
+impl Canvas for TerminalGuard {
+    fn draw(&mut self, model: &Model) -> anyhow::Result<()> {
+        Self::draw(self, |frame| view(model, frame)).map(|_| ())
+    }
 }
 
 /// Read messages, update, draw. The only loop in tui-do.
+///
+/// A panicked task is checked for first, every time round, and ends the loop the same
+/// way `q` does -- by returning -- so everything after the loop in [`run`] still runs.
 async fn event_loop(
     model: &mut Model,
-    guard: &mut TerminalGuard,
-    mut rx: UnboundedReceiver<Msg>,
-    tx: &UnboundedSender<Msg>,
+    screen: &mut impl Canvas,
+    channels: Channels<'_>,
     store: &Store,
     sync: Option<&Arc<Sync>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Exit> {
+    let Channels {
+        tx,
+        mut rx,
+        fatal,
+        mut fatal_rx,
+    } = channels;
     for effect in reload_everything(model) {
-        perform(effect, store, sync, tx);
+        perform(effect, store, sync, tx, fatal);
     }
-    draw(model, guard)?;
+    screen.draw(model)?;
 
-    while let Some(msg) = rx.recv().await {
+    loop {
+        let msg = tokio::select! {
+            biased;
+            Some(why) = fatal_rx.recv() => return Ok(Exit::Fatal(why)),
+            msg = rx.recv() => msg,
+        };
+        let Some(msg) = msg else { break };
         let mut effects = update(model, msg);
         // Drain whatever else has already arrived before drawing. A sync pass finishing
         // sends four answers at once, and drawing between each of them is three wasted
@@ -165,33 +323,31 @@ async fn event_loop(
             effects.extend(update(model, next));
         }
         for effect in effects {
-            perform(effect, store, sync, tx);
+            perform(effect, store, sync, tx, fatal);
         }
         if !model.running {
             break;
         }
-        draw(model, guard)?;
+        screen.draw(model)?;
     }
-    Ok(())
-}
-
-fn draw(model: &Model, guard: &mut TerminalGuard) -> anyhow::Result<()> {
-    guard
-        .terminal()
-        .draw(|frame| view(model, frame))
-        .context("could not draw to the terminal")?;
-    Ok(())
+    Ok(Exit::Quit)
 }
 
 /// Execute one effect, off the render loop.
 ///
 /// Every arm spawns and returns immediately. Nothing here awaits inline, because this
 /// function is called from the loop that also draws.
-fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &UnboundedSender<Msg>) {
+fn perform(
+    effect: Effect,
+    store: &Store,
+    sync: Option<&Arc<Sync>>,
+    tx: &UnboundedSender<Msg>,
+    fatal: &Fatal,
+) {
     match effect {
         Effect::LoadTasks { id, filter, sort } => {
             let (store, tx) = (store.clone(), tx.clone());
-            tokio::spawn(async move {
+            spawn_effect(fatal, async move {
                 let msg = match store.tasks(filter, sort).await {
                     Ok(tasks) => Msg::TasksLoaded { id, tasks },
                     Err(error) => Msg::StoreFailed(error.to_string()),
@@ -201,7 +357,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         Effect::LoadProjects => {
             let (store, tx) = (store.clone(), tx.clone());
-            tokio::spawn(async move {
+            spawn_effect(fatal, async move {
                 let msg = match store
                     .projects(ProjectFilter::default(), ProjectSort::default())
                     .await
@@ -214,7 +370,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         Effect::LoadLabels => {
             let (store, tx) = (store.clone(), tx.clone());
-            tokio::spawn(async move {
+            spawn_effect(fatal, async move {
                 let msg = match store
                     .labels(LabelFilter::default(), LabelSort::default())
                     .await
@@ -227,7 +383,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         Effect::LoadCounts => {
             let (store, tx) = (store.clone(), tx.clone());
-            tokio::spawn(async move {
+            spawn_effect(fatal, async move {
                 let msg = match store.project_task_counts().await {
                     Ok(counts) => Msg::CountsLoaded(counts),
                     Err(error) => Msg::StoreFailed(error.to_string()),
@@ -237,7 +393,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         Effect::LoadPending => {
             let (store, tx) = (store.clone(), tx.clone());
-            tokio::spawn(async move {
+            spawn_effect(fatal, async move {
                 if let Ok(health) = store.queue_health().await {
                     let _ = tx.send(Msg::PendingLoaded(health));
                 }
@@ -245,7 +401,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         }
         Effect::RememberProject(project) => {
             let store = store.clone();
-            tokio::spawn(async move {
+            spawn_effect(fatal, async move {
                 let value = project.map_or_else(String::new, |id| id.get().to_string());
                 // A failure here costs the user their landing project next launch. It is
                 // not worth a toast in front of the task they are reading.
@@ -255,7 +411,8 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
         Effect::Apply(mutation) => {
             let (store, tx) = (store.clone(), tx.clone());
             let sync = sync.cloned();
-            tokio::spawn(async move {
+            let fatal_for_push = fatal.clone();
+            spawn_effect(fatal, async move {
                 match store.queue(mutation).await {
                     // A create is the one mutation whose id the interface did not know
                     // when it drew the row: `Store::queue` allocates the provisional id
@@ -278,18 +435,30 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
                 // push rather than one each.
                 let _ = tx.send(Msg::Reload);
                 if let Some(sync) = sync {
-                    spawn_sync(sync, tx, Pass::Push, Trigger::Scheduled);
+                    spawn_sync(sync, tx, &fatal_for_push, Pass::Push, Trigger::Scheduled);
                 }
             });
         }
         Effect::SyncNow => {
             if let Some(sync) = sync {
-                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Delta, Trigger::Asked);
+                spawn_sync(
+                    Arc::clone(sync),
+                    tx.clone(),
+                    fatal,
+                    Pass::Delta,
+                    Trigger::Asked,
+                );
             }
         }
         Effect::SyncFull => {
             if let Some(sync) = sync {
-                spawn_sync(Arc::clone(sync), tx.clone(), Pass::Full, Trigger::Asked);
+                spawn_sync(
+                    Arc::clone(sync),
+                    tx.clone(),
+                    fatal,
+                    Pass::Full,
+                    Trigger::Asked,
+                );
             }
         }
         // The loop notices `model.running` rather than being killed from here, so the
@@ -299,7 +468,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &Unbound
             // `spawn_blocking` rather than `tokio::process`, which would need another
             // tokio feature for one call. The opener hands the URL to a handler and exits
             // immediately, so this waits on a fork-exec and not on a browser.
-            tokio::task::spawn_blocking(move || {
+            spawn_blocking_effect(fatal, move || {
                 let result = std::process::Command::new(URL_OPENER)
                     .arg(&url)
                     // Inherited handles would let the handler write over the alternate
@@ -425,7 +594,13 @@ const fn again_code(pass: Pass) -> u8 {
     }
 }
 
-fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass, trigger: Trigger) {
+fn spawn_sync(
+    sync: Arc<Sync>,
+    tx: UnboundedSender<Msg>,
+    fatal: &Fatal,
+    pass: Pass,
+    trigger: Trigger,
+) {
     /// One pass at a time. Two overlapping passes would push the same queue twice, and
     /// the queue is ordered — an entry sent twice is a task created twice.
     static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -451,11 +626,13 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass, trigger: Tr
         }
         return;
     }
-    let handle = tokio::spawn(async move {
+    let fatal_inner = fatal.clone();
+    let handle = spawn_effect(fatal, async move {
+        let fatal = fatal_inner;
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let forward = {
             let tx = tx.clone();
-            tokio::spawn(async move {
+            spawn_effect(&fatal, async move {
                 while let Some(event) = events_rx.recv().await {
                     let _ = tx.send(Msg::Sync(event));
                 }
@@ -495,13 +672,13 @@ fn spawn_sync(sync: Arc<Sync>, tx: UnboundedSender<Msg>, pass: Pass, trigger: Tr
             Trigger::Scheduled
         };
         match AGAIN.swap(NOTHING_AGAIN, Ordering::SeqCst) {
-            PUSH_AGAIN => spawn_sync(sync, tx, Pass::Push, again_trigger),
+            PUSH_AGAIN => spawn_sync(sync, tx, &fatal, Pass::Push, again_trigger),
             // `r` during the startup pull landed here and was dropped: the model had
             // already been told a sync was starting, so the status line said "Syncing"
             // and the toast promised changed tasks, and then nothing ran until the
             // five-minute timer. Every code `again_code` can produce needs an arm.
-            DELTA_AGAIN => spawn_sync(sync, tx, Pass::Delta, again_trigger),
-            FULL_AGAIN => spawn_sync(sync, tx, Pass::Full, again_trigger),
+            DELTA_AGAIN => spawn_sync(sync, tx, &fatal, Pass::Delta, again_trigger),
+            FULL_AGAIN => spawn_sync(sync, tx, &fatal, Pass::Full, again_trigger),
             _ => {}
         }
     });
@@ -655,34 +832,46 @@ fn longer_project(projects: &[tui_do_core::models::Project], name: &str) -> Opti
 ///
 /// crossterm's reader blocks, so it lives on its own thread rather than in the async
 /// runtime, and polls so it can notice that tui-do is shutting down.
-fn spawn_input(tx: UnboundedSender<Msg>, stop: Arc<AtomicBool>) {
+///
+/// A panic on a plain thread is as silent as one in a task: the thread ends, the hook
+/// restores the terminal, and the interface carries on with no keyboard, so `q` can no
+/// longer reach it. So this thread reports its panic the way a task does.
+fn spawn_input(tx: UnboundedSender<Msg>, fatal: Fatal, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        while !stop.load(Ordering::SeqCst) {
-            match crossterm::event::poll(INPUT_POLL) {
-                Ok(true) => match crossterm::event::read() {
-                    Ok(crossterm::event::Event::Key(key)) => {
-                        if tx.send(Msg::Key(key)).is_err() {
-                            return;
-                        }
-                    }
-                    Ok(crossterm::event::Event::Resize(width, height)) => {
-                        if tx.send(Msg::Resize(width, height)).is_err() {
-                            return;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => return,
-                },
-                Ok(false) => {}
-                Err(_) => return,
-            }
+        let reading = AssertUnwindSafe(|| read_input(&tx, &stop));
+        if let Err(payload) = std::panic::catch_unwind(reading) {
+            fatal.report(describe_panic(payload.as_ref()));
         }
     });
 }
 
+/// The input thread's body: forward keys and resizes until told to stop.
+fn read_input(tx: &UnboundedSender<Msg>, stop: &AtomicBool) {
+    while !stop.load(Ordering::SeqCst) {
+        match crossterm::event::poll(INPUT_POLL) {
+            Ok(true) => match crossterm::event::read() {
+                Ok(crossterm::event::Event::Key(key)) => {
+                    if tx.send(Msg::Key(key)).is_err() {
+                        return;
+                    }
+                }
+                Ok(crossterm::event::Event::Resize(width, height)) => {
+                    if tx.send(Msg::Resize(width, height)).is_err() {
+                        return;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => return,
+            },
+            Ok(false) => {}
+            Err(_) => return,
+        }
+    }
+}
+
 /// Report the time, so `update` never has to read a clock.
-fn spawn_ticks(tx: UnboundedSender<Msg>, stop: Arc<AtomicBool>) {
-    tokio::spawn(async move {
+fn spawn_ticks(tx: UnboundedSender<Msg>, fatal: &Fatal, stop: Arc<AtomicBool>) {
+    spawn_effect(fatal, async move {
         let mut interval = tokio::time::interval(TICK);
         loop {
             interval.tick().await;
@@ -699,11 +888,13 @@ fn spawn_sync_timer(
     settings: tui_do_core::config::SyncConfig,
     stop: Arc<AtomicBool>,
     tx: UnboundedSender<Msg>,
+    fatal: &Fatal,
 ) {
     if !settings.enabled {
         return;
     }
-    tokio::spawn(async move {
+    let fatal_inner = fatal.clone();
+    spawn_effect(fatal, async move {
         let mut interval =
             tokio::time::interval(Duration::from_secs(settings.interval_seconds.max(30)));
         loop {
@@ -714,6 +905,7 @@ fn spawn_sync_timer(
             spawn_sync(
                 Arc::clone(&sync),
                 tx.clone(),
+                &fatal_inner,
                 Pass::Full,
                 Trigger::Scheduled,
             );
@@ -1216,6 +1408,108 @@ mod tests {
                 "{pass:?} encodes to {code}, which the re-dispatch drops on the floor"
             );
         }
+    }
+
+    /// A screen that counts the frames drawn on it.
+    #[derive(Default)]
+    struct CountingScreen {
+        frames: usize,
+    }
+
+    impl Canvas for CountingScreen {
+        fn draw(&mut self, _model: &Model) -> anyhow::Result<()> {
+            self.frames += 1;
+            Ok(())
+        }
+    }
+
+    /// How long a test waits for a panic to be reported before calling it lost. Generous:
+    /// on the unfixed code it is never reported at all, so this only bounds the failure.
+    const REPORTED_WITHIN: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn a_task_that_panics_reports_it_to_the_loop() {
+        // What `perform` used to do was `tokio::spawn` and drop the handle, and tokio
+        // swallowed the panic at the task boundary: nothing reached the loop at all.
+        let (fatal, mut fatal_rx) = Fatal::channel();
+        spawn_effect(&fatal, async {
+            panic!("an effect fell over: {}", 7);
+        });
+        let why = tokio::time::timeout(REPORTED_WITHIN, fatal_rx.recv())
+            .await
+            .expect("a panicking task must report something")
+            .expect("the fatal channel is still open");
+        assert_eq!(why, "an effect fell over: 7");
+
+        // A literal payload, from the blocking side.
+        spawn_blocking_effect(&fatal, || panic!("blocking work fell over"));
+        let why = tokio::time::timeout(REPORTED_WITHIN, fatal_rx.recv())
+            .await
+            .expect("a panicking blocking task must report something")
+            .expect("the fatal channel is still open");
+        assert_eq!(why, "blocking work fell over");
+    }
+
+    #[tokio::test]
+    async fn a_task_that_finishes_reports_nothing_and_keeps_its_handle() {
+        // The handle is the task's own, so `flush_on_exit` can still await it.
+        let (fatal, mut fatal_rx) = Fatal::channel();
+        spawn_effect(&fatal, async {}).await.unwrap();
+        assert!(
+            fatal_rx.try_recv().is_err(),
+            "a clean task reported a panic"
+        );
+    }
+
+    #[test]
+    fn a_panic_payload_is_described_whatever_it_carries() {
+        assert_eq!(describe_panic(&"literal"), "literal");
+        assert_eq!(describe_panic(&"formatted".to_string()), "formatted");
+        assert_eq!(describe_panic(&42_u8), "a panic that carried no message");
+    }
+
+    /// The other half of BUG-7: once a task has panicked, the loop must leave the way `q`
+    /// leaves -- by returning, so `run` drops the guard and flushes the outbox -- and must
+    /// not draw again on the way, because the panic hook has already given the terminal
+    /// back. On the unfixed code the loop never returned at all.
+    #[tokio::test]
+    async fn a_panicked_task_ends_the_loop_through_the_normal_exit() {
+        let store = scratch_store();
+        let config = Config::example();
+        let mut model = Model::new(&config, tui_do_ui::Scope::All, now(), (120, 40));
+        let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+        let (fatal, fatal_rx) = Fatal::channel();
+
+        // Something already queued behind the panic must not be drawn: the fatal report
+        // is read first.
+        spawn_effect(&fatal, async { panic!("the sync pass fell over") });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(Msg::Tick(now())).unwrap();
+
+        let mut screen = CountingScreen::default();
+        let channels = Channels {
+            tx: &tx,
+            rx,
+            fatal: &fatal,
+            fatal_rx,
+        };
+        let exit = tokio::time::timeout(
+            REPORTED_WITHIN,
+            event_loop(&mut model, &mut screen, channels, &store, None),
+        )
+        .await
+        .expect("the loop kept running after a task panicked")
+        .unwrap();
+
+        assert_eq!(exit, Exit::Fatal("the sync pass fell over".to_string()));
+        assert_eq!(
+            screen.frames, 1,
+            "only the first frame, drawn before anything was read, may be drawn"
+        );
+        assert!(
+            model.running,
+            "the loop left on the fatal report, not because update was told to quit"
+        );
     }
 
     /// A store with nothing in it, for a test to queue against without touching
