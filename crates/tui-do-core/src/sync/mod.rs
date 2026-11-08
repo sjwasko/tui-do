@@ -204,7 +204,7 @@ pub enum SyncEvent {
     ///
     /// A variant of its own rather than another [`Self::Progress`]: that one counts rows
     /// *stored* by a pull, which go up, and this counts entries still to send, which go
-    /// down. Throttled to one per [`PROGRESS_EVERY`], so a pass shorter than that emits
+    /// down. Throttled to one per quarter second, so a pass shorter than that emits
     /// none and [`Self::Pushed`] remains the word on how it ended.
     Sending {
         /// How many entries were queued when the drain picked its next one -- blocked
@@ -334,7 +334,7 @@ pub struct Sync {
 /// and `Pushed` the status line held 1781 the whole way. One event per entry would be as
 /// many extra messages through the event loop as there are entries; a quarter second is
 /// faster than anyone reads a counter.
-pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// Holds [`Sync::pushing`] true for as long as it lives.
 ///
@@ -378,10 +378,11 @@ impl Sync {
         }
     }
 
-    /// Report push progress at most once per `interval` rather than [`PROGRESS_EVERY`].
+    /// Report push progress at most once per `interval` rather than every 250 ms.
     ///
     /// For tests: a mock answers in microseconds, so proving the drain reports anything
     /// at all needs an interval shorter than the drain.
+    #[doc(hidden)]
     #[must_use]
     pub fn with_progress_every(mut self, interval: Duration) -> Self {
         self.progress_every = interval;
