@@ -59,12 +59,13 @@ const START_TIME: (u32, u32) = (0, 0);
 /// Later phrases for the same field win, so a user who retypes a date gets the one they
 /// meant. Returns matches in input order.
 ///
-/// `date_expected` says the whole input is a date field rather than a sentence, which
-/// counts as a keyword for every phrase in it: see [`Keyword`].
+/// `unwritten` is the [`Keyword`] a phrase has when no `due` or `start` was typed in front
+/// of it: [`Keyword::Absent`] in a sentence, [`Keyword::Given`] in a field that holds
+/// nothing but a date.
 pub fn find<Tz: TimeZone>(
     words: &[Word],
     now: &DateTime<Tz>,
-    date_expected: bool,
+    unwritten: Keyword,
 ) -> Vec<DateMatch> {
     let mut found = Vec::new();
     let mut index = 0;
@@ -73,8 +74,7 @@ pub fn find<Tz: TimeZone>(
         // An explicit keyword names the field and the phrase follows it.
         let (field, phrase_start, keyword) = match keyword_at(words, index) {
             Some((field, next)) => (field, next, Keyword::Given),
-            None if date_expected => (DateField::Due, index, Keyword::Given),
-            None => (DateField::Due, index, Keyword::Absent),
+            None => (DateField::Due, index, unwritten),
         };
 
         if let Some((at, consumed)) = phrase(words, phrase_start, now, field, keyword) {
@@ -105,7 +105,7 @@ pub fn find<Tz: TimeZone>(
 /// characters from the title and sets a due date nobody asked for (BUG-24). A month name,
 /// a four-digit year or a word is unambiguous and needs no keyword.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Keyword {
+pub enum Keyword {
     /// `due 27.8`, `start 27/08`, or a field that holds nothing but a date.
     Given,
     /// A phrase found in the middle of a sentence.
@@ -650,7 +650,9 @@ mod tests {
     }
 
     fn resolve(input: &str) -> Option<DateMatch> {
-        find(&split(input), &now(), false).into_iter().next()
+        find(&split(input), &now(), Keyword::Absent)
+            .into_iter()
+            .next()
     }
 
     /// The local wall-clock rendering of a match, which is what the user meant.
@@ -839,7 +841,11 @@ mod tests {
 
     #[test]
     fn start_and_due_are_both_found() {
-        let matches = find(&split("Ship it start monday due friday"), &now(), false);
+        let matches = find(
+            &split("Ship it start monday due friday"),
+            &now(),
+            Keyword::Absent,
+        );
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].field, DateField::Start);
         assert_eq!(matches[1].field, DateField::Due);
@@ -847,7 +853,7 @@ mod tests {
 
     #[test]
     fn the_colon_form_of_start_works() {
-        let matches = find(&split("Ship it start:eom"), &now(), false);
+        let matches = find(&split("Ship it start:eom"), &now(), Keyword::Absent);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].field, DateField::Start);
         assert_eq!(
@@ -927,7 +933,7 @@ mod tests {
         }
 
         fn at<T: TimeZone>(input: &str, now: &DateTime<T>) -> DateTime<Utc> {
-            find(&split(input), now, false)
+            find(&split(input), now, Keyword::Absent)
                 .into_iter()
                 .next()
                 .expect("a date should be found")

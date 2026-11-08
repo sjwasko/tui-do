@@ -178,7 +178,7 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
         remaining.retain(|w| !used.contains(&w.range.start));
     }
 
-    for found in dates::find(&remaining, now, false) {
+    for found in dates::find(&remaining, now, dates::Keyword::Absent) {
         match found.field {
             DateField::Due => parsed.due_date = Some(found.at),
             DateField::Start => parsed.start_date = Some(found.at),
@@ -205,7 +205,7 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
 /// decimal or a fraction, but in a date field a date is the only thing they can be.
 #[must_use]
 pub fn parse_due<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Option<DateTime<Utc>> {
-    dates::find(&words::split(input), now, true)
+    dates::find(&words::split(input), now, dates::Keyword::Given)
         .into_iter()
         .rev()
         .find(|found| found.field == DateField::Due)
