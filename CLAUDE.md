@@ -27,6 +27,16 @@ source for `Store`, `.await`, `spawn_blocking` and the three crate names.
 *Why:* the project tui-do replaces awaited network calls while holding a lock on its
 application state, freezing the terminal for the duration of every slow request.
 
+**One filesystem call does reach the render thread, and it is accepted.** `Model.now` is
+in `Zone::Local` (BUG-20, below), so every offset lookup in `relative_date`, `Theme::due`
+and `past_due_note` goes through `chrono::Local`'s thread-local cache. That cache re-reads
+`TZ` and `stat`s `/etc/localtime` when it is more than a second old, and re-parses the zone
+only if one of them changed — so at most about one `stat` a second, from inside chrono, and
+nothing awaited. The rule exists to stop a network round trip holding the terminal, and a
+cached `stat` of a local file is not that. If profiling ever shows it in a frame, the fix
+is for the runtime to resolve the offsets the frame needs and hand them in with
+`Msg::Tick`, not to go back to a fixed offset.
+
 **2. No `show_x_modal: bool` fields.**
 Screen and modal state is `enum Screen` plus a `Vec<Modal>` stack. Adding a modal means
 adding one enum variant.
