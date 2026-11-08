@@ -61,6 +61,7 @@ throughout, both learned the hard way in this pass:
 | **Decide, then fix** | BUG-7, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
+| **Found by the BUG-9 sweep** | BUG-26 — text input steps per `char`, so Backspace can delete half a flag; mechanical, same fix as BUG-9 |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
@@ -544,8 +545,8 @@ not "do not tell me sending is broken".
 
 ### ~~BUG-9~~ — FIXED — `truncate` and `wrap` split graphemes
 
-`crates/tui-do-ui/src/rows.rs:472-494, 540-556`. Both operate per-`char`, not per-grapheme
-(there is no `unicode-segmentation` dependency), so a flag or ZWJ emoji sequence can be cut
+`crates/tui-do-ui/src/rows.rs`, `truncate` and `wrap`. *As filed:* both operated per-`char`,
+not per-grapheme (the crate did not declare `unicode-segmentation`), so a flag or ZWJ emoji sequence can be cut
 mid-glyph and the cell corrupted. No panic — `unicode-width` keeps the arithmetic sound —
 but the display is wrong.
 
@@ -574,9 +575,12 @@ in `Cargo.lock` by way of crossterm, so declaring it directly added one line to 
 and nothing to the build. `truncate` and `wrap`'s long-word break now both cut through one
 helper, `take_graphemes`, which measures each grapheme with `UnicodeWidthStr::width`. A
 word whose first glyph is wider than the column now becomes `…` instead of pushing blank
-rows. Three table tests — a ZWJ family, a flag, a combining mark, and a word of four flags,
-across widths 1 to 6 — assert the width, no trailing ZWJ or lone regional indicator, and
+rows. Three table tests — over a ZWJ family, a flag, a combining mark, a mix of all three, and
+a word of four flags, across widths 1 to 6 — assert the width, no trailing ZWJ or lone regional indicator, and
 that every line is whole graphemes of the input. All three failed on the old code.
+
+The sweep for other display cuts found none — everything goes through `truncate`/`wrap`. It
+did find text *input* still counting per `char`, which is filed as BUG-26.
 
 ### ~~BUG-10~~ — FIXED — a percent-width column can collapse to width 1
 
@@ -1475,6 +1479,26 @@ needing a kill.
 passes today only because the test box has no config; on a box that *has* one, `brew test`
 would start the interface under a non-TTY stdin and hit this. The formula's test is resting
 on an assumption it does not state.
+
+### BUG-26 — text input moves and deletes per `char`, so a cursor can land inside a glyph
+
+Found 2026-11-08 by the BUG-9 sweep, which fixed display and left input alone on purpose.
+The edit field counts its cursor in `char`s: `modal.rs:35` starts it at
+`value.chars().count()`, and `modal.rs:132,137` (`len`, `byte_offset`) move and delete one
+`char` at a time. So Backspace after a flag removes half of it and leaves a lone regional
+indicator, and Left/Right step into a ZWJ sequence. The caret is drawn from the same count
+(`view.rs:1210,1331`), and the edit box's own wrap in `rows.rs` `edit_layout` breaks and maps
+caret offsets per `char`, so it can split a glyph across lines exactly as `wrap` did. The
+picker caret (`view.rs:954`) uses `chars().count()` where it wants display width, so it sits
+in the wrong column after wide or combining input.
+
+Not data loss in the common case — the stored title is whatever the field holds — but a
+deleted half-flag *is* stored. The fix is the same as BUG-9's: step by
+`grapheme_indices`, measure with `UnicodeWidthStr`. `help_column_width` (`view.rs:792`) also
+counts `chars()` rather than width; harmless while the help text is ASCII.
+
+**How to test it.** Pure `Input` tests: a field holding `a🇬🇧b`, Backspace from the end twice,
+must leave `a`; Left from the end twice must put the cursor before the flag, never inside.
 
 ## Minor
 
