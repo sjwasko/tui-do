@@ -869,6 +869,11 @@ mod tests {
     /// date, never back through `now`'s zone. Rendering through `now` is a round trip
     /// that returns the day asked for however wrong the stored instant is, which is why
     /// the tests above could not see this.
+    ///
+    /// These cover the parser, not the wiring. `find` was always generic over the zone,
+    /// so handed a `chrono_tz` zone it passed these before BUG-20 was fixed; what was
+    /// wrong was the fixed-offset clock the runtime passed it. `tests/zone.rs` proves the
+    /// wiring, through `Zone::Local`.
     mod across_dst {
         use super::*;
         use chrono_tz::America::{Havana, New_York};
