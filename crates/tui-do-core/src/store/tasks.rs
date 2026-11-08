@@ -503,7 +503,10 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
         params![task.id.get()],
     )?;
     for label in &task.labels {
-        upsert_label(tx, label, now)?;
+        // A provisional label whose create is gone is dropped, not resurrected (BUG-14).
+        if !upsert_label(tx, label, now)? {
+            continue;
+        }
         tx.execute(
             "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
             params![task.id.get(), label.id.get()],

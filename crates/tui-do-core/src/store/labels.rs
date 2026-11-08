@@ -209,10 +209,29 @@ impl Store {
     }
 }
 
-/// Write one label.
+/// Write one label, and answer whether it was written.
 ///
 /// Shared with the task upsert, which sees labels embedded in tasks.
-pub(super) fn upsert_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Result<()> {
+///
+/// **A provisional label is written only while its `CreateLabel` is queued.** Without
+/// that, a label is only as dead as the last copy of it: a queued `DeleteTask` or
+/// `UpdateTask` carries the task's labels in `before`, `sync::references` leaves both
+/// queued when the create is rejected (a task body's labels never reach the wire), and
+/// rolling either back later re-wrote label `-1` after the create's rollback had deleted
+/// it -- a row that never settles and never syncs (BUG-14). A skipped label answers
+/// `false`, and the caller must not attach it either: `task_labels` would reference a
+/// row that does not exist.
+///
+/// `Store::queue` inserts a create's outbox row *before* applying it, so the create
+/// itself passes this check.
+pub(super) fn upsert_label(
+    tx: &Transaction<'_>,
+    label: &Label,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    if label.id.get() < 0 && !is_being_created(tx, label.id)? {
+        return Ok(false);
+    }
     if let Some(creator) = &label.created_by {
         upsert_user(tx, creator)?;
     }
@@ -240,7 +259,21 @@ pub(super) fn upsert_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Ut
             now.to_rfc3339(),
         ],
     )?;
-    Ok(())
+    Ok(true)
+}
+
+/// Whether a `CreateLabel` for this label is still queued.
+///
+/// Filters on `subject_kind`: provisional task `-1` and label `-1` share a value in the
+/// untyped `subject_id` column, and a queued `CreateTask` must not keep a label alive.
+fn is_being_created(tx: &Transaction<'_>, label: LabelId) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT exists(SELECT 1 FROM outbox
+                        WHERE subject_id = ?1 AND subject_kind = 'label'
+                          AND kind = 'create_label')",
+        params![label.get()],
+        |row| row.get::<_, i64>(0),
+    )? == 1)
 }
 
 /// The labels attached to a task.

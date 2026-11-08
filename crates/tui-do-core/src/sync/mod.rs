@@ -1069,9 +1069,10 @@ fn references(mutation: &Mutation, label: LabelId) -> bool {
         // A queued `DeleteTask.before` can also carry the rejected label -- and
         // `retarget_label` swaps it there too, for the same reason. `false` here is
         // still right for what this function actually guards (the wire): a delete sends
-        // no body. Rolling one back does re-run `upsert_task(before)` locally, which can
-        // resurrect a label row the `CreateLabel` rollback just deleted; considered and
-        // left as a separate, narrower problem from the one this function solves.
+        // no body. Rolling one back re-runs `upsert_task(before)` locally, and that used
+        // to resurrect the label row the `CreateLabel` rollback had just deleted (BUG-14,
+        // and the same through `UpdateTask`). The store closes it instead: `upsert_label`
+        // writes a provisional label only while its `CreateLabel` is still queued.
         Mutation::CreateTask { .. }
         | Mutation::UpdateTask { .. }
         | Mutation::CreateLabel { .. }

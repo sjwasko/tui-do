@@ -50,7 +50,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
 | BUG-9 | grapheme table against `truncate`/`wrap` | yes |
-| BUG-14 | store-level rollback sequence | yes |
+| ~~BUG-14~~ | FIXED — five store-level rollback tests, four that failed before the fix | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 
@@ -61,7 +61,6 @@ throughout, both learned the hard way in this pass:
 | **Decide, then fix** | BUG-7, BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
-| **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
@@ -90,7 +89,8 @@ Two things came back clean that were expected to be the weak points, and both we
 properly rather than assumed:
 
 - **All seven `subject_id` SQL sites correctly filter on `subject_kind`** — verified
-  crate-wide, not just in `outbox.rs`. There is no eighth unfiltered site. This is the
+  crate-wide, not just in `outbox.rs`. There is no eighth unfiltered site. (The BUG-14
+  fix added an eighth, `labels::is_being_created`, and it filters on the kind too.) This is the
   invariant `CLAUDE.md` says has already been got wrong twice.
 - **`Reach::Incremental` never runs the retain step.** The delete-safety separation holds on
   every path, `is_archived=true` is still passed, and all three `is_already_done` arms plus
@@ -627,7 +627,18 @@ the real decision, spells out that the two disagree on 401 and `Deserialize`, an
 BUG-4. **Collapsing them into one is not done**, because which classification is correct
 *is* BUG-4, and that is an open decision.
 
-### BUG-14 — a rolled-back `DeleteTask` can resurrect a phantom label row
+### ~~BUG-14~~ — FIXED — a rolled-back `DeleteTask` can resurrect a phantom label row
+
+**Fixed.** `upsert_label` now writes a provisional label (id < 0) only while a
+`CreateLabel` for it is still queued, and answers whether it wrote; `upsert_task`, an
+attach, and a detach's rollback skip the `task_labels` row when it did not. `UpdateTask`
+had the same hole, since its rollback is also `upsert_task(before)`, and so did a
+`DetachLabel` queued after the create was gone (an undo built from a stale copy). `Store::queue`
+now inserts each outbox row before applying it, so a create passes its own check. The
+lookup filters on `subject_kind = 'label'`; `a_queued_task_create_does_not_pass_for_a_label_create`
+pins that, and `a_provisional_label_still_being_created_survives_a_rolled_back_delete`
+pins that the guard does not over-delete.
+
 
 `crates/tui-do-core/src/sync/mod.rs:938-953` with `outbox.rs:401-402`. `references()`
 deliberately excludes `DeleteTask` from a failed `CreateLabel`'s blast radius — correct for
