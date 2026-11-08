@@ -612,12 +612,6 @@ fn spawn_sync(sync: Arc<Sync>, tx: LoopTx, pass: Pass, trigger: Trigger) {
             (Pass::Delta, Trigger::Asked) => engine.asked(Reach::Incremental).await.map(|_| ()),
             (Pass::Full, Trigger::Asked) => engine.asked(Reach::Full).await.map(|_| ()),
         };
-        if let Err(error) = outcome {
-            let _ = tx.send(Msg::Sync(tui_do_core::SyncEvent::Failed {
-                phase: tui_do_core::sync::Phase::Pull,
-                message: error.to_string(),
-            }));
-        }
         // Drop the engine so its sender closes, then let the forwarder finish draining.
         //
         // This used to `abort()` here, which raced the last event out of the channel --
@@ -627,6 +621,14 @@ fn spawn_sync(sync: Arc<Sync>, tx: LoopTx, pass: Pass, trigger: Trigger) {
         // the screen, which is exactly what it looked like from the outside.
         drop(engine);
         let _ = forward.await;
+        // Only after the forwarder has finished: sent before it, a `Sending` still in
+        // the channel lands after `Failed` and leaves "sending" on screen for good.
+        if let Err(error) = outcome {
+            let _ = tx.send(Msg::Sync(tui_do_core::SyncEvent::Failed {
+                phase: tui_do_core::sync::Phase::Pull,
+                message: error.to_string(),
+            }));
+        }
         RUNNING.store(false, Ordering::SeqCst);
         // Whatever was asked for while this pass was running still has to happen.
         let again_trigger = if AGAIN_ASKED.swap(false, Ordering::SeqCst) {
