@@ -1505,7 +1505,11 @@ must leave `a`; Left from the end twice must put the cursor before the flag, nev
 boundary. Backspace, Delete, Left and Right step one grapheme through `grapheme_indices`,
 and the caret column is `TextInput::caret_column`, the display width of the text before
 the cursor. `edit_layout` wraps per grapheme, takes the same byte offset, and no longer
-pushes a blank row ahead of a glyph wider than the box.
+pushes a blank row ahead of a glyph wider than the box. Review found the boundary
+did not hold after a merging insert: a base typed in front of a combining mark, or a
+regional indicator in front of a flag, joins what follows and left the cursor inside the
+cluster, where `edit_layout` dropped the caret to (0,0). An insert now snaps forward to
+the end of the cluster it lands in.
 
 Fixing it found two more sites than the entry named. `place_cursor` (the search, date
 and quick-add prompts, and the fuzzy picker) used the char count directly as a *column*, so

@@ -144,10 +144,20 @@ impl TextInput {
     /// Insert at the cursor and step past what was inserted.
     ///
     /// A combining mark typed after its base joins that grapheme, and the cursor, now at
-    /// the end of the cluster, is still on a boundary.
+    /// the end of the cluster, is still on a boundary. The other way round is not: a base
+    /// typed in front of a combining mark, or a regional indicator in front of a flag,
+    /// merges with what follows, and stepping by `c.len_utf8()` alone would leave the
+    /// cursor inside the new cluster. So it snaps forward to that cluster's end.
     fn insert(&mut self, c: char) {
         self.value.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        if let Some((at, grapheme)) = self
+            .value
+            .grapheme_indices(true)
+            .find(|(at, grapheme)| *at < self.cursor && self.cursor < at + grapheme.len())
+        {
+            self.cursor = at + grapheme.len();
+        }
     }
 
     /// Where the grapheme before the cursor starts.
@@ -1831,6 +1841,48 @@ mod tests {
         input.press(code(KeyCode::End));
         input.press(code(KeyCode::Backspace));
         assert_eq!(input.value(), "x");
+    }
+
+    /// Whether `at` is a grapheme boundary of `text`.
+    fn on_boundary(text: &str, at: usize) -> bool {
+        at == text.len() || text.grapheme_indices(true).any(|(start, _)| start == at)
+    }
+
+    /// Type `c` at the start of a field holding `existing`, and check the cursor lands on
+    /// a boundary that `edit_layout` maps to the cell it is drawn in.
+    fn type_in_front(existing: &str, c: char) -> TextInput {
+        let mut input = TextInput::new(existing);
+        input.press(code(KeyCode::Home));
+        input.press(Key::char(c));
+        assert!(
+            on_boundary(input.value(), input.cursor()),
+            "cursor {} is inside a cluster of {:?}",
+            input.cursor(),
+            input.value()
+        );
+        let column = crate::rows::display_width(&input.value()[..input.cursor()]);
+        assert!(column > 0, "the caret moved past what was typed");
+        let (_, caret) = crate::rows::edit_layout(input.value(), 40, 4, input.cursor());
+        assert_eq!(caret, (0, column), "edit_layout lost the caret");
+        input
+    }
+
+    #[test]
+    fn a_base_typed_before_a_combining_mark_leaves_the_cursor_after_the_cluster() {
+        let input = type_in_front("\u{0301}", 'e');
+        assert_eq!(input.value(), "e\u{0301}");
+        assert_eq!(input.cursor(), input.value().len());
+    }
+
+    #[test]
+    fn a_regional_indicator_typed_before_a_flag_leaves_the_cursor_after_the_new_pair() {
+        // `🇬` in front of `🇬🇧` pairs with the first indicator: `🇬🇬` then a lone `🇧`.
+        let input = type_in_front(FLAG, '\u{1F1EC}');
+        assert_eq!(
+            input.cursor(),
+            2 * '\u{1F1EC}'.len_utf8(),
+            "after `🇬🇬`, before `🇧`"
+        );
     }
 
     #[test]
