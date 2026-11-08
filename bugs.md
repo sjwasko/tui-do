@@ -53,6 +53,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-14~~ | FIXED — five store-level rollback tests, four that failed before the fix | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
 | BUG-27 | UI-level undo/redo sequence after a rejected label create | yes |
+| ~~BUG-25~~ | FIXED — predicate table, loop test, and the binary run with no terminal | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 
 ## What is left, at a glance
@@ -1478,7 +1479,7 @@ due-date later.
 title is unchanged and no due date is set — because a fix that stops setting the date while
 still eating the text would pass a weaker test.
 
-### BUG-25 — starting with stdin not a terminal hangs forever, with the terminal held in raw mode
+### ~~BUG-25~~ — FIXED — starting with stdin not a terminal hangs forever, with the terminal held in raw mode
 
 `crates/tui-do/src/runtime/terminal.rs` (`TerminalGuard::take`) and
 `crates/tui-do/src/runtime/mod.rs` (`spawn_input`).
@@ -1529,6 +1530,26 @@ needing a kill.
 passes today only because the test box has no config; on a box that *has* one, `brew test`
 would start the interface under a non-TTY stdin and hit this. The formula's test is resting
 on an assumption it does not state.
+
+**Fixed 2026-11-08, as two commits.** `start` in `main.rs` now refuses to build the runtime
+unless stdin *and* stdout are terminals, and says which is not, pointing at `tui-do add`. It
+runs after the config loads, so a first run with no config still gets the `config.yaml`
+advice whatever it is attached to, and before the store, the panic hook or raw mode, so a
+refusal leaves nothing behind. A poll or read error in the input thread now ends the session
+through BUG-7's exit: the fatal channel carries a `Fatal` enum, `InputLost` beside
+`Panicked`, and `run` still drops the guard and flushes. The Homebrew test needs no change:
+with no config it fails exactly as before, and on a box with one it now gets a clean refusal
+and exit code 1 instead of a hang.
+
+Tests, each checked to fail before the fix:
+`the_interface_starts_only_with_a_terminal_at_both_ends` (the four combinations),
+`an_input_error_ends_the_loop_through_the_normal_exit` (the loop timed out), and
+`tests/no_terminal.rs`, which runs the built binary with stdin on `/dev/null` and a scratch
+config and store. Where the test runner has no controlling terminal, the unfixed binary
+cannot hang -- raw mode fails outright -- so that test failed on the message instead; under `script`'s pty the
+unfixed binary hung until `timeout` killed it after 5s, and the fixed one exits 1 at once.
+`read_input` takes its event source as a closure so the error path can be reached without
+breaking the test runner's terminal.
 
 ### BUG-26 — text input moves and deletes per `char`, so a cursor can land inside a glyph
 
