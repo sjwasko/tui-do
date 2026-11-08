@@ -219,6 +219,12 @@ impl LoopTx {
         self.msg.send(msg)
     }
 
+    /// Tell the loop the session has to end. A loop that has already gone has nothing
+    /// left to stop, so a failed send is dropped.
+    fn fatal(&self, why: Fatal) {
+        let _ = self.fatal.send(why);
+    }
+
     /// Run `work`, and if it panics, tell the loop to stop and answer `None`.
     ///
     /// The one place a panic is caught. `AssertUnwindSafe` is sound because nothing that
@@ -229,10 +235,7 @@ impl LoopTx {
         match std::panic::catch_unwind(AssertUnwindSafe(work)) {
             Ok(value) => Some(value),
             Err(payload) => {
-                // A loop that has already gone has nothing left to stop.
-                let _ = self
-                    .fatal
-                    .send(Fatal::Panicked(describe_panic(payload.as_ref())));
+                self.fatal(Fatal::Panicked(describe_panic(payload.as_ref())));
                 None
             }
         }
@@ -856,9 +859,9 @@ fn read_input(
             Ok(Some(crossterm::event::Event::Resize(width, height))) => Msg::Resize(width, height),
             Ok(_) => continue,
             // Returning quietly here was BUG-25: input gone for good, and the interface
-            // drawing on with no way to quit it. A loop that has gone is not told.
+            // drawing on with no way to quit it.
             Err(error) => {
-                let _ = tx.fatal.send(Fatal::InputLost(error.to_string()));
+                tx.fatal(Fatal::InputLost(error.to_string()));
                 return;
             }
         };
