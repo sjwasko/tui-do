@@ -789,11 +789,11 @@ fn help_column_width(rows: &[HelpRow]) -> u16 {
     let widest = rows
         .iter()
         .map(|row| match row {
-            HelpRow::Heading(text) => text.chars().count(),
+            HelpRow::Heading(text) => usize::from(rows::display_width(text)),
             HelpRow::Binding(binding) => {
                 HELP_INDENT
-                    + binding.keys_display().chars().count().max(HELP_KEYS_WIDTH)
-                    + binding.doc.chars().count()
+                    + usize::from(rows::display_width(&binding.keys_display())).max(HELP_KEYS_WIDTH)
+                    + usize::from(rows::display_width(binding.doc))
             }
             HelpRow::Blank => 0,
         })
@@ -951,7 +951,7 @@ fn priority_body(state: &PriorityState, frame: &mut Frame, area: Rect, theme: Th
     }
     lines.truncate(usize::from(area.height));
     frame.render_widget(Paragraph::new(lines), area);
-    let cursor = state.typed.chars().count() as u16;
+    let cursor = rows::display_width(&state.typed);
     if area.x + 2 + cursor < area.right() {
         frame.set_cursor_position((area.x + 2 + cursor, area.y));
     }
@@ -1207,9 +1207,8 @@ fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme:
             },
         );
         if focused {
-            let before: String = input.value().chars().take(input.cursor()).collect();
             caret = Some((
-                area.x + GUTTER + rows::display_width(&before).min(room),
+                area.x + GUTTER + input.caret_column().min(room),
                 area.y + u16::try_from(lines.len()).unwrap_or(0),
             ));
         }
@@ -1328,9 +1327,8 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
         } else {
             let shown = rows::truncate(input.value(), width);
             if focused {
-                let before: String = input.value().chars().take(input.cursor()).collect();
                 caret = Some((
-                    area.x + GUTTER + rows::display_width(&before).min(width),
+                    area.x + GUTTER + input.caret_column().min(width),
                     area.y + u16::try_from(lines.len()).unwrap_or(0),
                 ));
             }
@@ -1468,7 +1466,7 @@ fn input_line(input: &TextInput, theme: Theme) -> Line<'static> {
 }
 
 fn place_cursor(frame: &mut Frame, area: Rect, input: &TextInput, prefix: u16) {
-    let x = area.x + prefix + input.cursor() as u16;
+    let x = area.x + prefix + input.caret_column();
     if x < area.right() {
         frame.set_cursor_position((x, area.y));
     }

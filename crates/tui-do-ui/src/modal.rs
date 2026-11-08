@@ -13,13 +13,16 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use tui_do_core::models::{Label, LabelId, ProjectId, Task};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::keymap::{help_rows, Action, Context, Key};
 
 /// A single-line text field.
 ///
-/// Cursor position is counted in characters, not bytes: a task title with an em dash in
-/// it should not make the left arrow key panic.
+/// The cursor is a byte offset into the value that always sits on a grapheme boundary.
+/// Bytes, so slicing at it cannot panic on an em dash; graphemes, so Backspace after a
+/// flag removes the flag rather than one of its two regional indicators, and Left never
+/// stops inside a ZWJ sequence.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
     value: String,
@@ -32,7 +35,7 @@ impl TextInput {
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
-        let cursor = value.chars().count();
+        let cursor = value.len();
         Self {
             value,
             cursor,
@@ -64,10 +67,24 @@ impl TextInput {
         &self.value
     }
 
-    /// Where the cursor sits, in characters from the start.
+    /// Where the cursor sits, as a byte offset into [`Self::value`].
+    ///
+    /// Always on a grapheme boundary, so `&value()[..cursor()]` is the text before the
+    /// caret and its display width is the caret's column. It is not a column itself: a
+    /// wide or multi-byte character makes the two differ.
     #[must_use]
     pub const fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// How many cells the text before the cursor occupies: the caret's column within a
+    /// single line, before anything the caller draws ahead of the value.
+    ///
+    /// Display width rather than a count of anything, so `日本` puts the caret four cells
+    /// in, not two.
+    #[must_use]
+    pub fn caret_column(&self) -> u16 {
+        crate::rows::display_width(&self.value[..self.cursor])
     }
 
     /// Apply a key press. Returns whether it was one this field acts on.
@@ -86,34 +103,30 @@ impl TextInput {
                 true
             }
             KeyCode::Char(c) if !key.mods.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                let at = self.byte_offset(self.cursor);
-                self.value.insert(at, c);
-                self.cursor += 1;
+                self.insert(c);
                 true
             }
             KeyCode::Enter if self.multiline => {
-                let at = self.byte_offset(self.cursor);
-                self.value.insert(at, '\n');
-                self.cursor += 1;
+                self.insert('\n');
                 true
             }
             KeyCode::Backspace if self.cursor > 0 => {
-                let at = self.byte_offset(self.cursor - 1);
-                self.value.remove(at);
-                self.cursor -= 1;
+                let start = self.previous_boundary();
+                self.value.replace_range(start..self.cursor, "");
+                self.cursor = start;
                 true
             }
-            KeyCode::Delete if self.cursor < self.len() => {
-                let at = self.byte_offset(self.cursor);
-                self.value.remove(at);
+            KeyCode::Delete if self.cursor < self.value.len() => {
+                let end = self.next_boundary();
+                self.value.replace_range(self.cursor..end, "");
                 true
             }
             KeyCode::Left if self.cursor > 0 => {
-                self.cursor -= 1;
+                self.cursor = self.previous_boundary();
                 true
             }
-            KeyCode::Right if self.cursor < self.len() => {
-                self.cursor += 1;
+            KeyCode::Right if self.cursor < self.value.len() => {
+                self.cursor = self.next_boundary();
                 true
             }
             KeyCode::Home => {
@@ -121,22 +134,36 @@ impl TextInput {
                 true
             }
             KeyCode::End => {
-                self.cursor = self.len();
+                self.cursor = self.value.len();
                 true
             }
             _ => false,
         }
     }
 
-    fn len(&self) -> usize {
-        self.value.chars().count()
+    /// Insert at the cursor and step past what was inserted.
+    ///
+    /// A combining mark typed after its base joins that grapheme, and the cursor, now at
+    /// the end of the cluster, is still on a boundary.
+    fn insert(&mut self, c: char) {
+        self.value.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
     }
 
-    fn byte_offset(&self, chars: usize) -> usize {
-        self.value
-            .char_indices()
-            .nth(chars)
-            .map_or(self.value.len(), |(at, _)| at)
+    /// Where the grapheme before the cursor starts.
+    fn previous_boundary(&self) -> usize {
+        self.value[..self.cursor]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(at, _)| at)
+    }
+
+    /// Where the grapheme after the cursor ends.
+    fn next_boundary(&self) -> usize {
+        self.value[self.cursor..]
+            .graphemes(true)
+            .next()
+            .map_or(self.value.len(), |grapheme| self.cursor + grapheme.len())
     }
 }
 
@@ -785,7 +812,11 @@ impl ModalView for PriorityState {
                 Outcome::Consumed
             }
             KeyCode::Backspace => {
-                self.typed.pop();
+                // A whole grapheme, like every other field. Only digits reach this one
+                // today, but `pop` takes one `char` and would split anything else.
+                if let Some((at, _)) = self.typed.grapheme_indices(true).next_back() {
+                    self.typed.truncate(at);
+                }
                 if self.typed.is_empty() {
                     // Emptying the field puts the highlight back where it started, so
                     // Enter after a full rub-out changes nothing rather than setting 0.
@@ -1733,17 +1764,95 @@ mod tests {
     }
 
     #[test]
-    fn typing_and_editing_move_the_cursor_by_characters_not_bytes() {
+    fn typing_and_editing_move_the_cursor_by_graphemes_not_bytes() {
         let mut input = TextInput::default();
         for c in "café".chars() {
             input.press(Key::char(c));
         }
         assert_eq!(input.value(), "café");
-        assert_eq!(input.cursor(), 4);
+        assert_eq!(input.cursor(), "café".len(), "a byte offset, at the end");
 
         input.press(code(KeyCode::Left));
         input.press(code(KeyCode::Backspace));
         assert_eq!(input.value(), "caé");
+    }
+
+    fn typed(text: &str) -> TextInput {
+        let mut input = TextInput::default();
+        for c in text.chars() {
+            input.press(Key::char(c));
+        }
+        input
+    }
+
+    const FLAG: &str = "\u{1F1EC}\u{1F1E7}";
+    const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+
+    #[test]
+    fn backspace_after_a_flag_removes_the_whole_flag() {
+        let mut input = typed(&format!("a{FLAG}b"));
+        input.press(code(KeyCode::Backspace));
+        input.press(code(KeyCode::Backspace));
+        assert_eq!(input.value(), "a", "not `a` plus a lone regional indicator");
+    }
+
+    #[test]
+    fn left_never_stops_inside_a_flag() {
+        let mut input = typed(&format!("a{FLAG}b"));
+        input.press(code(KeyCode::Left));
+        assert_eq!(input.cursor(), 1 + FLAG.len(), "just before `b`");
+        input.press(code(KeyCode::Left));
+        assert_eq!(input.cursor(), 1, "just after `a`");
+        input.press(code(KeyCode::Right));
+        assert_eq!(input.cursor(), 1 + FLAG.len());
+    }
+
+    #[test]
+    fn a_zwj_family_is_one_step_for_backspace_and_delete() {
+        let mut input = typed(FAMILY);
+        input.press(code(KeyCode::Backspace));
+        assert_eq!(input.value(), "");
+
+        let mut input = typed(&format!("{FAMILY}x"));
+        input.press(code(KeyCode::Home));
+        input.press(code(KeyCode::Delete));
+        assert_eq!(input.value(), "x");
+        assert_eq!(input.cursor(), 0);
+    }
+
+    #[test]
+    fn a_combining_mark_is_one_step_with_its_base() {
+        // Typed as two keystrokes, base then mark: the cursor follows the mark, so it is
+        // still at the end of the cluster.
+        let mut input = typed("xe\u{0301}");
+        assert_eq!(input.cursor(), input.value().len());
+        input.press(code(KeyCode::Left));
+        assert_eq!(input.cursor(), 1, "one Left steps over e and its accent");
+        input.press(code(KeyCode::End));
+        input.press(code(KeyCode::Backspace));
+        assert_eq!(input.value(), "x");
+    }
+
+    #[test]
+    fn the_caret_column_is_display_width_not_a_count() {
+        let mut input = typed("日本");
+        assert_eq!(input.caret_column(), 4, "two wide glyphs are four cells");
+        input.press(code(KeyCode::Left));
+        assert_eq!(input.caret_column(), 2);
+        assert_eq!(typed(FLAG).caret_column(), 2);
+    }
+
+    #[test]
+    fn a_picker_rubs_out_a_typed_flag_in_one_backspace() {
+        let mut picker = PickerState::new(
+            PickerKind::Project,
+            vec![Candidate::new(Pick::Project(ProjectId(1)), "Personal")],
+        );
+        for c in FLAG.chars() {
+            picker.handle(key(c));
+        }
+        picker.handle(code(KeyCode::Backspace));
+        assert_eq!(picker.input.value(), "");
     }
 
     #[test]

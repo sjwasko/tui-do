@@ -50,6 +50,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
 | BUG-7 | test the fix's reporting, not the panic | yes, after the fix |
 | ~~BUG-9~~ | FIXED — grapheme table against `truncate`/`wrap` | yes |
+| ~~BUG-26~~ | FIXED — pure `TextInput` and `edit_layout` tests, eight | yes |
 | BUG-14 | store-level rollback sequence | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
@@ -61,7 +62,7 @@ throughout, both learned the hard way in this pass:
 | **Decide, then fix** | BUG-7, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
-| **Found by the BUG-9 sweep** | BUG-26 — text input steps per `char`, so Backspace can delete half a flag; mechanical, same fix as BUG-9 |
+| **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
@@ -1480,7 +1481,7 @@ passes today only because the test box has no config; on a box that *has* one, `
 would start the interface under a non-TTY stdin and hit this. The formula's test is resting
 on an assumption it does not state.
 
-### BUG-26 — text input moves and deletes per `char`, so a cursor can land inside a glyph
+### ~~BUG-26~~ — FIXED — text input moves and deletes per `char`, so a cursor can land inside a glyph
 
 Found 2026-11-08 by the BUG-9 sweep, which fixed display and left input alone on purpose.
 The edit field counts its cursor in `char`s: `modal.rs:35` starts it at
@@ -1499,6 +1500,22 @@ counts `chars()` rather than width; harmless while the help text is ASCII.
 
 **How to test it.** Pure `Input` tests: a field holding `a🇬🇧b`, Backspace from the end twice,
 must leave `a`; Left from the end twice must put the cursor before the flag, never inside.
+
+**Fixed.** `TextInput`'s cursor is now a byte offset that always sits on a grapheme
+boundary. Backspace, Delete, Left and Right step one grapheme through `grapheme_indices`,
+and the caret column is `TextInput::caret_column`, the display width of the text before
+the cursor. `edit_layout` wraps per grapheme, takes the same byte offset, and no longer
+pushes a blank row ahead of a glyph wider than the box.
+
+Fixing it found two more sites than the entry named. `place_cursor` (the search, date
+and quick-add prompts, and the fuzzy picker) used the char count directly as a *column*, so
+its caret was wrong after any wide character, not only after a split glyph. And the field
+behind `view.rs:954` is the priority field, not the fuzzy picker: its caret now uses display
+width, and its Backspace was `typed.pop()`, one `char` — unreachable in practice, since only digits get in, but it now
+takes a grapheme like every other field. The fuzzy picker's query is a `TextInput`, so it
+was fixed with the field. `help_column_width` measures display width now too. Eight new
+tests (Backspace and Left over a flag, ZWJ family, combining mark, `日本` caret column,
+picker rub-out, flag wrap, caret mapping); all eight failed on the old code.
 
 ## Minor
 
