@@ -1006,6 +1006,49 @@ fn a_push_on_its_own_ends_the_sending_it_started() {
 }
 
 #[test]
+fn a_long_drain_counts_down_as_it_sends() {
+    // BUG-21: the queued count only moved when a pass ended, so a 268-second drain showed
+    // 1781 queued the whole way through and read as a hang.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::PendingLoaded(QueueHealth {
+            queued: 1781,
+            failing: 3,
+            ..QueueHealth::default()
+        }),
+    );
+    update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Push)));
+
+    let effects = update(
+        &mut model,
+        Msg::Sync(SyncEvent::Sending { remaining: 1203 }),
+    );
+    assert!(
+        effects.is_empty(),
+        "progress is news, not a reason to reload"
+    );
+    assert_eq!(model.status.queued, 1203);
+    assert_eq!(
+        model.status.failing, 3,
+        "failing still fits inside what is left"
+    );
+    assert_eq!(
+        model.status.sync,
+        SyncStatus::Working {
+            detail: "sending, 1203 left".to_string()
+        }
+    );
+
+    update(&mut model, Msg::Sync(SyncEvent::Sending { remaining: 2 }));
+    assert_eq!(model.status.queued, 2);
+    assert_eq!(
+        model.status.failing, 2,
+        "more failing than queued is a state the status line cannot mean"
+    );
+}
+
+#[test]
 fn a_created_task_learns_the_id_the_server_gave_it() {
     // B1, found by driving it: create a task, watch it appear in the web UI, then press
     // `d` on it and get `404 This task does not exist` -- about the task just created.

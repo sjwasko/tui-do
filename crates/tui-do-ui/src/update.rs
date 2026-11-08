@@ -265,6 +265,18 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             };
             Vec::new()
         }
+        SyncEvent::Sending { remaining } => {
+            // BUG-21. Without this the count moved only when a pass ended, and a long
+            // drain held its starting number the whole way down -- which reads as a hang.
+            // `failing` is not in the event; clamping keeps "(3 failing)" from outliving
+            // a queue of two, and `Pushed` reloads the true figure from the store.
+            model.status.queued = remaining;
+            model.status.failing = model.status.failing.min(remaining);
+            model.status.sync = SyncStatus::Working {
+                detail: format!("sending, {remaining} left"),
+            };
+            Vec::new()
+        }
         SyncEvent::Overwrote { subject, fields } => {
             // The write went through -- the user's value is what the server holds now --
             // so there is nothing to roll back and nothing to reload. What is owed is the

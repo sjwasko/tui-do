@@ -2506,3 +2506,85 @@ async fn a_retried_task_create_does_not_adopt_a_task_the_store_already_knows() {
     );
     assert!(store.task(TaskId(500)).await.unwrap().is_some());
 }
+
+/// Queue `count` deletes against a server that accepts every one after `delay`.
+async fn queue_deletes(server: &MockServer, store: &Store, count: i64, delay: std::time::Duration) {
+    Mock::given(method("DELETE"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"message": "ok"}))
+                .set_delay(delay),
+        )
+        .mount(server)
+        .await;
+    let tasks: Vec<Task> = (1..=count).map(|id| task(id, "gone")).collect();
+    store.upsert_tasks(tasks.clone()).await.unwrap();
+    for gone in tasks {
+        store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(gone),
+            })
+            .await
+            .unwrap();
+    }
+}
+
+fn sending(seen: &[SyncEvent]) -> Vec<usize> {
+    seen.iter()
+        .filter_map(|event| match event {
+            SyncEvent::Sending { remaining } => Some(*remaining),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_long_drain_reports_what_is_left_as_it_goes() {
+    // BUG-21: a successfully sent entry emitted nothing, so the status line's queued count
+    // sat frozen at 1781 for a 268-second drain while the real queue fell to zero.
+    let server = MockServer::start().await;
+    let store = Store::in_memory().unwrap();
+    queue_deletes(&server, &store, 30, std::time::Duration::from_millis(10)).await;
+    let (sync, mut rx) = engine(&server, &store);
+    let sync = sync.with_progress_every(std::time::Duration::from_millis(30));
+
+    assert_eq!(sync.push().await.unwrap().sent, 30);
+
+    let seen = sending(&events(&mut rx));
+    assert!(
+        seen.len() >= 2,
+        "a 300 ms drain at a 30 ms interval said nothing on the way: {seen:?}"
+    );
+    assert!(
+        seen.len() < 30,
+        "progress was reported per entry rather than throttled: {seen:?}"
+    );
+    assert!(
+        seen.windows(2).all(|pair| pair[0] >= pair[1]),
+        "what is left went up during a drain: {seen:?}"
+    );
+    assert!(seen.iter().all(|left| *left <= 30));
+    assert!(
+        seen.first().is_some_and(|left| *left > 0),
+        "the first report came after the queue had emptied: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_fast_drain_is_throttled_to_far_fewer_events_than_entries() {
+    // The default interval is a quarter second. Forty instant answers finish well inside
+    // a handful of those, so per-entry reporting would show here as forty events.
+    let server = MockServer::start().await;
+    let store = Store::in_memory().unwrap();
+    queue_deletes(&server, &store, 40, std::time::Duration::ZERO).await;
+    let (sync, mut rx) = engine(&server, &store);
+
+    assert_eq!(sync.push().await.unwrap().sent, 40);
+
+    let seen = sending(&events(&mut rx));
+    assert!(
+        seen.len() < 10,
+        "not throttled: {} events for 40 entries",
+        seen.len()
+    );
+}

@@ -45,6 +45,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_do_api::models::{Label, LabelId, ProjectId, Task, TaskId};
 use tui_do_api::{ApiError, Client, TaskQuery};
@@ -199,6 +200,18 @@ pub enum SyncEvent {
         pages: Option<u32>,
     },
 
+    /// A push is working through the outbox.
+    ///
+    /// A variant of its own rather than another [`Self::Progress`]: that one counts rows
+    /// *stored* by a pull, which go up, and this counts entries still to send, which go
+    /// down. Throttled to one per [`PROGRESS_EVERY`], so a pass shorter than that emits
+    /// none and [`Self::Pushed`] remains the word on how it ended.
+    Sending {
+        /// How many entries were queued when the drain picked its next one -- blocked
+        /// and backed-off entries included, which is what "queued" means everywhere else.
+        remaining: usize,
+    },
+
     /// A queued edit was written over a change someone else had already made.
     ///
     /// Only for a *true* collision: the user changed a field, and so had another client
@@ -310,7 +323,18 @@ pub struct Sync {
     /// Reproduced by hand on 2026-08-31 with the dev container paused: two tasks, ids 3889
     /// and 3891, both `Bug #3 - pause container test`.
     pushing: Arc<AtomicBool>,
+    /// The least time between two [`SyncEvent::Sending`]s. [`PROGRESS_EVERY`] unless a
+    /// test asks for less.
+    progress_every: Duration,
 }
+
+/// How often a push reports what is left.
+///
+/// BUG-21: a drain of 1,781 entries took 268 seconds, and with no event between `Started`
+/// and `Pushed` the status line held 1781 the whole way. One event per entry would be as
+/// many extra messages through the event loop as there are entries; a quarter second is
+/// faster than anyone reads a counter.
+pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// Holds [`Sync::pushing`] true for as long as it lives.
 ///
@@ -350,7 +374,18 @@ impl Sync {
             store,
             events: None,
             pushing: Arc::new(AtomicBool::new(false)),
+            progress_every: PROGRESS_EVERY,
         }
+    }
+
+    /// Report push progress at most once per `interval` rather than [`PROGRESS_EVERY`].
+    ///
+    /// For tests: a mock answers in microseconds, so proving the drain reports anything
+    /// at all needs an interval shorter than the drain.
+    #[must_use]
+    pub fn with_progress_every(mut self, interval: Duration) -> Self {
+        self.progress_every = interval;
+        self
     }
 
     /// Report progress to `events`.
@@ -454,9 +489,18 @@ impl Sync {
         // otherwise spin this loop against the server forever.
         let mut attempted: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let now = chrono::Utc::now();
+        // Measured from the start of the pass, so a push that finishes inside one
+        // interval -- the one-entry push after an edit -- reports nothing extra.
+        let mut reported = Instant::now();
 
         loop {
             let pending = self.store.pending(None).await?;
+            if reported.elapsed() >= self.progress_every {
+                reported = Instant::now();
+                self.emit(SyncEvent::Sending {
+                    remaining: pending.len(),
+                });
+            }
             let mut candidate = None;
             for queued in &pending {
                 let subject = queued.mutation.subject();

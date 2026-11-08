@@ -53,6 +53,7 @@ throughout, both learned the hard way in this pass:
 | BUG-14 | store-level rollback sequence | yes |
 | BUG-20 | render at the offset in force on the target date | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
+| ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
 
 ## What is left, at a glance
 
@@ -60,7 +61,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | BUG-7, BUG-9, BUG-20, and BUG-24 — the last is new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
-| **Found by the drain torture test** | BUG-21, BUG-22, BUG-23 — all new, 2026-09-13, all need fixing |
+| **Found by the drain torture test** | BUG-22, BUG-23 — new 2026-09-13, both need fixing. ~~BUG-21~~ is fixed |
 | **Verify first** | BUG-14 |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
@@ -1224,7 +1225,7 @@ the next launch. Closing that needs the outbox to record "handed to the server" 
 
 ---
 
-### BUG-21 — the status line's queued count is stale for the whole of a long drain
+### ~~BUG-21~~ — FIXED — the status line's queued count is stale for the whole of a long drain
 
 `crates/tui-do-ui/src/update.rs:295` (`SyncEvent::Pushed`) and
 `crates/tui-do-core/src/sync/mod.rs:440-530` (the drain loop).
@@ -1254,6 +1255,16 @@ cost work.
 iteration; emitting a `SyncEvent::Progress { remaining }` (or simply reusing
 `LoadPending`) every N entries would close it. N should not be 1 — that is 1,781 extra
 messages through the event loop for no benefit.
+
+**Fixed 2026-11-08**, test-first. The drain emits `SyncEvent::Sending { remaining }` — its
+own variant, because `Progress` counts rows a pull has stored, which go up — at most once
+per `sync::PROGRESS_EVERY` (250 ms), timed from the start of the pass, so the one-entry
+push after an edit emits nothing extra. Reusing `LoadPending` was rejected: it would put a
+store read on the runtime for every tick, when the drain already holds the count. The
+interface sets `queued` from it, clamps `failing` to fit inside it, and shows
+`sending, 1203 left`; `Pushed` still reloads the true figures from the store at the end.
+`a_long_drain_reports_what_is_left_as_it_goes` failed before the emit with no events at
+all; `a_fast_drain_is_throttled_to_far_fewer_events_than_entries` pins the throttle.
 
 ---
 
