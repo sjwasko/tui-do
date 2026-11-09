@@ -11,7 +11,7 @@ note nobody re-reads.
 Keep it honest. An item moves to **Done** when it ships, and a decision moves to a design
 note in `md/` when it is taken. Items carry the date they were raised.
 
-Last touched 2026-09-14.
+Last touched 2026-11-08.
 
 ## The road map, as of 2026-09-13
 
@@ -531,6 +531,37 @@ So this is really a prerequisite of 3a rather than a separate feature.
 - **What does it print back?** Not the description — it is long by nature. A character count
   is enough, and it is the same "say what you actually did" fix BUG-24 got: `add` now names
   any due or start date it set.
+
+**12. Make `tui-do add` teach its own syntax — dry run, echo, prompt, completion.**
+*(raised and agreed 2026-11-08)*
+Quick-add is freeform, and freeform is hit or miss: BUG-24 (`1.6 GB` became a date) and
+BUG-29 (a date cut out mid-sentence) were both found by a person typing prose and only
+noticing afterwards. The fix is to show what the parser understood *before* it is sent, and
+to show the best way to have written it *after*, so people and agents both converge on the
+optimal form. Modelled on Cisco IOS's `?` and Tab, adapted to a line that may itself
+contain a `?`. Four steps, in this order:
+
+1. **`--dry-run`, and a normalised echo.** `tui-do add --dry-run '…'` parses and prints
+   exactly what it would create — title, project, labels, assignees, priority, due, start,
+   repeat — and queues nothing. Every real add also prints the line rewritten in its
+   canonical form (`as typed best: "Call the dentist +Personal *health !3 due 2026-11-12"`),
+   so each run shows the optimal phrasing. Small, and useful to agents and people at once.
+2. **An interactive `tui-do add`.** With no text and a terminal on both ends, open a one-line
+   prompt: a dim placeholder showing the recommended shape that vanishes on the first
+   keystroke, and a live preview line that re-parses on every key. **Tab** completes
+   `+project`, `*label`, `@user` and date words from the local store (twice lists the
+   matches). **`?`** lists what can come next — but only straight after a sigil (`+?`),
+   after `due`/`start`, or on an empty line, because titles contain question marks; anywhere
+   else it is a literal `?`. **F1** always opens help. The interface's `a` prompt is the same
+   `TextInput` and should get the same behaviour. `tui-do add 'text'` is unchanged.
+3. **Dynamic shell completion of names** through clap's dynamic completion, so
+   `tui-do add Call the VA +Le⇥` completes from the store. Works on unquoted words; quoting
+   varies by shell. `?` cannot be made to work in bash/zsh without a key binding the user
+   installs, so it is not attempted there.
+4. **`--tokens` (or `--json`) for agents** — the agent's `?`: the real projects, labels and
+   users it may name. Belongs with item 3a's `--json` contract rather than ahead of it.
+
+`skills/tui-do/SKILL.md` should point agents at `--dry-run` and the echo once step 1 ships.
 
 ---
 
