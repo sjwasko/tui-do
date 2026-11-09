@@ -46,6 +46,7 @@ throughout, both learned the hard way in this pass:
 |---|---|---|
 | ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
 | ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
+| ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
@@ -71,6 +72,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
+| **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read. Fixed against the ~30 sends/s threshold decided when BUG-28 was filed: a held key still costs the push most of its throughput, now 97-182/s against 624/s idle |
@@ -93,10 +95,10 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | Sync engine | 0 | 5 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
-| Runtime and CLI | 0 | 5 → 3 | 3 |
+| Runtime and CLI | 0 | 6 → 3 | 3 |
 | API client | 0 | 1 → 0 | 1 |
-| **found** | **1** | **18** | **15** |
-| **fixed** | **1** | **9** | **2** |
+| **found** | **1** | **19** | **15** |
+| **fixed** | **1** | **10** | **2** |
 | **open** | **0** | **9** | **13** |
 
 Plus two of the four structural items, leaving three.
@@ -2058,7 +2060,7 @@ stripping and were changed: `dates_come_out_of_the_title` is now
 `the_keyword_is_decisive_even_before_a_decimal` now expects `due 2.5 hours` to keep its
 title, with `hours due 2.5` added for the stripped half. Both still assert the date.
 
-### BUG-31 — SIGTERM or SIGHUP leaves the terminal in raw mode
+### ~~BUG-31~~ — FIXED — SIGTERM or SIGHUP leaves the terminal in raw mode
 
 `crates/tui-do/src/runtime/terminal.rs` (`TerminalGuard`), and every entry point that takes
 the terminal: the full interface, and item 12's inline `tui-do add` prompt.
@@ -2087,6 +2089,73 @@ the terminal is gone, so writing escape sequences to it can fail and must not bl
 `script`), send SIGTERM, and assert the process exits within a bound and the pty's termios
 has `ECHO` and `ICANON` restored. The quit-on-signal wiring itself is a unit test on the
 runtime's event loop with an injected signal stream.
+
+**Fixed 2026-11-08, as the likely fix described.** `runtime/signals.rs` installs tokio
+handlers for the three signals before the terminal is taken and forwards each as a
+`Signal` on a channel. In the interface it is a third channel beside BUG-7's `msg` and
+`fatal` on `LoopTx`, read first in the event loop, which returns `Exit::Signalled` -- not a
+`Msg`, for the reason `Fatal` is not one: `update` has nothing to decide. `run` then does
+what it does after `q`: gives the terminal back and runs `flush_on_exit`, so a push in
+flight gets its grace and a push that panicked is still not sent twice. The process then
+exits with `128 + signal` (143, 129, 131), which is what a shell reports for a process the
+signal killed.
+
+- **A signal during the flush** ends the wait and exits at once with its own code: a
+  second signal, or the first after `q` (or a panic, or lost input) began the exit.
+- **SIGHUP** releases the guard on a thread of its own and waits at most 250 ms for it, so
+  a terminal that is gone cannot hold the exit, and the flush writes to a sink rather than
+  stdout. Its writes all ignore errors now, because `println!` panics on a failed write.
+  The restore is still attempted, since a `kill -HUP` from another pane leaves the terminal
+  alive. The in-flight push still gets its grace, silently.
+- **The inline `tui-do add` prompt** gets the same handlers on `add`'s runtime and checks
+  for a signal before every poll, so it notices one within 100 ms. Nothing is queued at
+  that point, so it restores the terminal and exits. `ask_for_task` now takes the
+  runtime's handle, which is the one change in `main.rs`.
+- **`--edit` installs nothing.** Raw mode is never on around the editor, which owns the
+  terminal and shares tui-do's process group, so a hangup reaches it directly. A signal
+  there ends tui-do as before, losing only the temporary file's removal.
+
+Once installed, tokio's handlers stay for the life of the process. So when nobody is
+listening any more (after the prompt, or after `run` returns), the listener exits the
+process with the signal's code, as the default action would have.
+
+**Where a push in flight can still be cut off.** The fix gives a running push its grace
+on the first signal, but three paths still end the process mid-request:
+
+1. **A second signal during the flush**, after a signal began the exit.
+2. **One signal during the flush after `q`**, a panic or lost input began it. The flush
+   is waiting, and the one signal is the user saying "now".
+3. **One signal during `tui-do add`'s own push, after its prompt has returned.** The
+   prompt's receiver is gone by then, so the listener exits on the spot (`signals.rs`,
+   `listen`), and the push `add` is making is cut off with it.
+
+Each is the BUG-3 class: the entry stays queued, and if the request had already reached
+the server the next launch sends it again, which for a `CreateTask` makes a second task
+(filed as **BUG-33**). None of them is new. Before this fix the signal's default action
+cut off every one of these pushes, and on the first signal rather than the second; `kill
+-9` still does. The comments on `flush_unless_signalled` and `signals::listen` say the
+same.
+
+**Found on the way:** `TerminalGuard::take` and `inline` switched raw mode on before setting
+up the backend, and an error there returned with no guard to undo it. The inline prompt
+hits this on any terminal that does not answer its cursor query, which is how `script` with
+no emulator first showed it. Both now give the terminal back on that error.
+
+Tests, each checked to fail before its fix: `tests/pty.rs` runs the built binary under
+`script` with a scratch config and store, waits for raw mode, signals it, and reads
+`stty -a` on the same pty afterwards.
+`sigterm_ends_the_interface_and_gives_the_terminal_back`,
+`sighup_and_sigquit_end_the_interface_with_their_own_codes` and
+`sigterm_ends_the_add_prompt_and_gives_the_terminal_back` assert the exit code within 5 s
+and `echo` and `icanon` back on; on the old code each exited with the right code and left
+`-echo -icanon`. `a_prompt_that_cannot_find_its_cursor_gives_the_terminal_back` failed the
+same way before the take fix. Each skips with a notice where there is no `script`. In the
+runtime, `a_signal_ends_the_loop_through_the_normal_exit_and_still_flushes` injects a
+signal into the event loop and sees the flush report on the queued create, and
+`a_second_signal_stops_the_flush_waiting` holds the push on a server that accepts and never
+answers and needs the second signal to return inside 2 s (it timed out with the signal arm
+disabled). `a_signal_ends_the_prompt_between_keys` covers the prompt, including that it
+writes nothing more after SIGHUP.
 
 ### ~~BUG-32~~ — FIXED — a single-line field longer than its box cannot be scrolled
 
