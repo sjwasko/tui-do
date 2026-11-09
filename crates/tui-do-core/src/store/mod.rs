@@ -28,6 +28,7 @@ mod state;
 mod tasks;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rusqlite::Connection;
@@ -36,7 +37,7 @@ use crate::error::{CoreError, Result};
 
 pub use labels::{LabelFilter, LabelOrder, LabelSort};
 pub use outbox::{
-    is_provisional, is_provisional_label, Mutation, OutboxEntry, QueueHealth, Subject,
+    is_provisional, is_provisional_label, Mutation, OutboxEntry, QueueHealth, Queued, Subject,
 };
 pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
 pub use state::{CURRENT_USER, LAST_PROJECT, LAST_PULL, LAST_RECONCILE, PAGE_CAP};
@@ -51,6 +52,9 @@ pub use tasks::{ProjectCounts, ServerApply, TaskCount, TaskFilter, TaskOrder, Ta
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
     path: StorePath,
+    /// How many outbox payloads the drain's reads have parsed. See
+    /// [`Store::payload_decodes`].
+    decodes: Arc<AtomicU64>,
 }
 
 /// Where a store lives, for error messages.
@@ -120,6 +124,7 @@ impl Store {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: StorePath::Memory,
+            decodes: Arc::default(),
         })
     }
 
@@ -156,7 +161,20 @@ impl Store {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: StorePath::File(path),
+            decodes: Arc::default(),
         })
+    }
+
+    /// How many queued payloads have been parsed by [`Store::pending`] and the reads the
+    /// drain makes, since this store was opened.
+    ///
+    /// For tests and measurement only. BUG-23: the drain re-read and re-parsed the whole
+    /// queue before every entry it sent, which is quadratic in the depth of the queue,
+    /// and a count is the one way to assert that it no longer does without timing it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn payload_decodes(&self) -> u64 {
+        self.decodes.load(Ordering::Relaxed)
     }
 
     /// Where this store lives, for diagnostics.
