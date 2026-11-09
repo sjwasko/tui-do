@@ -723,6 +723,19 @@ fn quick_add_assigns_the_users_it_names() {
 }
 
 #[test]
+fn a_task_past_the_servers_limits_is_not_queued() {
+    let mut model = loaded();
+    press(&mut model, 'a');
+    for c in "water the cactus every 1000 years".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(applied(&effects).is_none(), "{effects:?}");
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
+}
+
+#[test]
 fn a_user_nobody_has_seen_is_reported_rather_than_dropped() {
     let mut model = loaded();
     update(&mut model, Msg::UsersLoaded(vec![user(3, "alice")]));

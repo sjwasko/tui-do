@@ -2029,6 +2029,11 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
         model.toast(Toast::info("Nothing to add"));
         return Vec::new();
     }
+    // As `tui-do add` does (BUG-35): queued, it would be sent, refused and rolled back.
+    if let Some(refusal) = parsed.server_refusal() {
+        model.toast(Toast::error(format!("Not added: {refusal}")));
+        return Vec::new();
+    }
 
     let showing = match model.query.scope {
         Scope::Project(id) => Some(id),
