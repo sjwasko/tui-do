@@ -58,7 +58,7 @@ is the actual order. Items keep their stable numbers — nothing is renumbered, 
 notes cite them — so this says *what order*, not *what number*.
 
 ```
-  NOW      8(macOS)   keychain::read's macOS arm     ON A MAC -- see item 8
+  NOW      8(macOS)   keychain on macOS: Phase A done, B on sw-mba -- item 8
            ------------------------------------------------------------
            delivers the stated macOS goal in full, plus the foundation
            everything agentic needs
@@ -684,6 +684,36 @@ neither of which is ours to clear; the keychain is blocked on nothing. Recorded 
 `md/2026-09-07-credential-storage-design.md`.
 
 **8. Keychain credential storage.** *(raised 2026-09-07 — unblocked 2026-09-08)*
+
+**The macOS plan, agreed 2026-11-09. macOS only; Linux keeps `token_file`.**
+
+- **Phase A — done 2026-11-09 on `sw-x1`**, on branch `macos-phase-a`, with the tap change
+  on tap branch `pour-v1.1.0`, neither merged:
+  - The Homebrew tap installs the v1.1.0 `aarch64-apple-darwin` release binary instead of
+    building from source. It had been pinned at v1.0.1, so `brew` users had no
+    `tui-do login`. Its setup message now points at `login`.
+  - README and `CLAUDE.md` list macOS (Apple Silicon) as supported.
+  - The macOS CI job runs `cargo test --workspace` and gates. **The suite has not yet run
+    on macOS since 2026-09-07**, so the first Mac session runs it before either branch
+    merges.
+- **Phase B — on `sw-mba`:**
+  1. **Measure first.** Store a Keychain item from a test binary, rebuild, read it back,
+     and see whether macOS asks for access again. Then do the same across a `brew upgrade`.
+     This answers whether the $99/year Apple developer membership is needed for a stable
+     signature.
+  2. **Write `keychain::read`'s macOS arm.** Use `keyring` with only its Apple backend, or
+     `security-framework` directly, whichever adds fewer crates; count them against
+     `Cargo.lock` first. Map its errors onto the four `Lookup` outcomes. Tests go in
+     `keychain.rs`.
+  3. **Add `keychain::write`, and make `tui-do login` store the token there by default
+     on macOS.** The config then carries no `token_file`. Add `--token-file` to keep the
+     file route for people who copy configs between machines. If step 1 shows a prompt on
+     every upgrade, revisit the default before release.
+  4. **Hand-check on a clean setup.** Clear *both* path families
+     (`~/Library/Application Support/tui-do` and the stray Linux-style `~/.config/tui-do`
+     and `~/.local/share/tui-do` the old keys script left), then `brew install` → `tui-do
+     login` → sync.
+- **Phase C:** release v1.2.0, move the tap to it, and repeat the clean-setup check.
 **The seam is built, 2026-09-14; the Security.framework calls are not.** Strictly additive,
 and the order is **`TUI_DO_API_TOKEN` → keychain → `token_file` → inline** — corrected from
 the keychain-first order this entry used to state, for the reasons now in
