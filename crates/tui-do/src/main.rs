@@ -267,6 +267,19 @@ struct AddArgs {
         value_hint = clap::ValueHint::FilePath
     )]
     description_file: Option<PathBuf>,
+
+    /// Write the task's description in your editor, as `git commit` does.
+    ///
+    /// Opens $VISUAL, else $EDITOR, else vi, on a temporary file only you can read,
+    /// removed afterwards. Save an empty file to add no description; exit the editor
+    /// with an error (:cq in vim) to add nothing at all. Needs a terminal.
+    // Not with --dry-run: a description written only to be thrown away is lost work.
+    #[arg(
+        short = 'e',
+        long,
+        conflicts_with_all = ["description", "description_file", "dry_run"]
+    )]
+    edit: bool,
 }
 
 /// Read the description `args` names, if it names one, and check it.
@@ -294,6 +307,7 @@ fn read_description(args: &AddArgs) -> anyhow::Result<runtime::Description> {
                 format!("could not read the description file {}", path.display())
             })?
         }
+        (None, None) if args.edit => return Ok(runtime::Description::Edit),
         (None, None) => return Ok(runtime::Description::None),
     };
     Ok(runtime::Description::Given(description::normalise(bytes)?))
@@ -477,15 +491,14 @@ fn start(cli: Cli) -> anyhow::Result<()> {
         .block_on(runtime::run(config, path))
 }
 
-/// A refusal to start without a terminal: what is missing, then what to do instead.
-macro_rules! no_terminal {
-    ($what:literal) => {
-        concat!(
-            $what,
-            ", and the interface needs one to read keys from and draw on. ",
-            "To add a task from a script, use `tui-do add` (see `tui-do add --help`)."
-        )
-    };
+/// Which of stdin and stdout is not a terminal, in words, or `None` if both are.
+fn missing_terminal(stdin_tty: bool, stdout_tty: bool) -> Option<&'static str> {
+    match (stdin_tty, stdout_tty) {
+        (true, true) => None,
+        (false, true) => Some("stdin is not a terminal"),
+        (true, false) => Some("stdout is not a terminal"),
+        (false, false) => Some("neither stdin nor stdout is a terminal"),
+    }
 }
 
 /// Whether the interface can start, given which of stdin and stdout are terminals.
@@ -494,13 +507,25 @@ macro_rules! no_terminal {
 /// redirected the interface used to come up anyway and wait for a key that could never
 /// arrive -- and raw mode turns Ctrl-C into a byte, so nothing but a `kill` from another
 /// terminal ended it (BUG-25). A stdout that is not a terminal has nowhere to draw.
-fn interactive(stdin_tty: bool, stdout_tty: bool) -> Result<(), &'static str> {
-    match (stdin_tty, stdout_tty) {
-        (true, true) => Ok(()),
-        (false, true) => Err(no_terminal!("stdin is not a terminal")),
-        (true, false) => Err(no_terminal!("stdout is not a terminal")),
-        (false, false) => Err(no_terminal!("neither stdin nor stdout is a terminal")),
-    }
+fn interactive(stdin_tty: bool, stdout_tty: bool) -> Result<(), String> {
+    missing_terminal(stdin_tty, stdout_tty).map_or(Ok(()), |what| {
+        Err(format!(
+            "{what}, and the interface needs one to read keys from and draw on. \
+             To add a task from a script, use `tui-do add` (see `tui-do add --help`)."
+        ))
+    })
+}
+
+/// Whether `--edit` can open an editor: the same two terminals the interface needs,
+/// for the same reason -- an editor started without them waits for keys that cannot
+/// arrive, or draws where nobody is looking.
+fn editable(stdin_tty: bool, stdout_tty: bool) -> Result<(), String> {
+    missing_terminal(stdin_tty, stdout_tty).map_or(Ok(()), |what| {
+        Err(format!(
+            "{what}, and --edit opens an editor, which needs one. From a script, pass \
+             the description with --description-file - or -d instead."
+        ))
+    })
 }
 
 /// Write a completion script for `shell` to stdout.
@@ -551,6 +576,15 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
         .is_err()
     {
         missing_text();
+    }
+    // Before anything is read or opened, so a script that asked for an editor is told
+    // at once and nothing is queued.
+    if args.edit {
+        editable(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        )
+        .map_err(anyhow::Error::msg)?;
     }
     let description = read_description(args)?;
     let path = Config::resolve_path(config_override)?;
@@ -797,6 +831,39 @@ mod tests {
         let mut file = file;
         file.text.clear();
         assert!(stdin_is_free(&file).is_ok(), "only `-` reads stdin");
+    }
+
+    #[test]
+    fn the_editor_conflicts_with_the_other_descriptions_and_a_dry_run() {
+        for other in [
+            &["-d", "x"][..],
+            &["--description-file", "f"][..],
+            &["--dry-run"][..],
+        ] {
+            let mut argv = vec!["title", "--edit"];
+            argv.extend_from_slice(other);
+            let error = add_args(&argv).expect_err("refused");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{other:?}"
+            );
+        }
+        let args = add_args(&["title", "-e"]).unwrap();
+        assert_eq!(read_description(&args).unwrap(), runtime::Description::Edit);
+    }
+
+    #[test]
+    fn the_editor_needs_a_terminal_at_both_ends() {
+        assert_eq!(editable(true, true), Ok(()));
+        for (stdin, stdout) in [(false, true), (true, false), (false, false)] {
+            let why = editable(stdin, stdout).expect_err("no terminal, no editor");
+            assert!(
+                why.starts_with(missing_terminal(stdin, stdout).unwrap()),
+                "{why}"
+            );
+            assert!(why.contains("--description-file -"), "{why}");
+        }
     }
 
     #[test]

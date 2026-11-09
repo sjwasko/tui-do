@@ -10,6 +10,7 @@
 //! a message back. The render loop's only await is on the message channel.
 
 mod coalesce;
+mod editor;
 mod prompt;
 mod terminal;
 
@@ -1254,16 +1255,18 @@ pub async fn add(
         }
     }
 
-    let mut built = built.ok_or_else(|| no_project(&parsed, &projects))?;
+    let built = built.ok_or_else(|| no_project(&parsed, &projects))?;
 
     let project_id = built.task.project_id;
     let project = project_label(&projects, project_id);
-    // On the task itself, so it travels the ordinary write path: the store row, the
-    // outbox payload and the create's body all carry the whole `Task`. The text is
-    // body, never quick-add -- only the title line is parsed.
-    let description = mode.description.text().to_string();
-    built.task.description.clone_from(&description);
-    let queued = queue_add(&store, built, mode.create_labels).await?;
+    let (queued, description) = describe_and_queue(
+        &store,
+        built,
+        &mode,
+        &editor::ShellEditor::from_env(),
+        &project,
+    )
+    .await?;
 
     let outcome = Outcome {
         title: &queued.title,
@@ -1438,16 +1441,53 @@ pub enum Description {
     /// Given inline, from a file or from stdin, and already through
     /// `description::normalise`.
     Given(String),
+    /// To be written in the user's editor, once the title and project are known so the
+    /// file can name them. The caller has checked there is a terminal for it.
+    Edit,
 }
 
 impl Description {
-    /// The text, or `""` for none.
+    /// The text, or `""` for none -- and for one still to be written, which only a dry
+    /// run could ask about, and `--dry-run` refuses `--edit`.
     fn text(&self) -> &str {
         match self {
-            Self::None => "",
+            Self::None | Self::Edit => "",
             Self::Given(text) => text,
         }
     }
+}
+
+/// Settle the description, then queue the task carrying it.
+///
+/// The editor runs first, before anything is queued -- a label `--create-labels` would
+/// make included -- so an editor that exits non-zero leaves the outbox exactly as it
+/// was. Returns the description beside what was queued, for the report.
+///
+/// The description goes on the task itself, so it travels the ordinary write path: the
+/// store row, the outbox payload and the create's body all carry the whole `Task`. It is
+/// body text, never quick-add: only the title line was parsed.
+///
+/// # Errors
+/// The editor failed or was cancelled, what it wrote is not a description, or
+/// [`queue_add`] failed.
+async fn describe_and_queue(
+    store: &Store,
+    mut built: tui_do_ui::QuickAdd,
+    mode: &AddMode,
+    editor: &dyn editor::Editor,
+    project: &str,
+) -> anyhow::Result<(Queued, String)> {
+    let description = match &mode.description {
+        // Blocking, on purpose: nothing else is running yet, and the editor owns the
+        // terminal until it exits.
+        Description::Edit => {
+            editor::compose(editor, &printable(&built.task.title), &printable(project))?
+        }
+        given => given.text().to_string(),
+    };
+    built.task.description.clone_from(&description);
+    let queued = queue_add(store, built, mode.create_labels).await?;
+    Ok((queued, description))
 }
 
 /// How wide a dry run's glimpse of the description is, in characters.
@@ -1793,6 +1833,57 @@ mod tests {
             project_label(&projects, tui_do_core::models::ProjectId(9)),
             "9"
         );
+    }
+
+    /// An editor that exits non-zero queues nothing at all -- not the task, and not a
+    /// label `--create-labels` would have made for it.
+    #[tokio::test]
+    async fn a_cancelled_editor_queues_nothing() {
+        let store = Store::in_memory().unwrap();
+        let built = tui_do_ui::QuickAdd {
+            task: tui_do_core::models::Task {
+                title: "write it".to_string(),
+                project_id: tui_do_core::models::ProjectId(1),
+                ..tui_do_core::models::Task::default()
+            },
+            unknown_labels: vec!["brand-new".to_string()],
+            ambiguous_project: false,
+        };
+        let mode = AddMode {
+            create_labels: true,
+            description: Description::Edit,
+            ..AddMode::default()
+        };
+        let error = describe_and_queue(
+            &store,
+            built.clone(),
+            &mode,
+            &editor::tests::FakeEditor::failing(),
+            "Work",
+        )
+        .await
+        .err()
+        .expect("a cancelled editor is an error");
+        assert!(error.to_string().contains("nothing was added"), "{error}");
+        assert_eq!(store.pending_count().await.unwrap(), 0);
+
+        // And one that writes queues the task with exactly that description.
+        let editor = editor::tests::FakeEditor::writing("Line one.\n\nLine two.\n");
+        let (_, description) = describe_and_queue(&store, built, &mode, &editor, "Work")
+            .await
+            .unwrap();
+        assert_eq!(description, "Line one.\n\nLine two.");
+        let (_, template) = editor.saw.borrow().clone().unwrap();
+        assert!(template.contains("\"write it\" in Work"), "{template}");
+        let queued = store.pending(None).await.unwrap();
+        let task = queued
+            .iter()
+            .find_map(|entry| match &entry.mutation {
+                tui_do_core::store::Mutation::CreateTask { task } => Some(task),
+                _ => None,
+            })
+            .expect("the task was queued");
+        assert_eq!(task.description, "Line one.\n\nLine two.");
     }
 
     /// A dry run and a real add word the same outcome the same way, bar the tense.

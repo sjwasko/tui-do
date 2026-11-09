@@ -1,9 +1,14 @@
-//! `tui-do add` with a description: `-d`, `--description-file`, and their reports.
+//! `tui-do add` with a description: `-d`, `--description-file`, `--edit`, and the reports.
 //!
 //! Each test runs the built binary against a scratch config *and* a scratch store, both
 //! set, never one: a scratch config alone still writes to the real store. The server is
 //! a loopback port nothing listens on, and every add is `--offline` besides.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -332,5 +337,123 @@ async fn a_description_on_stdin_needs_the_text_as_an_argument() {
         "{stderr}"
     );
     assert!(queued(&dir).await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_editor_is_refused_without_a_terminal() {
+    let dir = scratch("edit-no-tty").await;
+    let marker = dir.join("editor-ran");
+    let output = command(&dir, &["add", "--offline", "Write it +Personal", "--edit"])
+        .env_remove("VISUAL")
+        .env("EDITOR", format!("touch '{}'", marker.display()))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr.contains("neither stdin nor stdout is a terminal"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--edit opens an editor"), "{stderr}");
+    assert!(!marker.exists(), "the editor was started anyway");
+    assert!(queued(&dir).await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Quote `text` for `sh`, single quotes and all.
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Run `args` under a pseudo-terminal through util-linux `script`, so `--edit`'s check
+/// passes and the editor gets a terminal, as it would from a person's shell. `None` if
+/// there is no `script` here to do it with.
+fn under_a_pty(dir: &Path, args: &[&str], editor: &str) -> Option<Output> {
+    let available = Command::new("script")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !available {
+        return None;
+    }
+    let mut line = sh_quote(env!("CARGO_BIN_EXE_tui-do"));
+    for arg in args {
+        line.push(' ');
+        line.push_str(&sh_quote(arg));
+    }
+    Some(
+        Command::new("script")
+            .args(["-qec", &line, "/dev/null"])
+            .env("TUI_DO_CONFIG", dir.join("config.yaml"))
+            .env("TUI_DO_DB", dir.join("tui-do.db"))
+            .env_remove("VISUAL")
+            .env("EDITOR", editor)
+            .stdin(Stdio::null())
+            .output()
+            .expect("script runs"),
+    )
+}
+
+/// The whole of `--edit` through the built binary: a real `$EDITOR`, with an argument
+/// in it the way `code --wait` has one, run by `sh` on a real terminal.
+#[tokio::test]
+async fn a_real_editor_writes_the_description() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = scratch("edit-real").await;
+    let body = dir.join("body.md");
+    std::fs::write(&body, "# Steps\n\n1. Draft\n2. Review\n").unwrap();
+    let script = dir.join("fake editor.sh");
+    // Keeps the template's header below what it writes, as a person typing on the
+    // first line would, and records what it was given.
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = --wait ] || exit 3\ncp \"$2\" {seen}\n{{ cat {body}; cat \"$2\"; }} > \"$2.new\" && mv \"$2.new\" \"$2\"\n",
+            seen = sh_quote(dir.join("seen").to_str().unwrap()),
+            body = sh_quote(body.to_str().unwrap()),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let editor = format!("{} --wait", sh_quote(script.to_str().unwrap()));
+
+    let Some(output) = under_a_pty(
+        &dir,
+        &["add", "--offline", "Write the plan +Personal", "--edit"],
+        &editor,
+    ) else {
+        eprintln!("skipped: no util-linux `script` to make a terminal with");
+        return;
+    };
+    let out = stdout(&output);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        out.contains("Added \"Write the plan\" to Personal, with a description (2 paragraphs, "),
+        "{out}"
+    );
+
+    let seen = std::fs::read_to_string(dir.join("seen")).unwrap();
+    assert!(seen.contains("\"Write the plan\" in Personal"), "{seen}");
+    let tasks = queued(&dir).await;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0].description, "# Steps\n\n1. Draft\n2. Review");
+
+    // A cancelled editor adds nothing at all.
+    let Some(cancelled) = under_a_pty(
+        &dir,
+        &["add", "--offline", "Not this one +Personal", "--edit"],
+        "false",
+    ) else {
+        return;
+    };
+    assert!(!cancelled.status.success(), "{cancelled:?}");
+    assert!(
+        stdout(&cancelled).contains("nothing was added"),
+        "{cancelled:?}"
+    );
+    assert_eq!(queued(&dir).await.len(), 1, "the cancelled add was queued");
     let _ = std::fs::remove_dir_all(&dir);
 }
