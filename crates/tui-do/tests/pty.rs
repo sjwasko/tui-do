@@ -2,7 +2,7 @@
 //!
 //! Each run happens under util-linux `script`, inside a small `sh` script that starts
 //! tui-do, waits until it has the terminal in raw mode, does whatever the test asks --
-//! nothing, or a signal -- waits for tui-do to exit within a bound, and then prints the
+//! nothing, or a signal (BUG-31) -- waits for tui-do to exit within a bound, and then prints the
 //! terminal's modes with `stty -a`: the same terminal, read after tui-do has gone. Where
 //! there is no `script`, each test says it was skipped and passes.
 //!
@@ -19,6 +19,10 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// What a terminal says when asked where its cursor is, as if it were in the top corner.
+/// `script` has no emulator behind it, so nothing else answers the inline prompt's query.
+const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tui-do-pty-{name}-{}", std::process::id()));
@@ -85,10 +89,10 @@ impl Run {
     }
 }
 
-/// Run tui-do with `args` under a pty. Once it is in raw mode, `reply` (if any) is typed
-/// at it and `then` runs in the shell, with tui-do's pid in `$pid`. `None` if there is no
-/// `script` here.
-fn on_a_pty(dir: &Path, args: &[&str], reply: Option<&[u8]>, then: &str) -> Option<Run> {
+/// Run tui-do with `args` under a pty. Once it is in raw mode, `then` runs in the shell,
+/// with tui-do's pid in `$pid`. With `answer_cursor`, every cursor-position query tui-do
+/// writes is answered as a terminal emulator would. `None` if there is no `script` here.
+fn on_a_pty(dir: &Path, args: &[&str], answer_cursor: bool, then: &str) -> Option<Run> {
     if !have_script() {
         return None;
     }
@@ -102,7 +106,8 @@ fn on_a_pty(dir: &Path, args: &[&str], reply: Option<&[u8]>, then: &str) -> Opti
     // set its modes. Raw mode is waited for for 10 s at most, and the exit for 5 s, after
     // which tui-do is killed and the run reports no code.
     let body = format!(
-        r#"{line} < /dev/tty > /dev/tty 2>&1 &
+        r#"stty rows 24 cols 80
+{line} < /dev/tty > /dev/tty 2>&1 &
 pid=$!
 n=0
 until stty -a | grep -q -- '-icanon'; do
@@ -130,24 +135,27 @@ echo "@modes $(stty -a | tr '\n' ' ')"
         .stdout(Stdio::piped())
         .spawn()
         .expect("script runs");
-    // Read as it arrives, so the reply goes in while tui-do is waiting for it.
+    // Read as it arrives, so each reply goes in while tui-do is waiting for it.
     let mut keyboard = child.stdin.take();
     let mut screen = child.stdout.take().unwrap();
     let mut seen = Vec::new();
     let mut chunk = [0u8; 4096];
-    let mut replied = reply.is_none();
+    let mut answered = 0;
     loop {
         let read = screen.read(&mut chunk).unwrap_or(0);
         if read == 0 {
             break;
         }
         seen.extend_from_slice(&chunk[..read]);
-        if !replied && String::from_utf8_lossy(&seen).contains("@raw=") {
-            if let (Some(keys), Some(reply)) = (keyboard.as_mut(), reply) {
-                let _ = keys.write_all(reply);
+        let asked = seen.windows(4).filter(|at| at == b"\x1b[6n").count();
+        if answer_cursor && asked > answered {
+            if let Some(keys) = keyboard.as_mut() {
+                for _ in answered..asked {
+                    let _ = keys.write_all(CURSOR_REPLY);
+                }
                 let _ = keys.flush();
             }
-            replied = true;
+            answered = asked;
         }
     }
     drop(keyboard);
@@ -184,7 +192,7 @@ const SKIPPED: &str = "skipped: no util-linux `script` to make a terminal with";
 #[test]
 fn a_prompt_that_cannot_find_its_cursor_gives_the_terminal_back() {
     let dir = scratch("no-cursor");
-    let Some(run) = on_a_pty(&dir, &["add", "--offline"], None, ":") else {
+    let Some(run) = on_a_pty(&dir, &["add", "--offline"], false, ":") else {
         eprintln!("{SKIPPED}");
         return;
     };
@@ -195,4 +203,38 @@ fn a_prompt_that_cannot_find_its_cursor_gives_the_terminal_back() {
         "{run:#?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-31: SIGTERM's default action ends the process without unwinding, so neither the
+/// guard's `Drop` nor the panic hook ran, and the shell came back raw on the alternate
+/// screen. It must leave the way `q` does and exit as a shell reports a SIGTERM.
+#[test]
+fn sigterm_ends_the_interface_and_gives_the_terminal_back() {
+    let dir = scratch("interface-term");
+    let Some(run) = on_a_pty(&dir, &[], false, "sleep 0.5; kill -TERM $pid") else {
+        eprintln!("{SKIPPED}");
+        return;
+    };
+    run.assert_restored(143);
+    assert!(
+        run.transcript.contains("\x1b[?1049l"),
+        "the alternate screen was not left: {run:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other two, each with its own code. SIGHUP's restore is not waited on, but a
+/// `kill -HUP` leaves the terminal alive, and the restore must still reach it.
+#[test]
+fn sighup_and_sigquit_end_the_interface_with_their_own_codes() {
+    for (signal, code) in [("HUP", 129), ("QUIT", 131)] {
+        let dir = scratch(&format!("interface-{signal}"));
+        let then = format!("sleep 0.5; kill -{signal} $pid");
+        let Some(run) = on_a_pty(&dir, &[], false, &then) else {
+            eprintln!("{SKIPPED}");
+            return;
+        };
+        run.assert_restored(code);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

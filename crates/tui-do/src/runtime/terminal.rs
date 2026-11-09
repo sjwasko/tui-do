@@ -4,7 +4,9 @@
 //! undoing them — through an error path, a signal, or a panic in a dependency — the
 //! user's shell is left without echo and without a cursor, and their only recourse is
 //! `reset`. So the restore happens in a `Drop` *and* in a panic hook, and both are
-//! idempotent.
+//! idempotent. A signal reaches neither by itself, so whoever holds the terminal also
+//! listens for the ones that end the process and leaves through the `Drop` (BUG-31,
+//! `super::signals`).
 //!
 //! The hook runs on whichever thread panicked, and a panic inside a spawned task does not
 //! end the process: tokio catches it at the task boundary. So the hook can hand the
@@ -148,6 +150,40 @@ impl<B: Backend> TerminalGuard<B> {
             .draw(render)
             .map_err(|error| anyhow::anyhow!("could not draw to the terminal: {error}"))?;
         Ok(true)
+    }
+}
+
+/// How long a restore after SIGHUP may hold up the exit. A terminal that is still there
+/// answers in microseconds; one that has gone either fails at once or never answers.
+const HANGUP_RESTORE: std::time::Duration = std::time::Duration::from_millis(250);
+
+impl<B: Backend + Send + 'static> TerminalGuard<B> {
+    /// Give the terminal back, the way the signal that ended the session (if one did)
+    /// allows: after SIGHUP without waiting on it for long, otherwise by an ordinary drop.
+    pub fn release_for(self, signal: Option<super::Signal>) {
+        if signal.is_some_and(super::Signal::hung_up) {
+            self.release_within(HANGUP_RESTORE);
+        } else {
+            drop(self);
+        }
+    }
+
+    /// Give the terminal back without waiting on it for longer than `within`.
+    ///
+    /// For SIGHUP, when the terminal has probably gone (BUG-31). The restore writes
+    /// escape sequences and sets the terminal's modes, and on a terminal that has hung up
+    /// those can fail -- which [`restore`] ignores -- or wait on a peer that will never
+    /// read. So the guard is dropped on a thread of its own, and if that thread is still
+    /// stuck when `within` runs out the caller goes on without it: the process is about
+    /// to end, which takes the thread with it. Writing nothing at all would be wrong, as
+    /// a `kill -HUP` from another pane leaves the terminal very much alive.
+    fn release_within(self, within: std::time::Duration) {
+        let (done, released) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(self);
+            let _ = done.send(());
+        });
+        let _ = released.recv_timeout(within);
     }
 }
 
