@@ -122,6 +122,9 @@ and it should outrank this ordering.
 ## Now
 
 **1. Wait on the OAuth spec PR, then refresh `spec/vikunja.json`.** *(raised 2026-09-08)*
+**Unblocked 2026-11-08:** dev and prod are both on Vikunja 2.8.0, and the spec was refreshed
+from dev that day — `POST /oauth/authorize` and `POST /oauth/token` are now in
+`spec/vikunja.json`. The wait is over; the OAuth work itself has not started.
 [`go-vikunja/vikunja#3837`](https://github.com/go-vikunja/vikunja/pull/3837) **merged
 2026-09-10** — confirmed against the API on 2026-09-14, not taken from a handoff. It adds
 `@Router` annotations for `/oauth/authorize` and `/oauth/token` plus the regenerated
