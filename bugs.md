@@ -61,7 +61,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
 | ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
 | ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
-| ~~BUG-23~~ | FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset; the held-key half by BUG-28 | yes |
+| ~~BUG-23~~ | FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset; the held-key half by BUG-28, against its ~30 sends/s threshold | yes |
 | ~~BUG-28~~ | FIXED — the batched children compared against the per-task reads over a varied store, and a traced statement count that stays at 4 for 3 tasks and for 400 | yes |
 | ~~BUG-29~~ | FIXED — the user's sentence plus mid-sentence, end-of-line and two-date tables, title and dates both asserted | yes |
 
@@ -73,7 +73,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
-| **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read, and the push drains everything queued while the key is down |
+| **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read. Fixed against the ~30 sends/s threshold decided when BUG-28 was filed: a held key still costs the push most of its throughput, now 97-182/s against 624/s idle |
 | **Found in real use** | ~~BUG-29~~ — FIXED 2026-11-08: a quick-add date leaves the title only from the end of the line; mid-sentence it is still set and stays as typed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
@@ -1617,9 +1617,11 @@ key is *held*, which is filed as **BUG-28** below. Three changes:
 
 **What this left** was the starvation the title names, while the key is held: one
 coalesced task-list read is always running, and the push still got about 1.4 sends a
-second. That was filed as BUG-28 and is **fixed there, 2026-11-08**: the read is now four
-statements rather than ~5,800 and holds the lock for 25 ms rather than 141 ms, and with a
-key held the push drains everything queued, as it does with no reloads at all.
+second. That was filed as BUG-28 and is **fixed there, 2026-11-08, against the ~30
+sends/s threshold decided when BUG-28 was filed**: the read is now four statements rather
+than ~5,800 and holds the lock for 25 ms rather than 141 ms. **A held key still costs the
+push most of its throughput**, now 97-182/s against 624/s idle with 3,000 queued, which is
+about 15-30 % of the rate with no reloads. Under the threshold, not gone.
 
 Tests: `a_drain_parses_each_payload_once_however_deep_the_queue` asserts 60 parses for 60
 entries (the old drain made 1,830); `an_entry_queued_mid_drain_goes_out_in_the_same_pass`
@@ -1951,9 +1953,11 @@ array, so there is one parameter at any count and SQLite's variable limit never 
 it, then hands the rows out to their tasks in memory. A task-list read is **four
 statements**, whatever the number of tasks. Each task's children keep the order the
 per-task reads gave: labels by title ignoring case, assignees by username ignoring case,
-reminders by instant then period. Titles and usernames that are equal ignoring case now
-fall back to the id. The old reads put them in that order too, but only because of how
-SQLite happened to plan those queries. The mutex and the single connection are unchanged.
+reminders by instant then period. **The old tie order was planner-dependent:** for titles
+or usernames equal ignoring case, the per-task queries named no tie-break, and they came
+out in id order only because of how SQLite planned them. The batched queries now break the
+tie by `id`, which makes that order explicit. The mutex and the single connection are
+unchanged.
 
 **Measured 2026-11-08** with a throwaway probe built the way BUG-23's was: a file-backed
 store of 3,877 tasks with up to three labels (of 40), two assignees (of 10) and two
@@ -1975,10 +1979,17 @@ the no-reload run hits. With 3,000 queued, so nothing runs out, the new code sen
 column is 9-11× better than the 1.4 sends/s this entry was filed with, from a box under
 less load. Both columns were measured under the same load, so compare them with each other.
 
+**What "fixed" means here.** This is fixed against the ~30 sends/s threshold decided when
+BUG-28 was filed. **A held key still costs the push most of its throughput**, now
+97-182/s against 624/s idle, so with a key down the push runs at about 15-30 % of its
+unloaded rate. The queue now goes down while the key is held instead of piling up, which
+is what the threshold was for. It does not mean reloads no longer cost the push anything.
+
 **The second candidate, a minimum interval between task-list reloads, was not built.**
 It was to go in only if the push still got under ~30 sends a second with the key held,
 and it gets roughly 100-180. Leaving it out keeps the coalesce gate as BUG-23 wrote it,
-and the list keeps up with the keyboard.
+and the list keeps up with the keyboard. It is still the lever to reach for if the
+remaining 70-85 % ever matters.
 
 Tests, in `store::tasks::tests::batched`:
 `a_batched_read_assembles_every_task_as_the_per_task_reads_did` keeps the old per-task
