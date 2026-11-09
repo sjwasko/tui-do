@@ -601,10 +601,19 @@ contain a `?`. Four steps, in this order:
    after `due`/`start`, or on an empty line, because titles contain question marks; anywhere
    else it is a literal `?`. **F1** always opens help. The interface's `a` prompt is the same
    `TextInput` and should get the same behaviour. `tui-do add 'text'` is unchanged.
-3. **Dynamic shell completion of names** through clap's dynamic completion, so
+3. **Done 2026-11-08: dynamic shell completion of names** through clap's dynamic completion, so
    `tui-do add Call the VA +Le⇥` completes from the store. Works on unquoted words; quoting
    varies by shell. `?` cannot be made to work in bash/zsh without a key binding the user
    installs, so it is not attempted there.
+   *Shipped as `crates/tui-do/src/complete.rs`, on clap_complete 4.6.9's `CompleteEnv` and
+   `ArgValueCompleter` (the `unstable-dynamic` feature; no crate upgraded). Enabled with
+   `source <(TUI_DO_COMPLETE=bash tui-do)`, the same for zsh, and
+   `TUI_DO_COMPLETE=fish tui-do | source`; `TUI_DO_COMPLETE` rather than clap's default
+   `COMPLETE`, which is too generic a name to own. The rules are `assist::candidates`, the
+   same slots and names as the prompt's Tab, written whole; the store is opened read-only
+   through `vocabulary_at`, and a missing one gives no candidates and no file. The static
+   `tui-do completions <shell>` is unchanged. The protocol is clap's and marked unstable,
+   which is why the README says to generate the script at shell start, not save it.*
 4. **`--tokens` (or `--json`) for agents** — the agent's `?`: the real projects, labels and
    users it may name. Belongs with item 3a's `--json` contract rather than ahead of it.
 

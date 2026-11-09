@@ -11,6 +11,7 @@ use anyhow::{bail, Context};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use tui_do_core::config::{migrate, Config};
 
+mod complete;
 mod login;
 mod runtime;
 
@@ -204,6 +205,25 @@ enum Command {
     ///
     /// Re-run it after upgrading tui-do: the script is generated from the same command
     /// table as `--help`, so a stale one offers flags that have moved.
+    ///
+    /// NAMES FROM THE STORE
+    ///
+    /// The script above completes flags and subcommands only. To have
+    /// `tui-do add Call the VA +Le<TAB>` offer `+Legal`, use the dynamic script instead,
+    /// which asks tui-do on every Tab. Add one line to the shell's startup file:
+    ///
+    ///   bash  ~/.bashrc                    source <(TUI_DO_COMPLETE=bash tui-do)
+    ///   zsh   ~/.zshrc, after compinit     source <(TUI_DO_COMPLETE=zsh tui-do)
+    ///   fish  ~/.config/fish/config.fish   TUI_DO_COMPLETE=fish tui-do | source
+    ///
+    /// It completes +project, *label and @user from the local store, a date word after
+    /// `due` or `start`, and the flags as well. It reads the store and never writes,
+    /// syncs or contacts a server; with no store it offers nothing. Generate it at shell
+    /// start, as above, rather than saving it: the script and the binary speak a
+    /// protocol that may change between versions.
+    ///
+    /// It completes unquoted words. Inside a quoted '...' argument, what happens differs
+    /// by shell. `?` is not attempted in a shell; the `tui-do add` prompt has it.
     #[command(verbatim_doc_comment)]
     Completions(CompletionsArgs),
 }
@@ -444,6 +464,8 @@ fn init_logging() -> Option<PathBuf> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // First: a shell asking for completions gets them and nothing else on stdout.
+    complete::handle(Cli::command);
     let cli = Cli::parse();
     init_logging();
 

@@ -512,7 +512,29 @@ $ tui-do add 'Write the plan +Work due 2026-11-12' --description-file plan.md
 Added "Write the plan" to Work, due Thu 12 Nov 2026, with a description (5 paragraphs, 114 characters)
 ```
 
-Shell completions, including for the quick-add flags:
+Shell completions come in two kinds. **Names** — `tui-do add Call the VA +Le` then Tab
+offers `+Legal` — come from your local store, so the shell has to ask tui-do on every Tab.
+Add one line to your shell's startup file:
+
+| shell | in | add |
+|---|---|---|
+| bash | `~/.bashrc` | `source <(TUI_DO_COMPLETE=bash tui-do)` |
+| zsh | `~/.zshrc`, after `compinit` | `source <(TUI_DO_COMPLETE=zsh tui-do)` |
+| fish | `~/.config/fish/config.fish` | `TUI_DO_COMPLETE=fish tui-do \| source` |
+
+That completes `+project`, `*label` and `@user` from the store, a date word after `due` or
+`start`, and the flags and subcommands too. A name with a space comes out in brackets,
+`+[Life Admin]`. It reads the store and never writes, syncs or contacts a server, and with no
+store it offers nothing. It is generated on each shell start rather than saved, because the
+script and the binary speak a protocol that may change between versions.
+
+It completes unquoted words. Inside a quoted `'…'` argument, what happens differs from shell
+to shell, and often nothing does. `?` is not offered in a shell at all: only the `tui-do add`
+prompt has it. bash puts a bracketed name in unescaped, as two words, which is fine because
+`tui-do add` joins its words with a space. An unquoted `!3` is still bash history expansion,
+as above.
+
+**Flags only**, from a file written once, still works as it always did:
 
 ```sh
 tui-do completions fish > ~/.config/fish/completions/tui-do.fish

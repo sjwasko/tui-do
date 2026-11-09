@@ -1120,7 +1120,7 @@ async fn open_existing_at(store_path: &std::path::Path) -> anyhow::Result<Store>
     }
 }
 
-fn store_path() -> anyhow::Result<std::path::PathBuf> {
+pub(crate) fn store_path() -> anyhow::Result<std::path::PathBuf> {
     Store::default_path().context("could not decide where to keep the store")
 }
 
@@ -1138,7 +1138,7 @@ pub async fn vocabulary() -> tui_do_ui::assist::Vocabulary {
 }
 
 /// [`vocabulary`], from the store at `store_path`.
-async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocabulary {
+pub(crate) async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocabulary {
     let Ok(store) = open_existing_at(store_path).await else {
         return tui_do_ui::assist::Vocabulary::default();
     };
