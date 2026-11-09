@@ -625,10 +625,9 @@ help!
 
 **Coming**
 
-- **A macOS port.** The hard part is already done: rendering needs no platform knowledge at
-  all, and the one thing that genuinely does, opening a URL, is already behind a seam built
-  for this. It may well build today, but it is not tested or supported yet; that should be a
-  quick gap to close.
+- **The macOS Keychain.** On a Mac, `tui-do login` will store your API token in the
+  Keychain rather than in a file. Linux keeps the file, at mode `0600`, which `login`
+  already writes for you.
 - **A real agent surface.** `add` is the only action right now. Reading, completing, moving
   and searching from the command line turn tui-do into something an agent can actually
   operate rather than only write to. See [For agents](#for-agents); this is the one I most
@@ -667,13 +666,14 @@ test any of it are very welcome.
 
 ## Platform support
 
-**Linux is the only supported platform.** Developed on Omarchy (Arch), with Ubuntu as the
-second supported target: built and tested against 26.04 in CI, and hand-driven on both 24.04
-and 26.04 hardware, on x86-64 and aarch64 alike.
+**Linux and macOS are supported.**
 
-- **macOS.** Apple Silicon, tested by hand on macOS 26 across several terminals, tmux, and
-  over SSH from Linux. Installed with Homebrew or from the release tarball. Intel is not
-  built.
+- **Linux.** Developed on Omarchy (Arch), with Ubuntu as the second target: built and tested
+  against 26.04 in CI, and hand-driven on both 24.04 and 26.04 hardware, on x86-64 and
+  aarch64 alike.
+- **macOS.** Apple Silicon only. The test suite runs on macOS in CI, and the interface is
+  tested by hand on macOS 26 across several terminals, tmux, and over SSH from Linux.
+  Installed with Homebrew or from the release tarball. Intel is not built.
 - **Windows.** Not a target. Use [WSL](https://learn.microsoft.com/windows/wsl/install) and
   run the Linux build. There are no plans to ship a native Windows binary.
 

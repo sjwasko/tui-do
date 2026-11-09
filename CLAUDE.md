@@ -572,7 +572,10 @@ static binary against the LTS people actually run. Both are now driven by hand: 
 The old wording is worth remembering only as the shape of the argument — a claim about "the
 supported platform" that rests on two different kinds of evidence should say which is which.
 
-macOS is a post-1.0 port; there is a non-gating `cargo check` in CI purely to limit drift.
+**macOS (Apple Silicon) is supported, as of 2026-11-09.** It has shipped as a release
+binary since v1.1.0. Before that it was a post-1.0 port with a non-gating `cargo check` in
+CI. CI now runs the workspace tests on `macos-latest` and gates on them, and the Homebrew
+tap installs the release binary rather than building from source. Intel Macs are not built.
 Windows is answered with "use WSL" and is not a build target.
 
 Still write portably where it is free: paths via `dirs`, never cwd-relative writes,
