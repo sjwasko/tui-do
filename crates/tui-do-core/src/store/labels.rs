@@ -4,6 +4,8 @@
 //! every task that carries them. Both land here, through [`upsert_label`], so a label
 //! picker works from whatever has been seen so far rather than only after a labels pull.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use tui_do_api::models::{Label, LabelId, TaskId};
@@ -291,26 +293,41 @@ pub(super) fn is_being_created(tx: &Transaction<'_>, label: LabelId) -> Result<b
     )? == 1)
 }
 
-/// The labels attached to a task.
-pub(super) fn labels_for(
+/// The labels attached to each of `tasks`, keyed by task id, each task's in title order.
+///
+/// One statement however many tasks there are. BUG-28: one per task made the open list
+/// about 1,900 label reads, a third of the ~5,800 statements behind one task-list read.
+/// `tasks` is a JSON array of ids, so the statement has one parameter at any count and
+/// never meets SQLite's variable limit.
+pub(super) fn labels_for_tasks(
     connection: &Connection,
-    task: tui_do_api::models::TaskId,
-) -> Result<Vec<Label>> {
-    let mut statement = connection.prepare(&format!(
-        "{SELECT} JOIN task_labels ON task_labels.label_id = labels.id
-          WHERE task_labels.task_id = ?1
-          ORDER BY labels.title COLLATE NOCASE"
-    ))?;
-    let rows = statement.query_map(params![task.get()], row_to_label)?;
-    let mut labels = Vec::new();
-    for label in rows {
-        labels.push(label?);
+    tasks: &str,
+) -> Result<HashMap<i64, Vec<Label>>> {
+    let mut statement = connection.prepare(
+        "SELECT task_labels.task_id AS for_task,
+                labels.*,
+                creator.username AS creator_username,
+                creator.name     AS creator_name,
+                creator.email    AS creator_email
+           FROM task_labels
+           JOIN labels ON labels.id = task_labels.label_id
+           LEFT JOIN users AS creator ON creator.id = labels.created_by_id
+          WHERE task_labels.task_id IN (SELECT value FROM json_each(?1))
+          ORDER BY task_labels.task_id, labels.title COLLATE NOCASE, labels.id",
+    )?;
+    let rows = statement.query_map(params![tasks], |row| {
+        Ok((row.get::<_, i64>("for_task")?, row_to_label(row)?))
+    })?;
+    let mut labels: HashMap<i64, Vec<Label>> = HashMap::new();
+    for row in rows {
+        let (task, label) = row?;
+        labels.entry(task).or_default().push(label);
     }
     Ok(labels)
 }
 
 /// Build a label from a row produced by [`SELECT`].
-fn row_to_label(row: &Row<'_>) -> rusqlite::Result<Label> {
+pub(super) fn row_to_label(row: &Row<'_>) -> rusqlite::Result<Label> {
     Ok(Label {
         id: row.get::<_, i64>("id")?.into(),
         title: row.get("title")?,

@@ -34,6 +34,9 @@ wiremock.workspace = true
 # date (BUG-20). Tests only: the runtime gets its rules from `chrono::Local`.
 chrono-tz.workspace = true
 tui-do-core = { path = ".", features = ["test-hooks"] }
+# `Connection::trace`, so a test can count the statements one task-list read runs
+# (BUG-28). Tests only: a dev-dependency's features do not reach a normal build.
+rusqlite = { workspace = true, features = ["trace"] }
 
 [lints]
 workspace = true
