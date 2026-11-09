@@ -492,6 +492,12 @@ HTML), with no tokens read out of it. Pick one of three ways:
   EOF
   ```
 
+  Run that from a script or type it where you are. **Do not paste it into a terminal on
+  another machine**: pasted multi-line text often arrives re-indented, the closing `EOF` then
+  no longer matches, and the shell waits at a `>` prompt with nothing added. To file a long
+  description on a remote box, copy the file there (`scp plan.md host:/tmp/plan.md`) and use
+  `--description-file /tmp/plan.md`.
+
 - **`--edit`** (`-e`) opens `$VISUAL`, else `$EDITOR`, else `vi`, the way `git commit` does.
   Everything from the `# ---- >8 ----` scissors line down is ignored, as in `git commit -v`.
   Above it, blank lines at the start and just above the scissors are dropped and the rest is
