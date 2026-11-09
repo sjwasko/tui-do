@@ -66,9 +66,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // presses it again (BUG-22). So what this load cannot be trusted with is laid
             // back over it first.
             let mut tasks = tasks;
-            model
-                .unconfirmed
-                .replay(id, &mut tasks, model.query.include_done);
+            model.unconfirmed.replay(id, &mut tasks, &model.query);
             model.data.tasks = tasks;
             model.data.loading = false;
             model.data.error = None;

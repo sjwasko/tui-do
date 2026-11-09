@@ -16,7 +16,7 @@
 use tui_do_core::models::{Label, Task, TaskId};
 use tui_do_core::store::Mutation;
 
-use crate::query::QueryId;
+use crate::query::{Query, QueryId};
 
 /// Names one write the model asked the runtime to store.
 ///
@@ -145,27 +145,34 @@ impl Overlay {
         self.entries.is_empty()
     }
 
-    /// Lay the edits a load `answered` cannot be trusted with over what it found.
+    /// Lay the edits a load `answered` cannot be trusted with over what it found for
+    /// `query`.
     ///
     /// Forgets first every edit acknowledged before that load was issued, since it found
     /// them already. What is left goes back on in the order it was made, and every step is
     /// idempotent, because the load may have caught some of it anyway: a create is not
-    /// put in twice, an update replaces only a row the load returned -- one the filter
-    /// hides stays hidden -- and a removal of a row that is not there removes nothing.
-    pub fn replay(&mut self, answered: QueryId, tasks: &mut Vec<Task>, include_done: bool) {
+    /// put in twice, nor put in at all where `query` would not show it; an update replaces
+    /// only a row the load returned, so one the filter hides stays hidden; and a removal
+    /// of a row that is not there removes nothing.
+    pub fn replay(&mut self, answered: QueryId, tasks: &mut Vec<Task>, query: &Query) {
         self.entries
             .retain(|entry| entry.acked_during.is_none_or(|acked| acked >= answered));
         for (at, entry) in self.entries.iter().enumerate() {
             let later = &self.entries[at + 1..];
             match &entry.mutation {
-                Mutation::CreateTask { task } if self.already_loaded(entry, task, tasks) => {}
+                // A quick-add into another project, say: drawn at the top as it was made,
+                // and gone again on the first load, which is what the reload did before
+                // there was an overlay. Putting it back here would pin a task to a list
+                // that does not contain it.
+                Mutation::CreateTask { task }
+                    if !query.admits(task) || self.already_loaded(entry, task, tasks) => {}
                 // Only the newest edit to a task says what it should look like now. Laid
                 // on in turn, a `d` followed by its undo would have the first take the
                 // row away and the second find nothing to put back.
                 Mutation::UpdateTask { after, .. }
                     if later.iter().any(|newer| updates(&newer.mutation, after.id)) => {}
                 mutation => {
-                    land(tasks, mutation, include_done);
+                    land(tasks, mutation, query.include_done);
                 }
             }
         }

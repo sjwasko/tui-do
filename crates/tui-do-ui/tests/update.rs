@@ -4516,3 +4516,72 @@ fn an_undo_laid_over_a_load_that_missed_it_shows_the_row_reopened() {
     assert_eq!(titles(&model), ["first", "second", "third"]);
     assert!(!model.data.tasks[0].done);
 }
+
+#[test]
+fn a_create_the_list_would_not_show_is_not_replayed_onto_it() {
+    // Quick-add into another project while looking at this one. The row is drawn at the
+    // top as it is made and the first load takes it away, as the reload always did; the
+    // replay must not put it back, though its id is known and the load does not have it.
+    let mut model = loaded();
+    model.query.scope = Scope::Project(ProjectId(1));
+    press(&mut model, 'a');
+    for c in "for later +Personal".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    assert_eq!(titles(&model)[0], "for later", "drawn as it was made");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+
+    let out = model.query_id;
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: vec![task(1, "first"), task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+}
+
+#[test]
+fn a_query_admits_what_the_store_would_return_for_it() {
+    let mut query = tui_do_ui::Query::default();
+    let mut open = task(1, "Water the Plants");
+    assert!(query.admits(&open));
+
+    open.done = true;
+    assert!(!query.admits(&open), "done tasks are hidden by default");
+    query.include_done = true;
+    assert!(query.admits(&open));
+
+    query.scope = Scope::Project(ProjectId(2));
+    assert!(!query.admits(&open), "another project");
+    query.scope = Scope::Project(ProjectId(1));
+    assert!(query.admits(&open));
+
+    query.search = Some("the plants".to_string());
+    assert!(query.admits(&open), "the search folds case, as LIKE does");
+    query.search = Some("cactus".to_string());
+    assert!(!query.admits(&open));
+    query.search = None;
+
+    query.scope = Scope::Favorites;
+    assert!(!query.admits(&open));
+    open.is_favorite = true;
+    assert!(query.admits(&open));
+
+    query.scope = Scope::Label(LabelId(4));
+    assert!(!query.admits(&open));
+    open.labels.push(Label {
+        id: LabelId(4),
+        title: "home".to_string(),
+        ..Label::default()
+    });
+    assert!(query.admits(&open));
+}
