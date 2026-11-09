@@ -200,3 +200,84 @@ fn the_registration_script_names_the_variable() {
     assert!(!dir.join("tui-do.db").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn a_word_that_matches_nothing_gets_silence() {
+    let dir = seeded("complete-silent").await;
+    for shell in ["bash", "zsh", "fish"] {
+        for line in [
+            &["tui-do", "add", "x", "+Nowhere"][..],
+            &["tui-do", "add", "x", "*nolabel"][..],
+            &["tui-do", "add", "x", "due", "zzz"][..],
+            &["tui-do", "add", "Call", "the"][..],
+        ] {
+            let output = complete(&dir, shell, line);
+            assert!(output.status.success(), "{shell} {line:?}: {output:?}");
+            assert!(output.stdout.is_empty(), "{shell} {line:?}: {output:?}");
+            assert!(output.stderr.is_empty(), "{shell} {line:?}: {output:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A shell runs this on every Tab, so it has to be quick against a store the size of a
+/// real one: dev holds about 3,900 tasks. Measured 2026-11-08 on sw-x1, debug build, the
+/// whole process -- spawn, read-only open, three reads, print -- against 4,000 tasks, 100
+/// projects and 50 users: the slowest of five was 15-39 ms over three runs alone, and 35 ms
+/// beside the other tests. The 200 ms bound leaves room for a loaded CI box.
+#[tokio::test]
+async fn completion_is_quick_against_a_full_store() {
+    use tui_do_core::models::{Task, TaskId, User, UserId};
+    let dir = config_only("complete-timing");
+    let store = Store::open(dir.join("tui-do.db")).await.unwrap();
+    store
+        .upsert_projects(
+            (1..=100)
+                .map(|id| Project {
+                    id: ProjectId(id),
+                    title: format!("Project {id}"),
+                    ..Project::default()
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    store
+        .upsert_tasks(
+            (1..=4000)
+                .map(|id| Task {
+                    id: TaskId(id),
+                    project_id: ProjectId(id % 100 + 1),
+                    title: format!("Task {id}"),
+                    assignees: vec![User {
+                        id: UserId(id % 50 + 1),
+                        username: format!("user{}", id % 50 + 1),
+                        ..User::default()
+                    }],
+                    ..Task::default()
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    drop(store);
+
+    let line = ["tui-do", "add", "x", "@user4"];
+    // Once to warm the page cache, then the slowest of five.
+    let _ = complete(&dir, "bash", &line);
+    let slowest = (0..5)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let output = complete(&dir, "bash", &line);
+            let took = started.elapsed();
+            assert!(!candidates(&output).is_empty(), "{output:?}");
+            took
+        })
+        .max()
+        .unwrap();
+    assert!(
+        slowest < std::time::Duration::from_millis(200),
+        "completion took {slowest:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
