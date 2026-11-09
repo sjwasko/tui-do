@@ -505,8 +505,42 @@ the two processes do not fight."* The two statements contradict each other, and 
 one is correct. MCP does not create this; it widens it from "two processes you start by
 hand, seconds apart" to "four that launch when you open the laptop."
 
-**11. `tui-do add` cannot set a description, and an agent will want one.**
-*(raised 2026-09-14)*
+**11. ~~`tui-do add` cannot set a description, and an agent will want one.~~ Done
+2026-11-08.** *(raised 2026-09-14)*
+
+**What was decided, and built.** All three questions below were answered "yes, and":
+
+- **Three ways in, one at a time** (clap conflicts): `-d/--description <TEXT>` inline,
+  newlines kept; `--description-file <PATH>`, where `-` is stdin, for a heredoc or a pipe;
+  and `-e/--edit`, which opens `$VISUAL`, else `$EDITOR`, else `vi` through `sh -c
+  '$EDITOR "$@"'` exactly as git does, on a `0600` temporary file that is removed on every
+  path out. `--edit` needs a terminal at both ends (the same predicate as BUG-25's), refuses
+  `--dry-run` (a description written to be thrown away is lost work), and a non-zero exit
+  (`:cq`) queues nothing, not even a `--create-labels` label. The template is git's: an
+  empty line to type on, then a `>8` scissors line, then help naming the task and project.
+  Everything from the scissors down is dropped, whatever was done to it; above it only
+  leading blank lines and blank lines just above the scissors go, so `# Heading` survives.
+  A deleted scissors line keeps the whole file and warns. The 64 KiB cap counts the kept
+  body, not the help. The title is made printable first, so a newline in it cannot forge a
+  scissors line. `--description-file -` with no task text is refused in words,
+  since stdin cannot be both the description and step 2's prompt.
+- **Stored as given.** No Markdown conversion and no guessing: CRLF becomes LF, one trailing
+  newline is dropped, and that is all. Invalid UTF-8, a NUL (PostgreSQL rejects one in text)
+  or more than **64 KiB** is refused before anything is queued. The cap is ours: the spec
+  gives `description` no `maxLength` and Vikunja stores it as long text, so 64 KiB is a
+  generous guard against a misnamed file, which every later edit would otherwise re-send.
+  Quick-add tokens in the body are text. `tui_do_core::description` holds the rules, so the
+  MCP `add_task` (3a) can share them.
+- **It prints a count.** `, with a description (3 paragraphs, 1,240 characters)` is appended
+  to the `Added` line after the dates, through step 1's shared `Outcome`; a dry run adds
+  `Description begins: "…"`, cut to 60 characters and made printable.
+
+The text rides on `Task::description` through the ordinary path; a sync test asserts the
+create's `PUT` body carries it verbatim, and the binary's tests read it back out of the
+outbox for `-d`, a file, stdin and a real `$EDITOR` under a pty (`script`).
+
+The original entry follows.
+
 Verified rather than assumed: there is no `--description` flag, no quick-add token for one,
 and `runtime::add` takes `text`, `offline` and `create_labels` and nothing else. The whole of
 what `tui-do add` can express is a title plus the quick-add tokens.

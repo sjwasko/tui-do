@@ -10,6 +10,7 @@
 //! a message back. The render loop's only await is on the message channel.
 
 mod coalesce;
+mod editor;
 mod prompt;
 mod terminal;
 
@@ -1206,7 +1207,7 @@ pub async fn add(
     // run never so much as builds a client.
     if mode.dry_run {
         let store = open_existing_store().await?;
-        return rehearse(config, &store, &parsed, &clock, mode.create_labels).await;
+        return rehearse(config, &store, &parsed, &clock, &mode).await;
     }
     let store = open_store().await?;
 
@@ -1258,7 +1259,14 @@ pub async fn add(
 
     let project_id = built.task.project_id;
     let project = project_label(&projects, project_id);
-    let queued = queue_add(&store, built, mode.create_labels).await?;
+    let (queued, description) = describe_and_queue(
+        &store,
+        built,
+        &mode,
+        &editor::ShellEditor::from_env(),
+        &project,
+    )
+    .await?;
 
     let outcome = Outcome {
         title: &queued.title,
@@ -1271,6 +1279,7 @@ pub async fn add(
         backdated: queued.backdated.as_deref(),
         created_labels: &queued.created_labels,
         unknown_labels: &queued.unknown_labels,
+        description: &description,
     };
     let mut lines = outcome.lines(Tense::Did).into_iter();
     if let Some(first) = lines.next() {
@@ -1362,7 +1371,7 @@ async fn rehearse(
     store: &Store,
     parsed: &tui_do_core::quickadd::Parsed,
     clock: &tui_do_core::ZonedTime,
-    create_labels: bool,
+    mode: &AddMode,
 ) -> anyhow::Result<()> {
     let projects = store
         .projects(ProjectFilter::default(), ProjectSort::default())
@@ -1382,10 +1391,15 @@ async fn rehearse(
     .ok_or_else(|| no_project(parsed, &projects))?;
 
     // What `queue_add` would do with the labels, without queuing anything.
-    let (created_labels, unknown_labels) = if create_labels {
+    let (created_labels, unknown_labels) = if mode.create_labels {
         (built.unknown_labels.clone(), Vec::new())
     } else {
         (Vec::new(), built.unknown_labels.clone())
+    };
+    // `--dry-run` and `--edit` conflict in clap, so this is only reached by a caller
+    // that skipped it; refuse rather than open an editor whose work is thrown away.
+    let DescriptionSource::Given(description) = &mode.description else {
+        anyhow::bail!("--dry-run cannot be combined with --edit: what you wrote would be lost");
     };
     let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), *clock);
     let outcome = Outcome {
@@ -1397,6 +1411,7 @@ async fn rehearse(
         backdated: backdated.as_deref(),
         created_labels: &created_labels,
         unknown_labels: &unknown_labels,
+        description,
     };
     for line in outcome.lines(Tense::Would) {
         println!("{line}");
@@ -1410,7 +1425,7 @@ async fn rehearse(
 }
 
 /// How `tui-do add` was asked to run.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AddMode {
     /// Queue without trying to send.
     pub offline: bool,
@@ -1418,7 +1433,74 @@ pub struct AddMode {
     pub create_labels: bool,
     /// Say what would be added, and add nothing.
     pub dry_run: bool,
+    /// Where the task's description comes from.
+    pub description: DescriptionSource,
 }
+
+/// Where a task's description comes from.
+///
+/// Only a source: nothing reports or stores one of these. [`describe_and_queue`] settles
+/// it into the text itself before the task is built and the outcome worded, so a
+/// description still to be written can never be mistaken for an empty one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DescriptionSource {
+    /// Given inline, from a file or from stdin, already through
+    /// `description::normalise`. Empty when none was given.
+    Given(String),
+    /// To be written in the user's editor, once the title and project are known so the
+    /// file can name them. The caller has checked there is a terminal for it.
+    Edit,
+}
+
+impl Default for DescriptionSource {
+    fn default() -> Self {
+        Self::Given(String::new())
+    }
+}
+
+/// Settle the description, then queue the task carrying it.
+///
+/// The editor runs first, before anything is queued -- a label `--create-labels` would
+/// make included -- so an editor that exits non-zero leaves the outbox exactly as it
+/// was. Returns the description beside what was queued, for the report.
+///
+/// The description goes on the task itself, so it travels the ordinary write path: the
+/// store row, the outbox payload and the create's body all carry the whole `Task`. It is
+/// body text, never quick-add: only the title line was parsed.
+///
+/// # Errors
+/// The editor failed or was cancelled, what it wrote is not a description, or
+/// [`queue_add`] failed.
+async fn describe_and_queue(
+    store: &Store,
+    mut built: tui_do_ui::QuickAdd,
+    mode: &AddMode,
+    editor: &dyn editor::Editor,
+    project: &str,
+) -> anyhow::Result<(Queued, String)> {
+    let description = match &mode.description {
+        DescriptionSource::Given(text) => text.clone(),
+        // Blocking, on purpose: nothing else is running yet, and the editor owns the
+        // terminal until it exits.
+        DescriptionSource::Edit => {
+            let composed =
+                editor::compose(editor, &editor::Header::new(&built.task.title, project))?;
+            if composed.scissors_missing {
+                eprintln!(
+                    "warning: the editor's \">8\" scissors line was removed, so the whole \
+                     file was kept as the description, help lines included."
+                );
+            }
+            composed.text
+        }
+    };
+    built.task.description.clone_from(&description);
+    let queued = queue_add(store, built, mode.create_labels).await?;
+    Ok((queued, description))
+}
+
+/// How wide a dry run's glimpse of the description is, in characters.
+const DESCRIPTION_GLIMPSE: usize = 60;
 
 /// Whether [`Outcome::lines`] reports an add that happened or one that would.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1449,6 +1531,9 @@ struct Outcome<'a> {
     created_labels: &'a [String],
     /// Labels named that do not exist, and are left off.
     unknown_labels: &'a [String],
+    /// The description, or `""`. Never printed whole: it is long by nature, so a real
+    /// add reports its size, and a dry run its first line as well.
+    description: &'a str,
 }
 
 impl Outcome<'_> {
@@ -1464,20 +1549,41 @@ impl Outcome<'_> {
             backdated,
             created_labels,
             unknown_labels,
+            description,
         } = self;
         let verb = match tense {
             Tense::Did => "Added",
             Tense::Would => "Would add",
         };
         let mut lines = Vec::new();
+        // On the first line, after the dates, so the line's opening stays the shape
+        // people and the skill doc read.
+        let described = if description.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", with a description ({})",
+                tui_do_core::description::size(description)
+            )
+        };
         // Named with its id when the name is ambiguous, because a task added to the wrong
         // Inbox is a task the user will not find.
         if *ambiguous_project {
             lines.push(format!(
-                "{verb} \"{title}\" to {project} (#{project_id}){dates} — more than one project has that name"
+                "{verb} \"{title}\" to {project} (#{project_id}){dates}{described} — more than one project has that name"
             ));
         } else {
-            lines.push(format!("{verb} \"{title}\" to {project}{dates}"));
+            lines.push(format!("{verb} \"{title}\" to {project}{dates}{described}"));
+        }
+        // A dry run shows enough to tell which description it read, and no more.
+        if tense == Tense::Would && !description.is_empty() {
+            lines.push(format!(
+                "Description begins: \"{}\"",
+                printable(&tui_do_core::description::first_line(
+                    description,
+                    DESCRIPTION_GLIMPSE
+                ))
+            ));
         }
         if let Some(note) = backdated {
             lines.push(format!("Note: {note}."));
@@ -1738,6 +1844,60 @@ mod tests {
         );
     }
 
+    /// An editor that exits non-zero queues nothing at all -- not the task, and not a
+    /// label `--create-labels` would have made for it.
+    #[tokio::test]
+    async fn a_cancelled_editor_queues_nothing() {
+        let store = Store::in_memory().unwrap();
+        let built = tui_do_ui::QuickAdd {
+            task: tui_do_core::models::Task {
+                title: "write it".to_string(),
+                project_id: tui_do_core::models::ProjectId(1),
+                ..tui_do_core::models::Task::default()
+            },
+            unknown_labels: vec!["brand-new".to_string()],
+            ambiguous_project: false,
+        };
+        let mode = AddMode {
+            create_labels: true,
+            description: DescriptionSource::Edit,
+            ..AddMode::default()
+        };
+        let error = describe_and_queue(
+            &store,
+            built.clone(),
+            &mode,
+            &editor::tests::FakeEditor::failing(),
+            "Work",
+        )
+        .await
+        .err()
+        .expect("a cancelled editor is an error");
+        assert!(error.to_string().contains("nothing was added"), "{error}");
+        assert_eq!(store.pending_count().await.unwrap(), 0);
+
+        // And one that writes queues the task with exactly that description.
+        let editor = editor::tests::FakeEditor::writing(&format!(
+            "Line one.\n\nLine two.\n\n{}\n# help\n",
+            editor::SCISSORS
+        ));
+        let (_, description) = describe_and_queue(&store, built, &mode, &editor, "Work")
+            .await
+            .unwrap();
+        assert_eq!(description, "Line one.\n\nLine two.");
+        let (_, template) = editor.saw.borrow().clone().unwrap();
+        assert!(template.contains("\"write it\" in Work"), "{template}");
+        let queued = store.pending(None).await.unwrap();
+        let task = queued
+            .iter()
+            .find_map(|entry| match &entry.mutation {
+                tui_do_core::store::Mutation::CreateTask { task } => Some(task),
+                _ => None,
+            })
+            .expect("the task was queued");
+        assert_eq!(task.description, "Line one.\n\nLine two.");
+    }
+
     /// A dry run and a real add word the same outcome the same way, bar the tense.
     #[test]
     fn a_dry_run_reports_in_the_same_words_as_an_add() {
@@ -1752,6 +1912,7 @@ mod tests {
             backdated: Some("that date has passed"),
             created_labels: &created,
             unknown_labels: &unknown,
+            description: "",
         };
         assert_eq!(
             outcome.lines(Tense::Did),
@@ -1775,6 +1936,37 @@ mod tests {
                 "No labels called a, b — they would be left off. Pass --create-labels to have \
                  tui-do create them.",
             ]
+        );
+    }
+
+    /// A description is counted on the first line and never printed; a dry run shows a
+    /// printable glimpse of its first line as well.
+    #[test]
+    fn a_description_is_reported_by_size() {
+        let description = "\u{1b}]52;c;evil\u{7} first line\n\nsecond paragraph";
+        let outcome = Outcome {
+            title: "write it",
+            project: "Work".to_string(),
+            project_id: tui_do_core::models::ProjectId(3),
+            ambiguous_project: false,
+            dates: ", due Fri 27 Aug 2027".to_string(),
+            backdated: None,
+            created_labels: &[],
+            unknown_labels: &[],
+            description,
+        };
+        assert_eq!(
+            outcome.lines(Tense::Did),
+            vec![
+                "Added \"write it\" to Work, due Fri 27 Aug 2027, with a description \
+                 (2 paragraphs, 41 characters)"
+            ]
+        );
+        let would = outcome.lines(Tense::Would);
+        assert_eq!(would.len(), 2, "{would:?}");
+        assert_eq!(
+            would[1],
+            "Description begins: \"\u{fffd}]52;c;evil\u{fffd} first line\""
         );
     }
 

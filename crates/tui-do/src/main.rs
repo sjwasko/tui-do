@@ -96,6 +96,35 @@ enum Command {
     /// Brackets are usually the easier of the two from a shell, because the shell strips
     /// quotes before tui-do ever sees them.
     ///
+    /// DESCRIPTION
+    ///
+    /// The line above is only the title and its tokens. A description is given one of
+    /// three ways, and only one at a time:
+    ///
+    ///   -d, --description <TEXT>     inline, for a line or two; newlines are kept
+    ///   --description-file <PATH>    read from a file; `-` reads stdin
+    ///   -e, --edit                   write it in $VISUAL, else $EDITOR, else vi
+    ///
+    /// For anything long, move it rather than retype it: a file, a pipe, or a quoted
+    /// heredoc, whose quotes ('EOF') keep the shell from expanding $ and backticks:
+    ///
+    ///   tui-do add 'Write the plan +Work' --description-file - <<'EOF'
+    ///   ## Context
+    ///
+    ///   What was tried, and what is left.
+    ///   EOF
+    ///
+    /// It is stored exactly as given -- Markdown, plain text or HTML -- but for one
+    /// trailing newline, and quick-add tokens in it stay text. It must be UTF-8 and
+    /// at most 64 KiB. The confirmation line counts it rather than printing it:
+    /// `with a description (3 paragraphs, 1,240 characters)`.
+    ///
+    /// With --edit, the file ends in a `# ---- >8 ----` scissors line and help, as
+    /// `git commit -v` does. Everything from that line down is ignored. Above it,
+    /// blank lines at the start and just above the line are dropped, and the rest is
+    /// kept exactly, `# Heading` lines included. Delete the scissors line and the whole
+    /// file is kept, with a warning. The size limit counts only what is kept.
+    ///
     /// EXAMPLES
     ///
     ///   tui-do add 'Renew the domain *urgent !3 +Admin tomorrow'
@@ -240,6 +269,113 @@ struct AddArgs {
     /// local store only, so one created since the last sync is not known to it.
     #[arg(long)]
     dry_run: bool,
+
+    /// The task's description, inline: `-d 'Ask about the March invoice.'`
+    ///
+    /// Stored exactly as given, newlines included. Quick-add tokens in it are text, not
+    /// tokens. For anything longer than a line or two, use --description-file.
+    // Hyphen values allowed, because a Markdown list starts with `- `.
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        value_hint = clap::ValueHint::Other
+    )]
+    description: Option<String>,
+
+    /// Read the task's description from a file, or from stdin if PATH is `-`.
+    ///
+    /// Stored exactly as given, but for one trailing newline. It must be UTF-8 text of
+    /// 64 KiB or less. With `-`, pipe it in or use a quoted heredoc, and give the task's
+    /// text as an argument.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "description",
+        value_hint = clap::ValueHint::FilePath
+    )]
+    description_file: Option<PathBuf>,
+
+    /// Write the task's description in your editor, as `git commit` does.
+    ///
+    /// Opens $VISUAL, else $EDITOR, else vi, on a temporary file only you can read,
+    /// removed afterwards. Save an empty file to add no description; exit the editor
+    /// with an error (:cq in vim) to add nothing at all. Needs a terminal.
+    // Not with --dry-run: a description written only to be thrown away is lost work.
+    #[arg(
+        short = 'e',
+        long,
+        conflicts_with_all = ["description", "description_file", "dry_run"]
+    )]
+    edit: bool,
+}
+
+/// Read the description `args` names, if it names one, and check it.
+///
+/// Before the config or the store, so a file that is missing, too large or not text is
+/// reported whatever else is wrong, and nothing is queued.
+fn read_description(args: &AddArgs) -> anyhow::Result<runtime::DescriptionSource> {
+    use tui_do_core::description;
+    let bytes = match (&args.description, &args.description_file) {
+        (Some(text), _) => text.clone().into_bytes(),
+        (None, Some(path)) if path.as_os_str() == STDIN => {
+            let stdin = std::io::stdin();
+            // `-` at a terminal waits for typing, as `git commit -F -` does. Say so, or it
+            // looks like a hang.
+            if stdin.is_terminal() {
+                eprintln!("Reading the description from stdin; end it with Ctrl-D.");
+            }
+            read_capped(stdin.lock()).context("could not read the description from stdin")?
+        }
+        (None, Some(path)) => {
+            let file = std::fs::File::open(path).with_context(|| {
+                format!("could not open the description file {}", path.display())
+            })?;
+            read_capped(file).with_context(|| {
+                format!("could not read the description file {}", path.display())
+            })?
+        }
+        (None, None) if args.edit => return Ok(runtime::DescriptionSource::Edit),
+        (None, None) => return Ok(runtime::DescriptionSource::default()),
+    };
+    Ok(runtime::DescriptionSource::Given(description::normalise(
+        bytes,
+    )?))
+}
+
+/// What `--description-file` takes to mean stdin.
+const STDIN: &str = "-";
+
+/// Refuse `--description-file -` without the task's text.
+///
+/// Stdin is then the description, so it cannot also be the terminal a prompt for the
+/// task would read from. Said here, in words, rather than left to a prompt that would
+/// find its input already spent.
+fn stdin_is_free(args: &AddArgs) -> anyhow::Result<()> {
+    let reads_stdin = args
+        .description_file
+        .as_deref()
+        .is_some_and(|path| path.as_os_str() == STDIN);
+    if reads_stdin && args.text.is_empty() {
+        bail!(
+            "--description-file - reads the description from stdin, so give the task's \
+             text as an argument: tui-do add 'Write the plan' --description-file -"
+        );
+    }
+    Ok(())
+}
+
+/// Everything `reader` has, up to one byte past the size cap.
+///
+/// One past, so `normalise` can tell "exactly at the cap" from "over it" without a whole
+/// misnamed log file being read into memory first.
+fn read_capped(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    let cap = u64::try_from(tui_do_core::description::MAX_BYTES).unwrap_or(u64::MAX);
+    reader.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Options for `tui-do completions`.
@@ -386,15 +522,14 @@ fn start(cli: Cli) -> anyhow::Result<()> {
         .block_on(runtime::run(config, path))
 }
 
-/// A refusal to start without a terminal: what is missing, then what to do instead.
-macro_rules! no_terminal {
-    ($what:literal) => {
-        concat!(
-            $what,
-            ", and the interface needs one to read keys from and draw on. ",
-            "To add a task from a script, use `tui-do add` (see `tui-do add --help`)."
-        )
-    };
+/// Which of stdin and stdout is not a terminal, in words, or `None` if both are.
+fn missing_terminal(stdin_tty: bool, stdout_tty: bool) -> Option<&'static str> {
+    match (stdin_tty, stdout_tty) {
+        (true, true) => None,
+        (false, true) => Some("stdin is not a terminal"),
+        (true, false) => Some("stdout is not a terminal"),
+        (false, false) => Some("neither stdin nor stdout is a terminal"),
+    }
 }
 
 /// Whether the interface can start, given which of stdin and stdout are terminals.
@@ -403,13 +538,25 @@ macro_rules! no_terminal {
 /// redirected the interface used to come up anyway and wait for a key that could never
 /// arrive -- and raw mode turns Ctrl-C into a byte, so nothing but a `kill` from another
 /// terminal ended it (BUG-25). A stdout that is not a terminal has nowhere to draw.
-fn interactive(stdin_tty: bool, stdout_tty: bool) -> Result<(), &'static str> {
-    match (stdin_tty, stdout_tty) {
-        (true, true) => Ok(()),
-        (false, true) => Err(no_terminal!("stdin is not a terminal")),
-        (true, false) => Err(no_terminal!("stdout is not a terminal")),
-        (false, false) => Err(no_terminal!("neither stdin nor stdout is a terminal")),
-    }
+fn interactive(stdin_tty: bool, stdout_tty: bool) -> Result<(), String> {
+    missing_terminal(stdin_tty, stdout_tty).map_or(Ok(()), |what| {
+        Err(format!(
+            "{what}, and the interface needs one to read keys from and draw on. \
+             To add a task from a script, use `tui-do add` (see `tui-do add --help`)."
+        ))
+    })
+}
+
+/// Whether `--edit` can open an editor: the same two terminals the interface needs,
+/// for the same reason -- an editor started without them waits for keys that cannot
+/// arrive, or draws where nobody is looking.
+fn editable(stdin_tty: bool, stdout_tty: bool) -> Result<(), String> {
+    missing_terminal(stdin_tty, stdout_tty).map_or(Ok(()), |what| {
+        Err(format!(
+            "{what}, and --edit opens an editor, which needs one. From a script, pass \
+             the description with --description-file - or -d instead."
+        ))
+    })
 }
 
 /// Write a completion script for `shell` to stdout.
@@ -447,6 +594,9 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
 
 /// Add a task from the command line, or, given no text at a terminal, ask for one.
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
+    // First, so a script piping a description in without the text is told exactly that,
+    // rather than clap's generic "TEXT is required".
+    stdin_is_free(args)?;
     // Before the config, as clap's own refusal was: a script that forgot the text is told
     // so whatever state its config is in.
     if args.text.is_empty()
@@ -458,6 +608,16 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
     {
         missing_text();
     }
+    // Before anything is read or opened, so a script that asked for an editor is told
+    // at once and nothing is queued.
+    if args.edit {
+        editable(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
+    let description = read_description(args)?;
     let path = Config::resolve_path(config_override)?;
     let config = Config::load(&path).with_context(|| config_problem(&path))?;
     report_exposed_credentials(&config, &path, &mut std::io::stderr());
@@ -466,7 +626,7 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
         .enable_all()
         .build()
         .context("could not start the async runtime")?;
-    let mode = add_mode(args);
+    let mode = add_mode(args, description);
     let text = if args.text.is_empty() {
         let vocabulary = runtime.block_on(runtime::vocabulary());
         // `--dry-run` with no text asks, then checks what was typed instead of adding it.
@@ -483,11 +643,12 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
 
 /// How `tui-do add` was asked to run: one value for the typed line and the given one, so
 /// a prompt cannot add where `add 'text'` with the same flags would only have checked.
-const fn add_mode(args: &AddArgs) -> runtime::AddMode {
+fn add_mode(args: &AddArgs, description: runtime::DescriptionSource) -> runtime::AddMode {
     runtime::AddMode {
         offline: args.offline,
         create_labels: args.create_labels,
         dry_run: args.dry_run,
+        description,
     }
 }
 
@@ -638,9 +799,116 @@ mod tests {
             .nth(1)
             .expect("the add subcommand has an arm");
         let arm = add.split("tui__subcmd").next().unwrap_or(add);
-        // `--config` legitimately takes a path; nothing else in the arm may.
+        // `--config` and `--description-file` legitimately take a path; nothing else in
+        // the arm may.
         let paths = arm.matches("compgen -f").count();
-        assert_eq!(paths, 1, "only --config completes a path:\n{arm}");
+        assert_eq!(
+            paths, 2,
+            "only --config and --description-file complete a path:\n{arm}"
+        );
+    }
+
+    fn add_args(argv: &[&str]) -> Result<AddArgs, clap::Error> {
+        let mut full = vec!["tui-do", "add"];
+        full.extend_from_slice(argv);
+        match Cli::try_parse_from(full)?.command {
+            Some(Command::Add(args)) => Ok(args),
+            other => panic!("expected add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inline_description_keeps_its_newlines_and_a_leading_hyphen() {
+        let args = add_args(&["title", "-d", "- one\n- two\r\n"]).unwrap();
+        assert_eq!(
+            read_description(&args).unwrap(),
+            runtime::DescriptionSource::Given("- one\n- two".to_string())
+        );
+        let none = add_args(&["title"]).unwrap();
+        assert_eq!(
+            read_description(&none).unwrap(),
+            runtime::DescriptionSource::default()
+        );
+    }
+
+    #[test]
+    fn the_inline_and_file_descriptions_conflict() {
+        let error = add_args(&["title", "-d", "x", "--description-file", "f"])
+            .expect_err("two descriptions must be refused");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn a_missing_description_file_is_named() {
+        let args = add_args(&["title", "--description-file", "/nonexistent/plan.md"]).unwrap();
+        let error = read_description(&args).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("/nonexistent/plan.md"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_description_on_stdin_needs_the_text_as_an_argument() {
+        let mut args = add_args(&["title", "--description-file", "-"]).unwrap();
+        assert!(stdin_is_free(&args).is_ok());
+        // No text means "ask for it" at a terminal, and stdin cannot be both the
+        // description and the prompt's keyboard.
+        args.text.clear();
+        let error = stdin_is_free(&args).unwrap_err();
+        assert!(
+            error.to_string().contains("give the task's text"),
+            "{error}"
+        );
+
+        let file = add_args(&["title", "--description-file", "plan.md"]).unwrap();
+        let mut file = file;
+        file.text.clear();
+        assert!(stdin_is_free(&file).is_ok(), "only `-` reads stdin");
+    }
+
+    #[test]
+    fn the_editor_conflicts_with_the_other_descriptions_and_a_dry_run() {
+        for other in [
+            &["-d", "x"][..],
+            &["--description-file", "f"][..],
+            &["--dry-run"][..],
+        ] {
+            let mut argv = vec!["title", "--edit"];
+            argv.extend_from_slice(other);
+            let error = add_args(&argv).expect_err("refused");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{other:?}"
+            );
+        }
+        let args = add_args(&["title", "-e"]).unwrap();
+        assert_eq!(
+            read_description(&args).unwrap(),
+            runtime::DescriptionSource::Edit
+        );
+    }
+
+    #[test]
+    fn the_editor_needs_a_terminal_at_both_ends() {
+        assert_eq!(editable(true, true), Ok(()));
+        for (stdin, stdout) in [(false, true), (true, false), (false, false)] {
+            let why = editable(stdin, stdout).expect_err("no terminal, no editor");
+            assert!(
+                why.starts_with(missing_terminal(stdin, stdout).unwrap()),
+                "{why}"
+            );
+            assert!(why.contains("--description-file -"), "{why}");
+        }
+    }
+
+    #[test]
+    fn reading_stops_one_byte_past_the_cap() {
+        let max = tui_do_core::description::MAX_BYTES;
+        let huge = std::io::repeat(b'a').take(u64::try_from(max).unwrap() * 4);
+        use std::io::Read as _;
+        assert_eq!(read_capped(huge).unwrap().len(), max + 1);
     }
 
     #[test]
@@ -650,7 +918,7 @@ mod tests {
             panic!("expected add");
         };
         assert!(args.text.is_empty(), "no text is allowed, to ask for one");
-        let mode = add_mode(&args);
+        let mode = add_mode(&args, runtime::DescriptionSource::default());
         assert!(mode.dry_run && mode.create_labels && !mode.offline);
     }
 

@@ -5,6 +5,7 @@
 //! background. Nothing here renders, and nothing here blocks a frame.
 
 pub mod config;
+pub mod description;
 pub mod error;
 pub mod quickadd;
 pub mod store;
