@@ -552,7 +552,13 @@ contain a `?`. Four steps, in this order:
    *Shipped as `Parsed::summary` and `Parsed::canonical` in `tui_do_core::quickadd` (pure,
    for step 2's preview to reuse), `--dry-run`, and an `as typed best:` line printed only
    when the typed line differs from its canonical form.*
-2. **An interactive `tui-do add`.** With no text and a terminal on both ends, open a one-line
+2. **Done 2026-11-08: an interactive `tui-do add`.** The completion and help logic is one
+   pure module, `tui-do-ui::assist` (`QuickAddInput`, fed a `Vocabulary` of names), held by
+   both the CLI prompt (`crates/tui-do/src/runtime/prompt.rs`, on an inline viewport through
+   `TerminalGuard::inline`) and the `a` prompt. `@user` completes from `Store::usernames`,
+   which is every creator and assignee the store has seen; `a` takes them from the tasks on
+   screen. The live preview is a private stand-in marked `TODO(item 12 step 1)` until
+   `Parsed::summary` lands. As planned: with no text and a terminal on both ends, open a one-line
    prompt: a dim placeholder showing the recommended shape that vanishes on the first
    keystroke, and a live preview line that re-parses on every key. **Tab** completes
    `+project`, `*label`, `@user` and date words from the local store (twice lists the
