@@ -1567,13 +1567,15 @@ mod tests {
                 .collect();
             store.upsert_tasks(seeded).await.unwrap();
 
-            let connection = store.connection.lock().unwrap();
+            let mut connection = store.connection.lock().unwrap();
             // The trace callback fires on the thread that runs the statement, which is
             // this one: the read is called directly rather than through `spawn_blocking`.
-            connection.trace_v2(
-                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-                Some(counted),
-            );
+            connection
+                .trace_v2(
+                    rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                    Some(counted),
+                )
+                .unwrap();
             STATEMENTS.with(|count| count.set(0));
             let filter = TaskFilter {
                 done: Some(false),
@@ -1581,7 +1583,12 @@ mod tests {
                 ..TaskFilter::default()
             };
             let read = read_tasks(&connection, &filter, TaskSort::default()).unwrap();
-            connection.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            connection
+                .trace_v2(
+                    rusqlite::trace::TraceEventCodes::empty(),
+                    None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+                )
+                .unwrap();
             assert_eq!(read.len(), usize::try_from(tasks).unwrap());
             assert!(read
                 .iter()

@@ -5,7 +5,7 @@ members = ["crates/tui-do", "crates/tui-do-api", "crates/tui-do-core", "crates/t
 [workspace.package]
 version = "1.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sjwasko/tui-do"
 authors = ["Steve Wasko"]
@@ -33,7 +33,7 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "ti
 # `cookies` is not optional: `POST /user/token/refresh` answers "No refresh token provided."
 # unless the refresh cookie set by `POST /login` is sent back with the request.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs", "multipart", "stream", "cookies", "query", "http2", "gzip"] }
-rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
+rusqlite = { version = "0.41", features = ["bundled", "chrono", "serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml_ng = "0.10"

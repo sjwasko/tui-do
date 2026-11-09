@@ -681,7 +681,7 @@ and 26.04 hardware, on x86-64 and aarch64 alike.
 
 Only needed to modify tui-do, or to run on an architecture no release covers. **SQLite is
 compiled from source**, so a C toolchain is required even though the resulting binary needs
-none. Rust **1.85 or newer**.
+none. Rust **1.89 or newer**.
 
 On a fresh Debian or Ubuntu:
 
@@ -691,7 +691,7 @@ sudo apt-get install -y --no-install-recommends \
     curl ca-certificates build-essential pkg-config git
 
 # Take Rust from rustup rather than the distribution, which may package
-# a version older than 1.85.
+# a version older than 1.89.
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 . "$HOME/.cargo/env"
 ```
