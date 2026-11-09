@@ -1996,6 +1996,36 @@ stripping and were changed: `dates_come_out_of_the_title` is now
 `the_keyword_is_decisive_even_before_a_decimal` now expects `due 2.5 hours` to keep its
 title, with `hours due 2.5` added for the stripped half. Both still assert the date.
 
+### BUG-31 — SIGTERM or SIGHUP leaves the terminal in raw mode
+
+`crates/tui-do/src/runtime/terminal.rs` (`TerminalGuard`), and every entry point that takes
+the terminal: the full interface, and item 12's inline `tui-do add` prompt.
+
+Found 2026-11-08 reviewing item 12 step 2. Nothing in `crates/tui-do/src` installs a signal
+handler. The terminal is given back by the guard's `Drop` and by BUG-7's panic hook, and
+neither runs when the process is ended by a signal: SIGTERM's default action terminates
+without unwinding, and so does SIGHUP. Ctrl-C does not reach this — raw mode turns it into a
+keystroke the interface handles — but closing the terminal window, `kill <pid>`, a systemd
+stop, or an SSH connection dropping all do.
+
+**What the user sees.** The shell they return to (if the terminal survives, as with `kill`
+from another pane or a tmux/tuios session) has no echo, no line editing, and — for the full
+interface — the alternate screen still up. The only way out is `reset`. Not data loss: the
+store is SQLite in WAL mode and a killed process leaves it consistent, and the outbox is
+committed before anything is sent. But the push in flight is cut off exactly as BUG-3 warns,
+and `flush_on_exit` never runs, so queued changes wait for the next launch.
+
+**Likely fix, not yet decided.** Handle SIGTERM, SIGHUP and SIGQUIT in the runtime (tokio's
+`signal::unix` is already a dependency) by sending the same quit the `q` key does, so the
+normal exit path restores the terminal and runs `flush_on_exit` under its grace. A second
+signal while exiting should restore the terminal and leave immediately. SIGHUP needs care:
+the terminal is gone, so writing escape sequences to it can fail and must not block.
+
+**How to test it.** Spawn the binary under a pty (as BUG-25's manual check did with
+`script`), send SIGTERM, and assert the process exits within a bound and the pty's termios
+has `ECHO` and `ICANON` restored. The quit-on-signal wiring itself is a unit test on the
+runtime's event loop with an injected signal stream.
+
 ## Minor
 
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for
