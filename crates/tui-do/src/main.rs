@@ -47,10 +47,17 @@ enum Command {
     ///   *label            attach a label that already exists: *urgent
     ///   @user             assign someone: @admin
     ///   !1 .. !5          priority, 1 lowest to 5 highest
-    ///   a date            tomorrow, next friday, 27/08/26, 27aug26, 2026-08-27
-    ///   due <date>        the same, said explicitly
+    ///   a date            tomorrow, next friday, 27aug26, aug 27, 2026-08-27
+    ///   due <date>        the same, said explicitly; also 27.8, 27/08, 27/08/26
     ///   start <date>      when work can begin
     ///   every <n> <unit>  repeat: every 2 weeks, every month
+    ///
+    /// A date in digits alone needs `due` or `start` in front of it, unless it has a
+    /// four-digit year: `call mom due 27.8` is due on 27 August, while `llvm 1.6 GB`
+    /// and `add 1/2 cup` keep their numbers and get no date. A month name or a
+    /// four-digit year works anywhere, except dotted with the year first (2026.1.5),
+    /// which reads as a version: write 2026-01-05, or put `due` in front. Any date
+    /// that was set is named in the confirmation line, so a misread one shows at once.
     ///
     /// NAMES WITH SPACES
     ///

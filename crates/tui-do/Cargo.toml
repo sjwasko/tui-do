@@ -30,5 +30,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 dirs.workspace = true
 
+[dev-dependencies]
+# Real zone rules, to test that `tui-do add` echoes a date across a daylight-saving change
+# on the day the parser resolved it to. Tests only, as in tui-do-core.
+chrono-tz.workspace = true
+
 [lints]
 workspace = true

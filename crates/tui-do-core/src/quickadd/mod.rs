@@ -178,7 +178,7 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
         remaining.retain(|w| !used.contains(&w.range.start));
     }
 
-    for found in dates::find(&remaining, now) {
+    for found in dates::find(&remaining, now, dates::Keyword::Absent) {
         match found.field {
             DateField::Due => parsed.due_date = Some(found.at),
             DateField::Start => parsed.start_date = Some(found.at),
@@ -196,6 +196,20 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
     parsed.tokens.sort_by_key(|t| t.range.start);
     parsed.title = words::remove_ranges(input, &consumed);
     parsed
+}
+
+/// Read a field that holds nothing but a due date, such as the edit form's Due.
+///
+/// Understands everything [`parse`] does, and also a bare `27.8` or `27/08` with no `due`
+/// in front of it: in a sentence those need the keyword, because they read as well as a
+/// decimal or a fraction, but in a date field a date is the only thing they can be.
+#[must_use]
+pub fn parse_due<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Option<DateTime<Utc>> {
+    dates::find(&words::split(input), now, dates::Keyword::Given)
+        .into_iter()
+        .rev()
+        .find(|found| found.field == DateField::Due)
+        .map(|found| found.at)
 }
 
 /// Split a `*label`, `@assignee`, `+project` or `!3` into its kind and value.
@@ -505,6 +519,119 @@ mod tests {
             assert_eq!(parsed.title, title, "{input:?}");
             assert_eq!(local(parsed.due_date), due, "{input:?}");
         }
+    }
+
+    #[test]
+    fn a_number_in_prose_is_not_a_date() {
+        // BUG-24. Each of these used to lose the number from the title *and* gain a due
+        // date, several of them a year or more out. Both halves are asserted, because a
+        // fix that stopped setting the date while still eating the text would pass a test
+        // that only checked one.
+        for input in [
+            "llvm 1.6 GB",
+            "llvm 1.6 GB and rust 432 MB",
+            "costs 2.5 hours",
+            "costs 2.5 hours of work",
+            "ratio was 16.9 percent",
+            "add 1/2 cup sugar",
+            "takes 3-5 days",
+            "score 10-12",
+            "room 4.12",
+            "ratio 16.9",
+            "upgrade to 2.6.10",
+            "bump to 1.2.3",
+            "budget is 3.50 for this",
+            "pages 27.08.26",
+            "pick 1 2 3",
+            // A four-digit year first and dots between is a version number's shape.
+            "release 2026.1.5",
+            "release 2026.08.27",
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, input, "{input:?} lost text to a date");
+            assert_eq!(
+                local(parsed.due_date),
+                "none",
+                "{input:?} gained a due date"
+            );
+            assert_eq!(
+                local(parsed.start_date),
+                "none",
+                "{input:?} gained a start date"
+            );
+            assert!(
+                !parsed.has_magic(),
+                "{input:?} would be highlighted as a date"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_numeric_date_after_a_keyword_still_parses() {
+        for (input, due, start) in [
+            ("Call mom due 27.8", "2026-08-27 23:59", "none"),
+            ("Call mom due 27/08", "2026-08-27 23:59", "none"),
+            ("Call mom due 27-8", "2026-08-27 23:59", "none"),
+            ("Call mom due 1.2.30", "2030-02-01 23:59", "none"),
+            ("Call mom due 27.08.26", "2026-08-27 23:59", "none"),
+            ("Call mom start 27/08", "none", "2026-08-27 00:00"),
+            ("Call mom starting 27.8", "none", "2026-08-27 00:00"),
+            ("Call mom start:27.8", "none", "2026-08-27 00:00"),
+            ("Call mom due 2026.1.5", "2026-01-05 23:59", "none"),
+            ("Call mom due 2026.08.27", "2026-08-27 23:59", "none"),
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, "Call mom", "{input:?}");
+            assert_eq!(local(parsed.due_date), due, "{input:?}");
+            assert_eq!(local(parsed.start_date), start, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn the_keyword_is_decisive_even_before_a_decimal() {
+        // The rule is the keyword, not a guess at what follows it: `due 2.5 hours` is a
+        // date, 2 May, and leaves `hours` in the title. Typing `due` is asking for one.
+        let parsed = p("due 2.5 hours");
+        assert_eq!(parsed.title, "hours");
+        assert_eq!(local(parsed.due_date), "2027-05-02 23:59");
+    }
+
+    #[test]
+    fn an_unambiguous_date_needs_no_keyword() {
+        // A four-digit year or a month name cannot be a decimal, a fraction or a version.
+        for (input, due) in [
+            ("Call mom 2026-08-27", "2026-08-27 23:59"),
+            ("Call mom 27/08/2026", "2026-08-27 23:59"),
+            ("Call mom 27.8.2026", "2026-08-27 23:59"),
+            ("Call mom 27aug", "2026-08-27 23:59"),
+            ("Call mom 27aug26", "2026-08-27 23:59"),
+            ("Call mom aug 27", "2026-08-27 23:59"),
+            ("Call mom 27 aug 2026", "2026-08-27 23:59"),
+            ("Call mom august 27", "2026-08-27 23:59"),
+            ("Call mom tomorrow", "2026-08-27 23:59"),
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, "Call mom", "{input:?}");
+            assert_eq!(local(parsed.due_date), due, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn a_due_field_reads_a_bare_numeric_date() {
+        // The edit form's Due field and the `d` prompt hold nothing but a date, so the
+        // keyword is implied there.
+        for (input, due) in [
+            ("27.8", "2026-08-27 23:59"),
+            ("27/08", "2026-08-27 23:59"),
+            ("1.2.30", "2030-02-01 23:59"),
+            ("due 27.8", "2026-08-27 23:59"),
+            ("tomorrow", "2026-08-27 23:59"),
+            ("2026-08-27", "2026-08-27 23:59"),
+        ] {
+            assert_eq!(local(parse_due(input, &now())), due, "{input:?}");
+        }
+        assert_eq!(parse_due("not a date", &now()), None);
+        assert_eq!(parse_due("start monday", &now()), None);
     }
 
     #[test]

@@ -54,23 +54,42 @@ const DUE_TIME: (u32, u32) = (23, 59);
 /// Monday morning.
 const START_TIME: (u32, u32) = (0, 0);
 
+impl DateField {
+    /// The time of day a date for this field means when none was written, as
+    /// `(hour, minute)` local.
+    #[must_use]
+    pub fn default_time(self) -> (u32, u32) {
+        match self {
+            Self::Due => DUE_TIME,
+            Self::Start => START_TIME,
+        }
+    }
+}
+
 /// Find every date phrase in `words`.
 ///
 /// Later phrases for the same field win, so a user who retypes a date gets the one they
 /// meant. Returns matches in input order.
-pub fn find<Tz: TimeZone>(words: &[Word], now: &DateTime<Tz>) -> Vec<DateMatch> {
+///
+/// `unwritten` is the [`Keyword`] a phrase has when no `due` or `start` was typed in front
+/// of it: [`Keyword::Absent`] in a sentence, [`Keyword::Given`] in a field that holds
+/// nothing but a date.
+pub fn find<Tz: TimeZone>(
+    words: &[Word],
+    now: &DateTime<Tz>,
+    unwritten: Keyword,
+) -> Vec<DateMatch> {
     let mut found = Vec::new();
     let mut index = 0;
 
     while index < words.len() {
         // An explicit keyword names the field and the phrase follows it.
-        let (field, phrase_start) = match keyword_at(words, index) {
-            Some((field, next)) => (field, next),
-            None => (DateField::Due, index),
+        let (field, phrase_start, keyword) = match keyword_at(words, index) {
+            Some((field, next)) => (field, next, Keyword::Given),
+            None => (DateField::Due, index, unwritten),
         };
-        let explicit = phrase_start != index;
 
-        if let Some((at, consumed)) = phrase(words, phrase_start, now, field) {
+        if let Some((at, consumed)) = phrase(words, phrase_start, now, field, keyword) {
             let start = words[index].range.start;
             let end = words[phrase_start + consumed - 1].range.end;
             found.push(DateMatch {
@@ -82,11 +101,29 @@ pub fn find<Tz: TimeZone>(words: &[Word], now: &DateTime<Tz>) -> Vec<DateMatch> 
             continue;
         }
 
-        // `due` with nothing recognisable after it is just a word in the title.
-        index += if explicit { phrase_start - index } else { 1 };
+        // `due` with nothing recognisable after it is just a word in the title. The colon
+        // form carries its value in the keyword's own word, so it still moves one on.
+        index = phrase_start.max(index + 1);
     }
 
     found
+}
+
+/// Whether a phrase was introduced by `due` or `start`.
+///
+/// A date written only in digits with no four-digit year -- `27.8`, `1/2`, `3-5`,
+/// `2.6.10` -- is a date only when it was. Without the keyword it reads just as well as a
+/// decimal, a fraction, a range or a version, and taking it silently removes those
+/// characters from the title and sets a due date nobody asked for (BUG-24). So is a dotted
+/// one that leads with its four-digit year, `2026.1.5`, which is a version number's shape;
+/// an ISO date is written with dashes. A month name, any other four-digit-year form, or a
+/// word is unambiguous and needs no keyword.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyword {
+    /// `due 27.8`, `start 27/08`, or a field that holds nothing but a date.
+    Given,
+    /// A phrase found in the middle of a sentence.
+    Absent,
 }
 
 /// Recognise `due`, `start`, or `start:` at `index`, returning where the phrase begins.
@@ -111,13 +148,14 @@ fn phrase<Tz: TimeZone>(
     index: usize,
     now: &DateTime<Tz>,
     field: DateField,
+    keyword: Keyword,
 ) -> Option<(DateTime<Utc>, usize)> {
     let today = now.date_naive();
 
     // `start:monday` carries its value in the same word.
     if let Some(word) = words.get(index) {
         if let Some(value) = word.trimmed().strip_prefix("start:") {
-            let date = simple_phrase(&[value.to_string()], today)?;
+            let date = simple_phrase(&[value.to_string()], today, keyword)?;
             return Some((at_time(date, field, words, index + 1, now)?, 1));
         }
     }
@@ -128,7 +166,7 @@ fn phrase<Tz: TimeZone>(
             .iter()
             .map(|w| w.trimmed().to_string())
             .collect();
-        if let Some(date) = simple_phrase(&slice, today) {
+        if let Some(date) = simple_phrase(&slice, today, keyword) {
             let at = at_time(date, field, words, index + length, now)?;
             // A trailing `at 5pm` extends the phrase by two more words.
             let extra = usize::from(time_at(words, index + length).is_some()) * 2;
@@ -146,10 +184,7 @@ fn at_time<Tz: TimeZone>(
     after: usize,
     now: &DateTime<Tz>,
 ) -> Option<DateTime<Utc>> {
-    let (hour, minute) = time_at(words, after).unwrap_or(match field {
-        DateField::Due => DUE_TIME,
-        DateField::Start => START_TIME,
-    });
+    let (hour, minute) = time_at(words, after).unwrap_or(field.default_time());
     let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
     to_utc(date.and_time(time), now)
 }
@@ -192,7 +227,7 @@ fn parse_clock(raw: &str) -> Option<(u32, u32)> {
 }
 
 /// Resolve a date phrase given as already-lowercased words.
-fn simple_phrase(words: &[String], today: NaiveDate) -> Option<NaiveDate> {
+fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option<NaiveDate> {
     let joined = words.join(" ");
     match joined.as_str() {
         "today" => return Some(today),
@@ -241,7 +276,7 @@ fn simple_phrase(words: &[String], today: NaiveDate) -> Option<NaiveDate> {
 
     // The spaced form of the same date: `27 aug 2026`, `august 27 2026`. Placed after
     // `in 3 days` so it cannot steal that phrase.
-    if words.len() == 3 {
+    if words.len() == 3 && allowed(words, false, keyword) {
         if let Some(date) = three_part_date(&words[0], &words[1], &words[2]) {
             return Some(date);
         }
@@ -252,7 +287,7 @@ fn simple_phrase(words: &[String], today: NaiveDate) -> Option<NaiveDate> {
         if let Some(weekday) = weekday(&words[0]) {
             return next_weekday(today, weekday, false);
         }
-        if let Some(date) = literal_date(&words[0], today) {
+        if let Some(date) = literal_date(&words[0], today, keyword) {
             return Some(date);
         }
     }
@@ -358,8 +393,11 @@ fn day_number(word: &str) -> Option<u32> {
 /// following Vikunja's own documentation, which gives `17/02/2021` as 17 February — not
 /// the American reading. cria used a US dialect here, so the same input meant different
 /// days in the two clients.
-fn literal_date(word: &str, today: NaiveDate) -> Option<NaiveDate> {
+fn literal_date(word: &str, today: NaiveDate, keyword: Keyword) -> Option<NaiveDate> {
     let parts = date_parts(word)?;
+    if !allowed(&parts, word.contains('.'), keyword) {
+        return None;
+    }
     match parts.len() {
         3 => three_part_date(&parts[0], &parts[1], &parts[2]),
         2 => two_part_date(&parts[0], &parts[1], today),
@@ -457,6 +495,20 @@ fn two_part_date(a: &str, b: &str, today: NaiveDate) -> Option<NaiveDate> {
     // Day-first, then month-first, for the reason `three_part_date` explains.
     on_or_after(today, number(b)?, number(a)?)
         .or_else(|| on_or_after(today, number(a)?, number(b)?))
+}
+
+/// Whether a date written as `parts` may be read here at all.
+///
+/// Digits alone need a keyword when no part is a four-digit year, or when they are joined
+/// by dots and the year comes first, `2026.1.5`. Anything with a month name in it does
+/// not. See [`Keyword`].
+fn allowed(parts: &[String], dotted: bool, keyword: Keyword) -> bool {
+    if keyword == Keyword::Given || !parts.iter().all(|part| is_number(part)) {
+        return true;
+    }
+    let year_first = parts.first().is_some_and(|part| part.len() == 4);
+    let has_year = parts.iter().any(|part| part.len() == 4);
+    has_year && !(dotted && year_first)
 }
 
 /// Whether every character is a digit.
@@ -613,7 +665,9 @@ mod tests {
     }
 
     fn resolve(input: &str) -> Option<DateMatch> {
-        find(&split(input), &now()).into_iter().next()
+        find(&split(input), &now(), Keyword::Absent)
+            .into_iter()
+            .next()
     }
 
     /// The local wall-clock rendering of a match, which is what the user meant.
@@ -770,7 +824,7 @@ mod tests {
             "p3", "v1.2.3", "covid-19", "separate", "3rd", "2026", "13/13/26",
         ] {
             assert!(
-                literal_date(word, now().date_naive()).is_none(),
+                literal_date(word, now().date_naive(), Keyword::Given).is_none(),
                 "{word} was read as a date"
             );
         }
@@ -802,7 +856,11 @@ mod tests {
 
     #[test]
     fn start_and_due_are_both_found() {
-        let matches = find(&split("Ship it start monday due friday"), &now());
+        let matches = find(
+            &split("Ship it start monday due friday"),
+            &now(),
+            Keyword::Absent,
+        );
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].field, DateField::Start);
         assert_eq!(matches[1].field, DateField::Due);
@@ -810,7 +868,7 @@ mod tests {
 
     #[test]
     fn the_colon_form_of_start_works() {
-        let matches = find(&split("Ship it start:eom"), &now());
+        let matches = find(&split("Ship it start:eom"), &now(), Keyword::Absent);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].field, DateField::Start);
         assert_eq!(
@@ -890,7 +948,7 @@ mod tests {
         }
 
         fn at<T: TimeZone>(input: &str, now: &DateTime<T>) -> DateTime<Utc> {
-            find(&split(input), now)
+            find(&split(input), now, Keyword::Absent)
                 .into_iter()
                 .next()
                 .expect("a date should be found")

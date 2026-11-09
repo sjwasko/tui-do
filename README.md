@@ -374,9 +374,18 @@ Tokens may appear anywhere in the line and are taken out of the title.
 | `*label` | Attach a label: `*urgent` |
 | `@user` | Assign someone: `@admin` |
 | `!1` … `!5` | Priority, 1 lowest to 5 highest |
-| a date | `tomorrow`, `next friday`, `27/08/26`, `27aug26`, `2026-08-27` |
-| `due <date>` / `start <date>` | The same, said explicitly |
+| a date | `tomorrow`, `next friday`, `27aug26`, `aug 27`, `2026-08-27`, `27/08/2026` |
+| `due <date>` / `start <date>` | The same, said explicitly, and also `27.8`, `27/08`, `27/08/26` |
 | `every <n> <unit>` | Repeat: `every 2 weeks`, `every month` |
+
+**A date in digits alone needs `due` or `start` in front of it** unless it has a four-digit
+year. `call mom due 27.8` is due on 27 August; `llvm 1.6 GB`, `add 1/2 cup` and
+`upgrade to 2.6.10` keep their numbers and get no date, because without the keyword those
+read as a decimal, a fraction or a version as readily as a day. A month name or a
+four-digit year is never ambiguous and works anywhere — except a dotted date that leads
+with its year, `2026.1.5`, which is a version number's shape and needs the keyword too;
+write `2026-01-05` instead. `tui-do add` names any date it set, so a misread one shows up
+at once: `Added "call mom" to Inbox, due Fri 27 Aug 2027`.
 
 Wrap a name containing spaces in brackets or quotes; brackets are usually easier from a
 shell, which strips quotes before tui-do sees them:

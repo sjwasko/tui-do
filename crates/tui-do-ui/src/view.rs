@@ -977,7 +977,7 @@ fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
             theme.muted(),
         )]
     } else {
-        match tui_do_core::quickadd::parse(typed, &model.now).due_date {
+        match tui_do_core::quickadd::parse_due(typed, &model.now) {
             Some(due) => vec![
                 Span::styled(
                     rows::relative_date(Some(due), model.now),

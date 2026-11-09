@@ -1205,7 +1205,7 @@ fn set_due(model: &mut Model, text: &str) -> Vec<Effect> {
     let parsed = if text.is_empty() {
         None
     } else {
-        match quickadd::parse(text, &model.now).due_date {
+        match quickadd::parse_due(text, &model.now) {
             Some(due) => Some(due),
             None => {
                 model.toast(Toast::error(format!(
@@ -1721,8 +1721,8 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     if draft.due.is_empty() {
         after.due_date = None.into();
     } else {
-        let parsed = quickadd::parse(&draft.due, &model.now);
-        match parsed.due_date {
+        let parsed = quickadd::parse_due(&draft.due, &model.now);
+        match parsed {
             Some(due) => after.due_date = Some(due).into(),
             None => notes.push(format!("{:?} is not a date tui-do understands", draft.due)),
         }

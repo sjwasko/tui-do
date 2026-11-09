@@ -780,6 +780,46 @@ fn project_label(
         .map_or_else(|| id.to_string(), |project| printable(&project.title))
 }
 
+/// The dates a quick-add set, as the tail of `tui-do add`'s confirmation line.
+///
+/// `, due Fri 27 Aug 2027` — empty when neither was set. A parsed date used to be
+/// silent: the only sign of one was an echoed title shorter than what was typed, which
+/// is how `llvm 1.6 GB` came to be due in June 2027 (BUG-24). The time of day is shown
+/// only when it is not the field's default (`DateField::default_time`, the same one the
+/// parser fills in), so a plain date stays short.
+fn dates_suffix<Tz: chrono::TimeZone>(
+    due: Option<chrono::DateTime<chrono::Utc>>,
+    start: Option<chrono::DateTime<chrono::Utc>>,
+    zone: &Tz,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    use tui_do_core::quickadd::DateField;
+    let date_clause = |field: DateField, at: chrono::DateTime<chrono::Utc>| {
+        use chrono::Timelike as _;
+        let word = match field {
+            DateField::Due => "due",
+            DateField::Start => "starts",
+        };
+        let local = at.with_timezone(zone);
+        let day = local.format("%a %-d %b %Y");
+        if (local.hour(), local.minute()) == field.default_time() {
+            format!(", {word} {day}")
+        } else {
+            format!(", {word} {day} at {}", local.format("%H:%M"))
+        }
+    };
+    let mut suffix = String::new();
+    if let Some(at) = due {
+        suffix.push_str(&date_clause(DateField::Due, at));
+    }
+    if let Some(at) = start {
+        suffix.push_str(&date_clause(DateField::Start, at));
+    }
+    suffix
+}
+
 /// A project whose title begins with `name` and carries on, if exactly one does.
 ///
 /// Exactly one, because two would make the suggestion a guess; and the first *word* has
@@ -987,7 +1027,8 @@ pub async fn add(
         .await
         .with_context(|| format!("could not open the store at {}", store_path.display()))?;
 
-    let parsed = tui_do_core::quickadd::parse(text, &now());
+    let clock = now();
+    let parsed = tui_do_core::quickadd::parse(text, &clock);
     if parsed.title.trim().is_empty() {
         anyhow::bail!("nothing to add");
     }
@@ -1063,15 +1104,18 @@ pub async fn add(
     let project = project_label(&projects, project_id);
     let queued = queue_add(&store, built, create_labels).await?;
 
+    // In the zone the parser resolved them in, so a date across a daylight-saving change
+    // is echoed on the day it was typed for (BUG-20).
+    let dates = dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone());
     // Named with its id when the name is ambiguous, because a task added to the wrong
     // Inbox is a task the user will not find.
     if queued.ambiguous_project {
         println!(
-            "Added \"{}\" to {project} (#{project_id}) — more than one project has that name",
+            "Added \"{}\" to {project} (#{project_id}){dates} — more than one project has that name",
             queued.title
         );
     } else {
-        println!("Added \"{}\" to {project}", queued.title);
+        println!("Added \"{}\" to {project}{dates}", queued.title);
     }
     if let Some(note) = queued.backdated {
         println!("Note: {note}.");
@@ -1285,6 +1329,83 @@ mod tests {
         assert_eq!(
             project_label(&projects, tui_do_core::models::ProjectId(9)),
             "9"
+        );
+    }
+
+    #[test]
+    fn the_add_line_says_which_dates_were_set() {
+        use chrono::{FixedOffset, TimeZone as _, Utc};
+        // Five hours behind UTC, so a date shown in UTC would be visibly a day out.
+        let zone = FixedOffset::west_opt(5 * 3600).expect("a valid offset");
+        let local = |y, m, d, h, min| {
+            zone.with_ymd_and_hms(y, m, d, h, min, 0)
+                .single()
+                .expect("an unambiguous instant")
+                .with_timezone(&Utc)
+        };
+        assert_eq!(dates_suffix(None, None, &zone), "");
+        assert_eq!(
+            dates_suffix(Some(local(2027, 8, 27, 23, 59)), None, &zone),
+            ", due Fri 27 Aug 2027"
+        );
+        assert_eq!(
+            dates_suffix(Some(local(2026, 8, 27, 9, 0)), None, &zone),
+            ", due Thu 27 Aug 2026 at 09:00"
+        );
+        assert_eq!(
+            dates_suffix(
+                Some(local(2026, 8, 28, 23, 59)),
+                Some(local(2026, 8, 24, 0, 0)),
+                &zone
+            ),
+            ", due Fri 28 Aug 2026, starts Mon 24 Aug 2026"
+        );
+    }
+
+    /// Parse `text` against `clock` and echo it in the clock's zone, the way `add` does.
+    fn echo(text: &str, clock: &tui_do_core::ZonedTime) -> String {
+        let parsed = tui_do_core::quickadd::parse(text, clock);
+        dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone())
+    }
+
+    #[test]
+    fn the_add_line_reports_what_the_parser_took() {
+        // Through the parser: `due 27.8` is a date, and `1.6 GB` is not.
+        use chrono::TimeZone as _;
+        let clock = tui_do_core::zone::pinned(
+            chrono::FixedOffset::west_opt(5 * 3600)
+                .and_then(|zone| zone.with_ymd_and_hms(2026, 8, 26, 10, 0, 0).single())
+                .expect("a fixed now"),
+        );
+        assert_eq!(echo("call mom due 27.8", &clock), ", due Thu 27 Aug 2026");
+        assert_eq!(echo("llvm 1.6 GB", &clock), "");
+    }
+
+    #[test]
+    fn a_date_across_daylight_saving_is_echoed_on_its_own_day() {
+        // Typed in January in New York (-05:00) for a day in July (-04:00). The parser
+        // resolves 23:59 and 00:00 at July's offset, and the echo must read them back by
+        // the same rules. In January's fixed offset both are an hour earlier: the due
+        // date gains a time nobody typed, and the start date moves to the day before.
+        use chrono::TimeZone as _;
+        use chrono_tz::America::New_York;
+        let january = New_York
+            .with_ymd_and_hms(2027, 1, 15, 10, 0, 0)
+            .single()
+            .expect("an unambiguous instant");
+        let text = "fireworks start 2027-07-04 due 2027-07-04";
+        let parsed = tui_do_core::quickadd::parse(text, &january);
+        assert_eq!(
+            dates_suffix(parsed.due_date, parsed.start_date, &New_York),
+            ", due Sun 4 Jul 2027, starts Sun 4 Jul 2027"
+        );
+
+        // The same instants echoed in a frozen January offset -- what a clock pinned to
+        // today's offset would print, and what `add` must not.
+        let frozen = tui_do_core::zone::pinned(january.fixed_offset());
+        assert_eq!(
+            dates_suffix(parsed.due_date, parsed.start_date, &frozen.timezone()),
+            ", due Sun 4 Jul 2027 at 22:59, starts Sat 3 Jul 2027 at 23:00"
         );
     }
 

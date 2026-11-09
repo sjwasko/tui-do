@@ -56,12 +56,13 @@ throughout, both learned the hard way in this pass:
 | BUG-27 | UI-level undo/redo sequence after a rejected label create | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
+| ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
 
 ## What is left, at a glance
 
 | | |
 |---|---|
-| **Decide, then fix** | BUG-24 — new on 2026-09-14: a decimal in prose becomes a due date, silently, and the three candidate rules are a judgement call rather than a mechanical fix |
+| **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-22, BUG-23 — new 2026-09-13, both need fixing. ~~BUG-21~~ is fixed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
@@ -1462,7 +1463,7 @@ dedicated reader path that does not contend with the writer, makes it determinis
 
 ---
 
-### BUG-24 — a decimal number in prose is silently eaten as a date, and sets a due date nobody asked for
+### ~~BUG-24~~ — FIXED — a decimal number in prose is silently eaten as a date, and sets a due date nobody asked for
 
 `crates/tui-do-core/src/quickadd/dates.rs`, reached from `tui-do add` and from `a` in the
 interface.
@@ -1516,6 +1517,48 @@ due-date later.
 **How to test it.** Table-driven over the four strings above, asserting both halves — the
 title is unchanged and no due date is set — because a fix that stops setting the date while
 still eating the text would pass a weaker test.
+
+**Fixed 2026-11-08. Decided by the user: keyword-only** — option 2 without the
+"end of the line" half. **It was wider than the four strings above.** Measured against
+the code before the fix, *any* bare pair or triple of numbers joined by `.`, `/` or `-` was
+taken, anywhere in the line — fractions, ranges and version numbers as well as decimals:
+
+| typed | title kept | due set |
+|---|---|---|
+| `llvm 1.6 GB` | `llvm GB` | 2027-06-01 |
+| `costs 2.5 hours` | `costs hours` | 2027-05-02 |
+| `add 1/2 cup sugar` | `add cup sugar` | 2027-02-01 |
+| `takes 3-5 days` | `takes days` | 2027-05-03 |
+| `score 10-12` | `score` | 2026-12-10 |
+| `room 4.12` | `room` | 2026-12-04 |
+| `ratio 16.9` | `ratio` | 2027-09-16 |
+| `upgrade to 2.6.10` | `upgrade to` | 2010-06-02, in the past |
+| `bump to 1.2.3` | `bump to` | 2003-02-01 |
+
+The rule now: **a date written in digits alone, with no four-digit year** (`27.8`, `27/08`,
+`27-8`, `1.2.3`, `27.08.26`), is a date only after `due`, `start`, `starts`, `starting` or
+`start:`. Anywhere else it stays in the title. So does a dotted one that leads with a
+four-digit year (`2026.1.5`), which is a version number's shape — decided in review, since
+an ISO date uses dashes. Any other four-digit year (`2026-08-27`, `27/08/2026`,
+`27.8.2026`), a month name (`27aug`, `aug 27`, `27 aug 2026`) and words (`tomorrow`,
+`in 3 days`) are unambiguous and still work anywhere. The spaced all-digit form (`1 2 3`)
+falls under the same rule. The keyword is decisive in the other direction too: `due 2.5
+hours` is due 2 May, title `hours`. `dates::Keyword` carries the decision from `find` down to
+`literal_date` and the spaced three-part form. A field that holds nothing but a date — the
+edit form's Due, the `d` prompt — goes through the new `quickadd::parse_due`, which treats
+the keyword as given, so `27.8` typed there still works. The interface's live highlighting
+reads `Parsed.tokens` from the same `parse`, so it cannot disagree with what is stored.
+
+**`tui-do add` now names what it parsed**: `Added "call mom" to Inbox, due Fri 27 Aug 2027`,
+with `, starts …` the same way and `at HH:MM` only when the time is not the field's default
+(`DateField::default_time`), read in the clock's own `Zone` — the one the parser resolved
+in — so a date across a daylight-saving change is echoed on its own day, with no stray
+` at 23:00` (`runtime::dates_suffix`). Tests: `a_number_in_prose_is_not_a_date` asserts
+title unchanged, no due, no start and no token over every row above plus the original four;
+it failed on the old code. `a_bare_numeric_date_after_a_keyword_still_parses`,
+`an_unambiguous_date_needs_no_keyword`, `a_due_field_reads_a_bare_numeric_date`,
+`the_add_line_says_which_dates_were_set` and
+`a_date_across_daylight_saving_is_echoed_on_its_own_day` cover the rest.
 
 ### BUG-25 — starting with stdin not a terminal hangs forever, with the terminal held in raw mode
 

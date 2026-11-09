@@ -510,8 +510,8 @@ what `tui-do add` can express is a title plus the quick-add tokens.
 
 **Found by trying to use it.** A test plan was to be filed as a task with the plan itself as
 the description; there is no mechanism, so the 754-character plan went into the *title*
-instead — and took BUG-24 with it, silently losing "1.6" and acquiring a due date in June
-2027.
+instead — and took BUG-24 (since fixed) with it, silently losing "1.6" and acquiring a due
+date in June 2027.
 
 **It matters more for item 3 than for people.** A human has the interface, where `e` edits a
 description properly. An MCP `add_task` has nothing: an agent filing a task with a body of
@@ -529,7 +529,8 @@ So this is really a prerequisite of 3a rather than a separate feature.
   TipTap HTML on the wire, and `markdown::looks_like_html` already decides which. `add`
   should write what it was given and not guess.
 - **What does it print back?** Not the description — it is long by nature. A character count
-  is enough, and it is the same "say what you actually did" fix BUG-24 asks for.
+  is enough, and it is the same "say what you actually did" fix BUG-24 got: `add` now names
+  any due or start date it set.
 
 ---
 
