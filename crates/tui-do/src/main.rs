@@ -240,6 +240,65 @@ struct AddArgs {
     /// local store only, so one created since the last sync is not known to it.
     #[arg(long)]
     dry_run: bool,
+
+    /// The task's description, inline: `-d 'Ask about the March invoice.'`
+    ///
+    /// Stored exactly as given, newlines included. Quick-add tokens in it are text, not
+    /// tokens. For anything longer than a line or two, use --description-file.
+    // Hyphen values allowed, because a Markdown list starts with `- `.
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        value_hint = clap::ValueHint::Other
+    )]
+    description: Option<String>,
+
+    /// Read the task's description from a file.
+    ///
+    /// Stored exactly as given, but for one trailing newline. It must be UTF-8 text of
+    /// 64 KiB or less.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "description",
+        value_hint = clap::ValueHint::FilePath
+    )]
+    description_file: Option<PathBuf>,
+}
+
+/// Read the description `args` names, if it names one, and check it.
+///
+/// Before the config or the store, so a file that is missing, too large or not text is
+/// reported whatever else is wrong, and nothing is queued.
+fn read_description(args: &AddArgs) -> anyhow::Result<runtime::Description> {
+    use tui_do_core::description;
+    let bytes = match (&args.description, &args.description_file) {
+        (Some(text), _) => text.clone().into_bytes(),
+        (None, Some(path)) => {
+            let file = std::fs::File::open(path).with_context(|| {
+                format!("could not open the description file {}", path.display())
+            })?;
+            read_capped(file).with_context(|| {
+                format!("could not read the description file {}", path.display())
+            })?
+        }
+        (None, None) => return Ok(runtime::Description::None),
+    };
+    Ok(runtime::Description::Given(description::normalise(bytes)?))
+}
+
+/// Everything `reader` has, up to one byte past the size cap.
+///
+/// One past, so `normalise` can tell "exactly at the cap" from "over it" without a whole
+/// misnamed log file being read into memory first.
+fn read_capped(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    let cap = u64::try_from(tui_do_core::description::MAX_BYTES).unwrap_or(u64::MAX);
+    reader.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Options for `tui-do completions`.
@@ -458,6 +517,7 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
     {
         missing_text();
     }
+    let description = read_description(args)?;
     let path = Config::resolve_path(config_override)?;
     let config = Config::load(&path).with_context(|| config_problem(&path))?;
     report_exposed_credentials(&config, &path, &mut std::io::stderr());
@@ -466,7 +526,7 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
         .enable_all()
         .build()
         .context("could not start the async runtime")?;
-    let mode = add_mode(args);
+    let mode = add_mode(args, description);
     let text = if args.text.is_empty() {
         let vocabulary = runtime.block_on(runtime::vocabulary());
         // `--dry-run` with no text asks, then checks what was typed instead of adding it.
@@ -483,11 +543,12 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
 
 /// How `tui-do add` was asked to run: one value for the typed line and the given one, so
 /// a prompt cannot add where `add 'text'` with the same flags would only have checked.
-const fn add_mode(args: &AddArgs) -> runtime::AddMode {
+fn add_mode(args: &AddArgs, description: runtime::Description) -> runtime::AddMode {
     runtime::AddMode {
         offline: args.offline,
         create_labels: args.create_labels,
         dry_run: args.dry_run,
+        description,
     }
 }
 
@@ -638,9 +699,58 @@ mod tests {
             .nth(1)
             .expect("the add subcommand has an arm");
         let arm = add.split("tui__subcmd").next().unwrap_or(add);
-        // `--config` legitimately takes a path; nothing else in the arm may.
+        // `--config` and `--description-file` legitimately take a path; nothing else in
+        // the arm may.
         let paths = arm.matches("compgen -f").count();
-        assert_eq!(paths, 1, "only --config completes a path:\n{arm}");
+        assert_eq!(
+            paths, 2,
+            "only --config and --description-file complete a path:\n{arm}"
+        );
+    }
+
+    fn add_args(argv: &[&str]) -> Result<AddArgs, clap::Error> {
+        let mut full = vec!["tui-do", "add"];
+        full.extend_from_slice(argv);
+        match Cli::try_parse_from(full)?.command {
+            Some(Command::Add(args)) => Ok(args),
+            other => panic!("expected add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inline_description_keeps_its_newlines_and_a_leading_hyphen() {
+        let args = add_args(&["title", "-d", "- one\n- two\r\n"]).unwrap();
+        assert_eq!(
+            read_description(&args).unwrap(),
+            runtime::Description::Given("- one\n- two".to_string())
+        );
+        let none = add_args(&["title"]).unwrap();
+        assert_eq!(read_description(&none).unwrap(), runtime::Description::None);
+    }
+
+    #[test]
+    fn the_inline_and_file_descriptions_conflict() {
+        let error = add_args(&["title", "-d", "x", "--description-file", "f"])
+            .expect_err("two descriptions must be refused");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn a_missing_description_file_is_named() {
+        let args = add_args(&["title", "--description-file", "/nonexistent/plan.md"]).unwrap();
+        let error = read_description(&args).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("/nonexistent/plan.md"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn reading_stops_one_byte_past_the_cap() {
+        let max = tui_do_core::description::MAX_BYTES;
+        let huge = std::io::repeat(b'a').take(u64::try_from(max).unwrap() * 4);
+        use std::io::Read as _;
+        assert_eq!(read_capped(huge).unwrap().len(), max + 1);
     }
 
     #[test]
@@ -650,7 +760,7 @@ mod tests {
             panic!("expected add");
         };
         assert!(args.text.is_empty(), "no text is allowed, to ask for one");
-        let mode = add_mode(&args);
+        let mode = add_mode(&args, runtime::Description::None);
         assert!(mode.dry_run && mode.create_labels && !mode.offline);
     }
 

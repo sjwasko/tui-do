@@ -418,6 +418,51 @@ async fn a_pushed_create_adopts_the_server_id_and_keeps_its_labels() {
 }
 
 #[tokio::test]
+async fn a_pushed_create_carries_its_description_verbatim() {
+    // `tui-do add -d` / `--description-file` puts the text on the task and nowhere
+    // else, so the create's body is the only way it reaches the server. A mock that
+    // only matches the exact text answers 201; anything else falls through to a 404,
+    // which is a rejection and fails the assertion below.
+    let description = "# Plan\n\nShip +Personal tomorrow.\n\n    <b>indented</b>\n\n- one";
+    let server = MockServer::start().await;
+    let mut echoed = task_json(4243, "write the plan");
+    echoed["description"] = json!(description);
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .and(body_partial_json(json!({ "description": description })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(echoed))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .queue(Mutation::CreateTask {
+            task: Box::new(Task {
+                description: description.to_string(),
+                ..task(0, "write the plan")
+            }),
+        })
+        .await
+        .unwrap();
+    let queued = store.pending(None).await.unwrap();
+    match &queued[0].mutation {
+        Mutation::CreateTask { task } => assert_eq!(task.description, description),
+        other => panic!("expected a create, got {other:?}"),
+    }
+
+    let (sync, _rx) = engine(&server, &store);
+    sync.push().await.unwrap();
+    assert_eq!(
+        store.pending_count().await.unwrap(),
+        0,
+        "the create was not accepted"
+    );
+    let adopted = store.task(TaskId(4243)).await.unwrap().expect("adopted");
+    assert_eq!(adopted.description, description);
+}
+
+#[tokio::test]
 async fn a_pushed_create_announces_the_id_it_was_given() {
     // The store swaps the provisional id in its own rows and in anything still queued.
     // What it cannot reach is the interface, which holds that id in its list, its

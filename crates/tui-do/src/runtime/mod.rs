@@ -1206,7 +1206,7 @@ pub async fn add(
     // run never so much as builds a client.
     if mode.dry_run {
         let store = open_existing_store().await?;
-        return rehearse(config, &store, &parsed, &clock, mode.create_labels).await;
+        return rehearse(config, &store, &parsed, &clock, &mode).await;
     }
     let store = open_store().await?;
 
@@ -1254,10 +1254,15 @@ pub async fn add(
         }
     }
 
-    let built = built.ok_or_else(|| no_project(&parsed, &projects))?;
+    let mut built = built.ok_or_else(|| no_project(&parsed, &projects))?;
 
     let project_id = built.task.project_id;
     let project = project_label(&projects, project_id);
+    // On the task itself, so it travels the ordinary write path: the store row, the
+    // outbox payload and the create's body all carry the whole `Task`. The text is
+    // body, never quick-add -- only the title line is parsed.
+    let description = mode.description.text().to_string();
+    built.task.description.clone_from(&description);
     let queued = queue_add(&store, built, mode.create_labels).await?;
 
     let outcome = Outcome {
@@ -1271,6 +1276,7 @@ pub async fn add(
         backdated: queued.backdated.as_deref(),
         created_labels: &queued.created_labels,
         unknown_labels: &queued.unknown_labels,
+        description: &description,
     };
     let mut lines = outcome.lines(Tense::Did).into_iter();
     if let Some(first) = lines.next() {
@@ -1362,7 +1368,7 @@ async fn rehearse(
     store: &Store,
     parsed: &tui_do_core::quickadd::Parsed,
     clock: &tui_do_core::ZonedTime,
-    create_labels: bool,
+    mode: &AddMode,
 ) -> anyhow::Result<()> {
     let projects = store
         .projects(ProjectFilter::default(), ProjectSort::default())
@@ -1382,7 +1388,7 @@ async fn rehearse(
     .ok_or_else(|| no_project(parsed, &projects))?;
 
     // What `queue_add` would do with the labels, without queuing anything.
-    let (created_labels, unknown_labels) = if create_labels {
+    let (created_labels, unknown_labels) = if mode.create_labels {
         (built.unknown_labels.clone(), Vec::new())
     } else {
         (Vec::new(), built.unknown_labels.clone())
@@ -1397,6 +1403,7 @@ async fn rehearse(
         backdated: backdated.as_deref(),
         created_labels: &created_labels,
         unknown_labels: &unknown_labels,
+        description: mode.description.text(),
     };
     for line in outcome.lines(Tense::Would) {
         println!("{line}");
@@ -1410,7 +1417,7 @@ async fn rehearse(
 }
 
 /// How `tui-do add` was asked to run.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AddMode {
     /// Queue without trying to send.
     pub offline: bool,
@@ -1418,7 +1425,33 @@ pub struct AddMode {
     pub create_labels: bool,
     /// Say what would be added, and add nothing.
     pub dry_run: bool,
+    /// The task's description, if one was given.
+    pub description: Description,
 }
+
+/// Where a task's description comes from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Description {
+    /// None was given.
+    #[default]
+    None,
+    /// Given inline, from a file or from stdin, and already through
+    /// `description::normalise`.
+    Given(String),
+}
+
+impl Description {
+    /// The text, or `""` for none.
+    fn text(&self) -> &str {
+        match self {
+            Self::None => "",
+            Self::Given(text) => text,
+        }
+    }
+}
+
+/// How wide a dry run's glimpse of the description is, in characters.
+const DESCRIPTION_GLIMPSE: usize = 60;
 
 /// Whether [`Outcome::lines`] reports an add that happened or one that would.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1449,6 +1482,9 @@ struct Outcome<'a> {
     created_labels: &'a [String],
     /// Labels named that do not exist, and are left off.
     unknown_labels: &'a [String],
+    /// The description, or `""`. Never printed whole: it is long by nature, so a real
+    /// add reports its size, and a dry run its first line as well.
+    description: &'a str,
 }
 
 impl Outcome<'_> {
@@ -1464,20 +1500,41 @@ impl Outcome<'_> {
             backdated,
             created_labels,
             unknown_labels,
+            description,
         } = self;
         let verb = match tense {
             Tense::Did => "Added",
             Tense::Would => "Would add",
         };
         let mut lines = Vec::new();
+        // On the first line, after the dates, so the line's opening stays the shape
+        // people and the skill doc read.
+        let described = if description.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", with a description ({})",
+                tui_do_core::description::size(description)
+            )
+        };
         // Named with its id when the name is ambiguous, because a task added to the wrong
         // Inbox is a task the user will not find.
         if *ambiguous_project {
             lines.push(format!(
-                "{verb} \"{title}\" to {project} (#{project_id}){dates} — more than one project has that name"
+                "{verb} \"{title}\" to {project} (#{project_id}){dates}{described} — more than one project has that name"
             ));
         } else {
-            lines.push(format!("{verb} \"{title}\" to {project}{dates}"));
+            lines.push(format!("{verb} \"{title}\" to {project}{dates}{described}"));
+        }
+        // A dry run shows enough to tell which description it read, and no more.
+        if tense == Tense::Would && !description.is_empty() {
+            lines.push(format!(
+                "Description begins: \"{}\"",
+                printable(&tui_do_core::description::first_line(
+                    description,
+                    DESCRIPTION_GLIMPSE
+                ))
+            ));
         }
         if let Some(note) = backdated {
             lines.push(format!("Note: {note}."));
@@ -1752,6 +1809,7 @@ mod tests {
             backdated: Some("that date has passed"),
             created_labels: &created,
             unknown_labels: &unknown,
+            description: "",
         };
         assert_eq!(
             outcome.lines(Tense::Did),
@@ -1775,6 +1833,37 @@ mod tests {
                 "No labels called a, b — they would be left off. Pass --create-labels to have \
                  tui-do create them.",
             ]
+        );
+    }
+
+    /// A description is counted on the first line and never printed; a dry run shows a
+    /// printable glimpse of its first line as well.
+    #[test]
+    fn a_description_is_reported_by_size() {
+        let description = "\u{1b}]52;c;evil\u{7} first line\n\nsecond paragraph";
+        let outcome = Outcome {
+            title: "write it",
+            project: "Work".to_string(),
+            project_id: tui_do_core::models::ProjectId(3),
+            ambiguous_project: false,
+            dates: ", due Fri 27 Aug 2027".to_string(),
+            backdated: None,
+            created_labels: &[],
+            unknown_labels: &[],
+            description,
+        };
+        assert_eq!(
+            outcome.lines(Tense::Did),
+            vec![
+                "Added \"write it\" to Work, due Fri 27 Aug 2027, with a description \
+                 (2 paragraphs, 41 characters)"
+            ]
+        );
+        let would = outcome.lines(Tense::Would);
+        assert_eq!(would.len(), 2, "{would:?}");
+        assert_eq!(
+            would[1],
+            "Description begins: \"\u{fffd}]52;c;evil\u{fffd} first line\""
         );
     }
 

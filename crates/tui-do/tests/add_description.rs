@@ -1,0 +1,249 @@
+//! `tui-do add` with a description: `-d`, `--description-file`, and their reports.
+//!
+//! Each test runs the built binary against a scratch config *and* a scratch store, both
+//! set, never one: a scratch config alone still writes to the real store. The server is
+//! a loopback port nothing listens on, and every add is `--offline` besides.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use tui_do_core::models::{Project, ProjectId, Task};
+use tui_do_core::store::{Mutation, TaskFilter, TaskSort};
+use tui_do_core::Store;
+
+/// A scratch directory with a config that loads and a store holding one project.
+async fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("tui-do-desc-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "server:\n  url: http://127.0.0.1:9\n  token_file: token\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("token"), "tk_not_a_real_token\n").unwrap();
+    std::fs::set_permissions(
+        dir.join("token"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    let store = Store::open(dir.join("tui-do.db")).await.unwrap();
+    store
+        .upsert_projects(vec![Project {
+            id: ProjectId(1),
+            title: "Personal".to_string(),
+            ..Project::default()
+        }])
+        .await
+        .unwrap();
+    dir
+}
+
+fn command(dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tui-do"));
+    command
+        .env("TUI_DO_CONFIG", dir.join("config.yaml"))
+        .env("TUI_DO_DB", dir.join("tui-do.db"))
+        .args(args)
+        .stdin(Stdio::null());
+    command
+}
+
+fn tui_do(dir: &Path, args: &[&str]) -> Output {
+    command(dir, args).output().expect("the binary runs")
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The tasks queued for creation, as the outbox holds them.
+async fn queued(dir: &Path) -> Vec<Task> {
+    let store = Store::open(dir.join("tui-do.db")).await.unwrap();
+    store
+        .pending(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry.mutation {
+            Mutation::CreateTask { task } => Some(*task),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The one task the store's own table holds.
+async fn stored(dir: &Path) -> Vec<Task> {
+    let store = Store::open(dir.join("tui-do.db")).await.unwrap();
+    store
+        .tasks(TaskFilter::default(), TaskSort::default())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_inline_description_keeps_its_newline() {
+    let dir = scratch("inline").await;
+    let output = tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "Call the dentist +Personal",
+            "-d",
+            "Ask about the crown.\nBring the insurance card.",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let out = stdout(&output);
+    assert!(
+        out.starts_with(
+            "Added \"Call the dentist\" to Personal, with a description \
+             (1 paragraph, 46 characters)\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        !out.contains("crown"),
+        "the body must not be printed: {out}"
+    );
+
+    let want = "Ask about the crown.\nBring the insurance card.";
+    let tasks = queued(&dir).await;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0].description, want);
+    assert_eq!(stored(&dir).await[0].description, want);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_description_file_is_stored_exactly() {
+    let dir = scratch("file").await;
+    // Tokens, Markdown, HTML-ish text, indentation and a CRLF, as a file might carry.
+    let body = "# Plan\r\n\r\nShip +Personal *urgent !5 tomorrow.\n\n    indented <b>code</b>\n\n- one\n- two\n";
+    let file = dir.join("plan.md");
+    std::fs::write(&file, body).unwrap();
+
+    let output = tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "Write the plan",
+            "--description-file",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let out = stdout(&output);
+    assert!(
+        out.contains("with a description (4 paragraphs, 82 characters)"),
+        "{out}"
+    );
+
+    let want =
+        "# Plan\n\nShip +Personal *urgent !5 tomorrow.\n\n    indented <b>code</b>\n\n- one\n- two";
+    let tasks = queued(&dir).await;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let task = &tasks[0];
+    assert_eq!(task.description, want);
+    // The tokens in the body were body: no priority, no date, no label.
+    assert_eq!(task.title, "Write the plan");
+    assert_eq!(task.priority, 0);
+    assert!(task.due_date.get().is_none());
+    assert!(task.labels.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_dry_run_shows_the_first_line_and_queues_nothing() {
+    let dir = scratch("dry").await;
+    let file = dir.join("long.md");
+    std::fs::write(
+        &file,
+        "\nThe first line of a description that goes on for well over sixty characters.\n\nSecond.\n",
+    )
+    .unwrap();
+    let output = tui_do(
+        &dir,
+        &[
+            "add",
+            "--dry-run",
+            "Read it +Personal",
+            "--description-file",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let out = stdout(&output);
+    let mut lines = out.lines();
+    assert_eq!(
+        lines.next(),
+        Some("Would add \"Read it\" to Personal, with a description (2 paragraphs, 86 characters)"),
+        "{out}"
+    );
+    assert_eq!(
+        lines.next(),
+        Some("Description begins: \"The first line of a description that goes on for well over…\""),
+        "{out}"
+    );
+    assert!(queued(&dir).await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_bad_description_is_refused_before_anything_is_queued() {
+    let dir = scratch("bad").await;
+    let binary = dir.join("binary.bin");
+    std::fs::write(&binary, b"caf\xe9").unwrap();
+    let huge = dir.join("huge.log");
+    std::fs::write(&huge, vec![b'x'; 64 * 1024 + 1]).unwrap();
+
+    for (file, says) in [
+        (&binary, "not UTF-8"),
+        (&huge, "64 KiB"),
+        (
+            &dir.join("missing.md"),
+            "could not open the description file",
+        ),
+    ] {
+        let output = tui_do(
+            &dir,
+            &[
+                "add",
+                "--offline",
+                "Nope +Personal",
+                "--description-file",
+                file.to_str().unwrap(),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(stderr.contains(says), "{file:?}: {stderr}");
+    }
+    assert!(queued(&dir).await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_description_flags_conflict() {
+    let dir = scratch("conflict").await;
+    let output = tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "Both +Personal",
+            "-d",
+            "inline",
+            "--description-file",
+            "plan.md",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+    assert!(queued(&dir).await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
