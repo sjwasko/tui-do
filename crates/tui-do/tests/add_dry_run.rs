@@ -1,4 +1,4 @@
-//! `tui-do add --dry-run`.
+//! `tui-do add --dry-run`, and the `as typed best:` line a real add prints.
 //!
 //! Each test runs the built binary against a scratch config *and* a scratch store, both
 //! set, never one: a scratch config alone still writes to the real store. The server is
@@ -249,6 +249,62 @@ async fn a_dry_run_leaves_an_older_store_as_it_was() {
         "the store's bytes changed"
     );
     assert_eq!(listing(&dir), files, "the dry run left files behind");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_real_add_shows_the_best_phrasing_only_when_it_differs() {
+    let dir = scratch("as-typed-best").await;
+
+    let loose = stdout(&tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "due 2099-01-05 Call the dentist !3 +Personal",
+        ],
+    ));
+    let mut lines = loose.lines();
+    // The first line is unchanged; the skill doc and its readers rely on it.
+    assert_eq!(
+        lines.next(),
+        Some("Added \"due 2099-01-05 Call the dentist\" to Personal, due Mon 5 Jan 2099"),
+        "{loose}"
+    );
+    assert_eq!(
+        lines.next(),
+        Some("as typed best: due 2099-01-05 Call the dentist +Personal !3 due 2099-01-05"),
+        "{loose}"
+    );
+
+    let reordered = stdout(&tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "Call the dentist !3 +Personal due 2099-01-05",
+        ],
+    ));
+    assert!(
+        reordered.contains("as typed best: Call the dentist +Personal !3 due 2099-01-05\n"),
+        "{reordered}"
+    );
+
+    // Already in its best form but for spacing, so nothing more is said.
+    let tidy = stdout(&tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "  Call the dentist   +Personal !3\tdue 2099-01-05  ",
+        ],
+    ));
+    assert!(
+        tidy.starts_with("Added \"Call the dentist\" to Personal, due Mon 5 Jan 2099\n"),
+        "{tidy}"
+    );
+    assert!(!tidy.contains("as typed best"), "{tidy}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

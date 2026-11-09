@@ -1179,7 +1179,15 @@ pub async fn add(
         created_labels: &queued.created_labels,
         unknown_labels: &queued.unknown_labels,
     };
-    for line in outcome.lines(Tense::Did) {
+    let mut lines = outcome.lines(Tense::Did).into_iter();
+    if let Some(first) = lines.next() {
+        println!("{first}");
+    }
+    // Second, straight under the line it rewrites.
+    if let Some(best) = better_phrasing(text, &parsed, &clock) {
+        println!("as typed best: {best}");
+    }
+    for line in lines {
         println!("{line}");
     }
 
@@ -1418,6 +1426,20 @@ impl Outcome<'_> {
         }
         lines
     }
+}
+
+/// The canonical line, when it differs from what was typed and parses back to the same
+/// task.
+///
+/// `None` for a line already phrased that way, so a well-written add stays quiet.
+/// Whitespace is collapsed before comparing, so spacing alone never triggers it.
+fn better_phrasing(
+    text: &str,
+    parsed: &tui_do_core::quickadd::Parsed,
+    clock: &tui_do_core::ZonedTime,
+) -> Option<String> {
+    let typed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    checked_canonical(parsed, clock).filter(|best| *best != printable(&typed))
 }
 
 /// The line in its canonical form, if that parses back to the same task.
