@@ -23,6 +23,13 @@ Last touched 2026-11-09.
 > as history. `md/2026-09-08-mcp-server-design.md` is kept as a record and marked
 > superseded.
 
+> **Decided 2026-11-09: no keychain on any platform. Item 8 is closed.** Measured on
+> `sw-mba`: an ad-hoc-signed binary loses access to its Keychain entry whenever it is
+> rebuilt or moved, which means after every `brew upgrade`, and over SSH a rebuilt binary
+> can make the entry unreadable to everyone. The token stays in `token_file` at `0600`,
+> written by `tui-do login`, on macOS as on Linux. The measurements are under item 8;
+> `config::keychain` stays as a seam that answers `Unavailable` everywhere.
+
 ## The road map, as of 2026-09-13
 
 Three questions were argued out on 2026-09-13 and their answers are in this file rather
@@ -58,15 +65,17 @@ is the actual order. Items keep their stable numbers — nothing is renumbered, 
 notes cite them — so this says *what order*, not *what number*.
 
 ```
-  NOW      8(macOS)   keychain on macOS: Phase A done, B on sw-mba -- item 8
+  NOW      8(macOS)   DROPPED 2026-11-09 -- measured, every upgrade loses access
            ------------------------------------------------------------
-           delivers the stated macOS goal in full, plus the foundation
-           everything agentic needs
+           Phase A shipped (tap pours v1.1.0, macOS supported, CI gates).
+           What goes NOW in its place is open: see DECIDE.
 
   NEXT     3a         tui_do_core::agent + list/show --json
            3b         DROPPED 2026-11-09 -- Vikunja ships its own MCP server
 
-  DECIDE   BUG-20 before November. The --json contract before 3a ships.
+  DECIDE   What is NOW after item 8. The 2026-11-09 handoff lists BUG-33,
+           the six `tui-do add` findings, crates.io, and a cheaper full sync.
+           BUG-20 before November. The --json contract before 3a ships.
            Whether 3a is still wanted without 3b (see item 3).
            BUG-9 needs a decision, not work. BUG-7 is fixed.
 
@@ -685,6 +694,13 @@ neither of which is ours to clear; the keychain is blocked on nothing. Recorded 
 
 **8. Keychain credential storage.** *(raised 2026-09-07 — unblocked 2026-09-08)*
 
+**Closed 2026-11-09: not built, on either platform.** Phase A shipped; Phase B stopped at
+its first step, whose measurement is below, and Phases B 2–4 and C will not happen. With
+the ad-hoc signature every release carries, the Keychain costs a permission dialog after
+every `brew upgrade` and breaks outright over SSH, against a `0600` file that already works.
+Buying a Developer ID would not obviously fix it: an identical binary at a new path was also
+refused, and Homebrew moves every version. The plan follows as history.
+
 **The macOS plan, agreed 2026-11-09. macOS only; Linux keeps `token_file`.**
 
 - **Phase A — done 2026-11-09 on `sw-x1`**, on branch `macos-phase-a`, with the tap change
@@ -701,6 +717,29 @@ neither of which is ours to clear; the keychain is blocked on nothing. Recorded 
      and see whether macOS asks for access again. Then do the same across a `brew upgrade`.
      This answers whether the $99/year Apple developer membership is needed for a stable
      signature.
+     **Measured 2026-11-09 on `sw-mba`, and the answer is that every upgrade loses access.**
+     Probe: one `security-framework` program built three times (three ad-hoc CDHashes, as a
+     rebuild or `brew upgrade` produces), run over SSH with the login keychain unlocked and
+     user interaction disabled, so a would-be dialog shows as an error:
+     - The binary that wrote the item reads it silently. A rebuilt binary is refused
+       (`-25293`). **So is the identical binary copied to another path** — and Homebrew
+       puts every version at a new `Cellar/tui-do/<version>/` path, so even a stable
+       signature might not be enough without measuring it.
+     - A rebuilt binary's write *succeeds* (`SecItemAdd` → duplicate → `SecItemUpdate`),
+       after which **neither binary can read the entry**. A naive "re-run `tui-do login`
+       after upgrading" over SSH therefore leaves the entry unreadable to every binary
+       until someone approves it at the Mac.
+     - A rebuilt binary cannot delete the old entry (`-25244`, invalid attempt to change
+       the owner). Apple's `security delete-generic-password` can, over SSH, so a manual
+       way back exists.
+     - Over SSH with the keychain *locked* (no `security unlock-keychain` first), every call
+       fails: writes `-25293`, reads `-25300`. Claude Code's shell is in the same
+       `Background` launchd session and sees the same thing. `keychain::read` must map
+       `-25293` and `-25308` to `Locked`, not `Failed`.
+     Not measured: what a Developer ID-signed binary does across a brew path change, and
+     how often the GUI "Always Allow" dialog appears at the Mac (expected: once per upgrade).
+     A locked keychain's reads answer `-25300`, the same as "no entry", so any future
+     implementation could not tell the two apart over SSH.
   2. **Write `keychain::read`'s macOS arm.** Use `keyring` with only its Apple backend, or
      `security-framework` directly, whichever adds fewer crates; count them against
      `Cargo.lock` first. Map its errors onto the four `Lookup` outcomes. Tests go in
@@ -833,8 +872,8 @@ tui-do login
   ├─ "Server URL?"                    → writes config.yaml for you
   ├─ opens the browser at the server's API-token page
   ├─ you paste the token back (hidden input)
-  └─ stores it:  macOS → Keychain    (item 8)
-                 Linux → token_file, mode 0600, written right the first time
+  └─ stores it:  token_file, mode 0600, written right the first time
+                 (macOS → Keychain was dropped 2026-11-09; see item 8)
 ```
 
 **What it is worth is the first-run experience, not the storage.** It deletes the `printf`,
@@ -1246,6 +1285,12 @@ not be fixed. None are Critical.
 ---
 
 ## Done
+
+- **2026-11-09** — **Item 8 closed: no keychain anywhere.** Phase A shipped and merged:
+  the Homebrew tap installs the v1.1.0 Apple Silicon release binary, the README and
+  `CLAUDE.md` list macOS as supported, and macOS CI runs and gates on the test suite (975
+  passing on `sw-mba`). Phase B's measurement showed every rebuild or `brew upgrade` loses
+  Keychain access, so the Keychain was dropped and the token stays in `token_file`.
 
 - **2026-11-09** — **Decided: no MCP server in tui-do.** Vikunja released an official MCP
   server upstream, which makes item 3b redundant. 3b, `tui-do mcp` and `crates/tui-do-mcp`

@@ -625,9 +625,6 @@ help!
 
 **Coming**
 
-- **The macOS Keychain.** On a Mac, `tui-do login` will store your API token in the
-  Keychain rather than in a file. Linux keeps the file, at mode `0600`, which `login`
-  already writes for you.
 - **A real agent surface.** `add` is the only action right now. Reading, completing, moving
   and searching from the command line turn tui-do into something an agent can actually
   operate rather than only write to. See [For agents](#for-agents); this is the one I most

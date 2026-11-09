@@ -683,7 +683,7 @@ mod tests {
 
     /// The keychain sits between the environment and the file, and today it always
     /// answers `Unavailable` — so a config with a token file is resolved from the file and
-    /// says so. When the macOS arm is built this test keeps it honest about falling
+    /// says so. If a keychain arm is ever built, this test keeps it honest about falling
     /// through rather than erroring when there is no entry.
     #[test]
     fn a_keychain_that_answers_nothing_falls_through_to_the_file() {

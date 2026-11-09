@@ -14,6 +14,14 @@ Nothing here is built yet. This is the note that gets argued with first.
 > produced it, and what it does and does not change are in the section below. The keychain
 > half of this note stands unaltered.
 
+> **Keychain dropped, 2026-11-09.** Neither platform will read or write a keychain. Linux
+> was ruled out on cost (below); macOS on a measurement made on `sw-mba`: an ad-hoc-signed
+> binary loses access to its entry whenever it is rebuilt *or moved*, which is every
+> `brew upgrade`, and over SSH a rebuilt binary's rewrite leaves the entry unreadable to
+> every binary. The token stays in `token_file` at `0600` everywhere. The numbers are in
+> `md/TODO.md` item 8. The source order and the four lookup outcomes below are still what
+> `config::keychain` implements; it simply answers `Unavailable` on every platform.
+
 ---
 
 ## What prompted it, and what the measurement said

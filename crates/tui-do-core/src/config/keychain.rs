@@ -1,17 +1,21 @@
 //! The OS keychain as a credential source, and what "not there" has to mean precisely.
 //!
 //! This is the platform seam `CLAUDE.md` describes, in the shape the macOS port proved
-//! works: a `cfg`-selected pair of functions rather than a trait. Phase 5's
+//! works: a function (once a `cfg`-selected pair) rather than a trait. Phase 5's
 //! `MarkdownRenderer` trait was dropped because rendering turned out to need no platform
 //! knowledge, and `URL_OPENER` is two constants and a `cfg` — so a trait here would be a
 //! second abstraction for one caller and one implementation. If a third platform ever
 //! wants in, that is the moment to reach for one.
 //!
-//! **Nothing here reads a keychain yet.** Both arms answer [`Lookup::Unavailable`], which
-//! is truthful on Linux today and a stub on macOS. Landing the seam and the outcomes
-//! separately from the Security.framework calls is deliberate: this half compiles and is
-//! testable on the Linux workstation the project is developed on, and the half that cannot
-//! be is reduced to one function with a known signature.
+//! **Nothing here reads a keychain, on any platform, and that is decided** (2026-11-09).
+//! [`read`] answers [`Lookup::Unavailable`] everywhere. Linux was ruled out on cost; macOS
+//! was ruled out on a measurement: with the ad-hoc signature every build carries, each
+//! `brew upgrade` loses access to the entry, and over SSH a rebuilt binary's rewrite leaves
+//! it unreadable to every binary. `md/TODO.md` item 8 has the numbers. The token lives in
+//! `token_file` at `0600` on both platforms.
+//!
+//! The seam and the four outcomes stay because they are cheap and correct: if a stable
+//! signing identity ever changes the measurement, the work is one function body.
 //!
 //! ## The four outcomes, which are not one outcome
 //!
@@ -61,29 +65,20 @@ pub const SERVICE: &str = "tui-do";
 /// switching servers mean re-authenticating, and would silently hand the wrong token to
 /// whichever config was loaded. The config already names exactly one server, so the URL is
 /// the key that is always available and never ambiguous.
-#[cfg(target_os = "macos")]
-#[must_use]
-pub fn read(_service: &str, _account: &str) -> Lookup {
-    // The leaf the macOS session fills in: `keyring`, or Security.framework directly, and
-    // the mapping from its errors onto the four outcomes above. Until then macOS behaves
-    // exactly as Linux does and the file path still works, which is why this is a safe
-    // thing to have landed unfinished.
-    Lookup::Unavailable
-}
-
-/// No keychain on Linux, and that is a decision rather than an omission.
 ///
-/// Measured 2026-09-08 and recorded in `md/2026-09-07-credential-storage-design.md`: the
-/// pure-Rust Secret Service backend costs **53 net-new crates** against the present 412 and
-/// pulls a *second* async runtime into a to-do client, because `zbus` keeps its `async-io`
-/// defaults even with keyring's `tokio` feature on. Against that, the Secret Service is
-/// frequently absent on the boxes tui-do actually runs on — every headless machine in the
-/// fleet — and usually *locked* when present, since unlocking conventionally happens at
-/// graphical login.
+/// **No platform has one, by decision rather than omission.**
 ///
-/// So the Linux half may well never be built, and that would be a fine outcome rather than
-/// a gap. `token_file` is not a legacy path here; it is the ordinary one.
-#[cfg(not(target_os = "macos"))]
+/// - **Linux**, measured 2026-09-08: the pure-Rust Secret Service backend costs 53 net-new
+///   crates and a second async runtime, for a service that is absent on every headless box
+///   in the fleet and usually locked on the rest.
+/// - **macOS**, measured 2026-11-09 on `sw-mba`: an ad-hoc-signed binary loses access to
+///   its own entry when it is rebuilt *or merely moved*, and Homebrew installs each version
+///   at a new path. At the Mac that is a permission dialog after every upgrade; over SSH a
+///   rebuilt binary can overwrite the entry but then nothing can read it, and it cannot
+///   delete the old one (`-25244`).
+///
+/// If a stable signing identity is ever bought, re-run that measurement before filling this
+/// in. Over SSH, `-25293` and `-25308` would have to map to [`Lookup::Locked`].
 #[must_use]
 pub fn read(_service: &str, _account: &str) -> Lookup {
     Lookup::Unavailable
@@ -123,11 +118,10 @@ impl Lookup {
 mod tests {
     use super::*;
 
-    /// Nothing reads a keychain yet on either platform, and a test that says so is what
-    /// stops "the keychain is where the credential lives" quietly becoming an assumption
-    /// something depends on before it is true.
+    /// No platform reads a keychain, and a test that says so is what stops "the keychain is
+    /// where the credential lives" quietly becoming an assumption something depends on.
     #[test]
-    fn no_platform_reads_a_keychain_yet() {
+    fn no_platform_reads_a_keychain() {
         assert_eq!(
             read(SERVICE, "https://vikunja.example.com"),
             Lookup::Unavailable

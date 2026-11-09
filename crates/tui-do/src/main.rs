@@ -173,9 +173,8 @@ enum Command {
     /// tui-do cannot start without, and a token missing it otherwise fails later as a red
     /// toast that reads like the token is wrong rather than incomplete.
     ///
-    /// The token is written to `token` beside the config, readable only by you. Where it
-    /// lands is the one thing that differs by platform, and on macOS it will move to the
-    /// Keychain without this command's shape changing.
+    /// The token is written to `token` beside the config, readable only by you, on every
+    /// platform; only the directory differs.
     #[command(verbatim_doc_comment)]
     Login(LoginArgs),
 
