@@ -489,7 +489,7 @@ impl OutboxEntry {
     /// Whether the backoff has elapsed and this may be sent.
     #[must_use]
     pub fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.next_attempt_at.is_none_or(|at| at <= now)
+        is_due(self.next_attempt_at, now)
     }
 
     /// Whether this entry has failed at least once and is waiting to be retried.
@@ -517,7 +517,7 @@ impl Queued {
     /// Whether the backoff has elapsed. As [`OutboxEntry::is_due`].
     #[must_use]
     pub fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.next_attempt_at.is_none_or(|at| at <= now)
+        is_due(self.next_attempt_at, now)
     }
 }
 
@@ -565,6 +565,12 @@ fn parse_instant(text: Option<&str>) -> Option<DateTime<Utc>> {
             .ok()
             .map(|dt| dt.with_timezone(&Utc))
     })
+}
+
+/// Whether a backoff ending at `next_attempt_at` has elapsed by `now`. `None` is "as
+/// soon as possible". One rule for [`OutboxEntry`] and [`Queued`], which both carry it.
+fn is_due(next_attempt_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    next_attempt_at.is_none_or(|at| at <= now)
 }
 
 /// The shortest wait before a failed entry is tried again.
