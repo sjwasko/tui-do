@@ -1396,6 +1396,11 @@ async fn rehearse(
     } else {
         (Vec::new(), built.unknown_labels.clone())
     };
+    // `--dry-run` and `--edit` conflict in clap, so this is only reached by a caller
+    // that skipped it; refuse rather than open an editor whose work is thrown away.
+    let DescriptionSource::Given(description) = &mode.description else {
+        anyhow::bail!("--dry-run cannot be combined with --edit: what you wrote would be lost");
+    };
     let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), *clock);
     let outcome = Outcome {
         title: &built.task.title,
@@ -1406,7 +1411,7 @@ async fn rehearse(
         backdated: backdated.as_deref(),
         created_labels: &created_labels,
         unknown_labels: &unknown_labels,
-        description: mode.description.text(),
+        description,
     };
     for line in outcome.lines(Tense::Would) {
         println!("{line}");
@@ -1428,32 +1433,28 @@ pub struct AddMode {
     pub create_labels: bool,
     /// Say what would be added, and add nothing.
     pub dry_run: bool,
-    /// The task's description, if one was given.
-    pub description: Description,
+    /// Where the task's description comes from.
+    pub description: DescriptionSource,
 }
 
 /// Where a task's description comes from.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Description {
-    /// None was given.
-    #[default]
-    None,
-    /// Given inline, from a file or from stdin, and already through
-    /// `description::normalise`.
+///
+/// Only a source: nothing reports or stores one of these. [`describe_and_queue`] settles
+/// it into the text itself before the task is built and the outcome worded, so a
+/// description still to be written can never be mistaken for an empty one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DescriptionSource {
+    /// Given inline, from a file or from stdin, already through
+    /// `description::normalise`. Empty when none was given.
     Given(String),
     /// To be written in the user's editor, once the title and project are known so the
     /// file can name them. The caller has checked there is a terminal for it.
     Edit,
 }
 
-impl Description {
-    /// The text, or `""` for none -- and for one still to be written, which only a dry
-    /// run could ask about, and `--dry-run` refuses `--edit`.
-    fn text(&self) -> &str {
-        match self {
-            Self::None | Self::Edit => "",
-            Self::Given(text) => text,
-        }
+impl Default for DescriptionSource {
+    fn default() -> Self {
+        Self::Given(String::new())
     }
 }
 
@@ -1478,12 +1479,12 @@ async fn describe_and_queue(
     project: &str,
 ) -> anyhow::Result<(Queued, String)> {
     let description = match &mode.description {
+        DescriptionSource::Given(text) => text.clone(),
         // Blocking, on purpose: nothing else is running yet, and the editor owns the
         // terminal until it exits.
-        Description::Edit => {
+        DescriptionSource::Edit => {
             editor::compose(editor, &printable(&built.task.title), &printable(project))?
         }
-        given => given.text().to_string(),
     };
     built.task.description.clone_from(&description);
     let queued = queue_add(store, built, mode.create_labels).await?;
@@ -1851,7 +1852,7 @@ mod tests {
         };
         let mode = AddMode {
             create_labels: true,
-            description: Description::Edit,
+            description: DescriptionSource::Edit,
             ..AddMode::default()
         };
         let error = describe_and_queue(

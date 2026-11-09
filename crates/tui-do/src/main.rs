@@ -309,7 +309,7 @@ struct AddArgs {
 ///
 /// Before the config or the store, so a file that is missing, too large or not text is
 /// reported whatever else is wrong, and nothing is queued.
-fn read_description(args: &AddArgs) -> anyhow::Result<runtime::Description> {
+fn read_description(args: &AddArgs) -> anyhow::Result<runtime::DescriptionSource> {
     use tui_do_core::description;
     let bytes = match (&args.description, &args.description_file) {
         (Some(text), _) => text.clone().into_bytes(),
@@ -330,10 +330,12 @@ fn read_description(args: &AddArgs) -> anyhow::Result<runtime::Description> {
                 format!("could not read the description file {}", path.display())
             })?
         }
-        (None, None) if args.edit => return Ok(runtime::Description::Edit),
-        (None, None) => return Ok(runtime::Description::None),
+        (None, None) if args.edit => return Ok(runtime::DescriptionSource::Edit),
+        (None, None) => return Ok(runtime::DescriptionSource::default()),
     };
-    Ok(runtime::Description::Given(description::normalise(bytes)?))
+    Ok(runtime::DescriptionSource::Given(description::normalise(
+        bytes,
+    )?))
 }
 
 /// What `--description-file` takes to mean stdin.
@@ -635,7 +637,7 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
 
 /// How `tui-do add` was asked to run: one value for the typed line and the given one, so
 /// a prompt cannot add where `add 'text'` with the same flags would only have checked.
-fn add_mode(args: &AddArgs, description: runtime::Description) -> runtime::AddMode {
+fn add_mode(args: &AddArgs, description: runtime::DescriptionSource) -> runtime::AddMode {
     runtime::AddMode {
         offline: args.offline,
         create_labels: args.create_labels,
@@ -814,10 +816,13 @@ mod tests {
         let args = add_args(&["title", "-d", "- one\n- two\r\n"]).unwrap();
         assert_eq!(
             read_description(&args).unwrap(),
-            runtime::Description::Given("- one\n- two".to_string())
+            runtime::DescriptionSource::Given("- one\n- two".to_string())
         );
         let none = add_args(&["title"]).unwrap();
-        assert_eq!(read_description(&none).unwrap(), runtime::Description::None);
+        assert_eq!(
+            read_description(&none).unwrap(),
+            runtime::DescriptionSource::default()
+        );
     }
 
     #[test]
@@ -873,7 +878,10 @@ mod tests {
             );
         }
         let args = add_args(&["title", "-e"]).unwrap();
-        assert_eq!(read_description(&args).unwrap(), runtime::Description::Edit);
+        assert_eq!(
+            read_description(&args).unwrap(),
+            runtime::DescriptionSource::Edit
+        );
     }
 
     #[test]
@@ -904,7 +912,7 @@ mod tests {
             panic!("expected add");
         };
         assert!(args.text.is_empty(), "no text is allowed, to ask for one");
-        let mode = add_mode(&args, runtime::Description::None);
+        let mode = add_mode(&args, runtime::DescriptionSource::default());
         assert!(mode.dry_run && mode.create_labels && !mode.offline);
     }
 
