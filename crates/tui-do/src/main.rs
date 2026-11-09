@@ -77,6 +77,13 @@ enum Command {
     /// elsewhere since the last sync can fail a dry run and still succeed for real,
     /// because a real add asks the server once before giving up.
     ///
+    /// The best form is the title, then +project, *labels, @users and !N, then each
+    /// date after its keyword in ISO form (due 2026-11-12, start 2026-11-09 at 09:00),
+    /// then the repeat. Dates go last because a date leaves the title only when nothing
+    /// follows it except whitespace, punctuation and other tokens. A real add prints
+    /// the same line as "as typed best: ..." whenever what was typed differs from it;
+    /// copy that form next time.
+    ///
     /// NAMES WITH SPACES
     ///
     /// Wrap the value in brackets or quotes, which is what keeps the second word from

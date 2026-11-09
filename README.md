@@ -414,6 +414,14 @@ last sync can fail a dry run and still succeed for real, because a real add asks
 once before giving up. It also refuses a store that does not exist yet, or one a real run
 would first have to upgrade, rather than creating or changing it.
 
+**The best form** is the title, then `+project`, `*label`s, `@user`s and `!N`, then each
+date after its keyword in ISO form (`due 2026-11-09`, `start 2026-11-09 at 09:00`), then the
+repeat. Dates go last because of the rule above: a date leaves the title only when nothing
+follows it except whitespace, punctuation and other tokens. A date kept mid-sentence stays
+in the title, so the best form keeps it there and writes the date again at the end. Every
+real add whose line differs from its best form says so on a second line,
+`as typed best: …`; a line already written that way, spacing aside, gets no second line.
+
 Wrap a name containing spaces in brackets or quotes; brackets are usually easier from a
 shell, which strips quotes before tui-do sees them:
 
@@ -481,7 +489,10 @@ directly is a second writer with none of that.
 that support them. It is plain Markdown, so anything else can simply read it.
 
 **Check generated lines with `--dry-run` first.** It adds nothing and exits non-zero,
-with the message a real add would give, if the line would fail.
+with the message a real add would give, if the line would fail. Then write them the way
+the `as typed best:` line shows: title, then `+project *label @user !N`, then
+`due YYYY-MM-DD`, `start YYYY-MM-DD` and the repeat. That form reads the same way every
+time.
 
 One flag deserves mentioning: **`--create-labels` should usually stay off.**
 Labels are one global pool shared by every project, so a typo in a generated line becomes a

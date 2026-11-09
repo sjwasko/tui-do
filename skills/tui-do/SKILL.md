@@ -66,6 +66,13 @@ last sync can fail a dry run and still succeed for real, because a real add asks
 once before giving up; if a dry run says a project you know exists is missing, run `tui-do`
 once to sync.
 
+**Write lines the way `as typed best:` shows, and copy that form.** The title, then
+`+project`, `*label`s, `@user`s and `!N`, then each date after its keyword in ISO form
+(`due 2026-11-09`, `start 2026-11-09 at 09:00`), then the repeat. Dates go last because a
+date leaves the title only when nothing follows it except whitespace, punctuation and other
+tokens. A real add prints the same `as typed best:` line under its `Added` line whenever what
+was typed differs from it; when it is silent, the line was already in its best form.
+
 **Quote with single quotes.** At an interactive bash prompt `!3` is history expansion,
 including inside double quotes, so the priority is eaten before tui-do sees it. Scripts and
 agents run non-interactively, where this is off, but single quotes are correct everywhere.
