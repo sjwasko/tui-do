@@ -3,8 +3,16 @@
 //! Each run happens under util-linux `script`, inside a small `sh` script that starts
 //! tui-do, waits until it has the terminal in raw mode, does whatever the test asks --
 //! nothing, or a signal (BUG-31) -- waits for tui-do to exit within a bound, and then prints the
-//! terminal's modes with `stty -a`: the same terminal, read after tui-do has gone. Where
-//! there is no `script`, each test says it was skipped and passes.
+//! terminal's modes with `stty -a`: the same terminal, read after tui-do has gone.
+//!
+//! **Where there is no `script`, these tests pass without running, unless
+//! `TUI_DO_REQUIRE_PTY=1` is set, in which case they fail.** CI sets it, so a runner that
+//! lost util-linux shows up red instead of green. A skip still prints a notice, but cargo
+//! shows a passing test's output only with `--nocapture`, so on its own the notice is
+//! easy to miss. `#[ignore]` would have made the skip visible in the summary, but it has
+//! to be decided at compile time, and whether `script` is installed is a fact about the
+//! machine the tests run on. That is not always the machine that built them (a container,
+//! `cargo test --no-run` then copied), so the check stays at run time.
 //!
 //! Every run has a scratch config *and* a scratch store, never one: a scratch config alone
 //! still writes to the real store. The server is a loopback port nothing listens on, and
@@ -47,6 +55,9 @@ fn scratch(name: &str) -> PathBuf {
 fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
+
+/// Set to `1` to make a missing `script` fail these tests instead of skipping them.
+const REQUIRE_PTY: &str = "TUI_DO_REQUIRE_PTY";
 
 fn have_script() -> bool {
     Command::new("script")
@@ -91,9 +102,15 @@ impl Run {
 
 /// Run tui-do with `args` under a pty. Once it is in raw mode, `then` runs in the shell,
 /// with tui-do's pid in `$pid`. With `answer_cursor`, every cursor-position query tui-do
-/// writes is answered as a terminal emulator would. `None` if there is no `script` here.
+/// writes is answered as a terminal emulator would. `None` if there is no `script` here
+/// and [`REQUIRE_PTY`] is not set; a panic if it is.
 fn on_a_pty(dir: &Path, args: &[&str], answer_cursor: bool, then: &str) -> Option<Run> {
     if !have_script() {
+        assert!(
+            std::env::var_os(REQUIRE_PTY).is_none_or(|value| value != "1"),
+            "{REQUIRE_PTY}=1, and there is no util-linux `script` to make a terminal with"
+        );
+        eprintln!("skipped: no util-linux `script` to make a terminal with");
         return None;
     }
     let mut line = sh_quote(env!("CARGO_BIN_EXE_tui-do"));
@@ -184,8 +201,6 @@ echo "@modes $(stty -a | tr '\n' ' ')"
     })
 }
 
-const SKIPPED: &str = "skipped: no util-linux `script` to make a terminal with";
-
 /// The inline prompt asks the terminal where its cursor is, and fails if nothing answers.
 /// Raw mode was already on by then and no guard existed yet to turn it off, so the error
 /// was printed onto a terminal with no echo.
@@ -193,7 +208,6 @@ const SKIPPED: &str = "skipped: no util-linux `script` to make a terminal with";
 fn a_prompt_that_cannot_find_its_cursor_gives_the_terminal_back() {
     let dir = scratch("no-cursor");
     let Some(run) = on_a_pty(&dir, &["add", "--offline"], false, ":") else {
-        eprintln!("{SKIPPED}");
         return;
     };
     run.assert_restored(1);
@@ -212,7 +226,6 @@ fn a_prompt_that_cannot_find_its_cursor_gives_the_terminal_back() {
 fn sigterm_ends_the_interface_and_gives_the_terminal_back() {
     let dir = scratch("interface-term");
     let Some(run) = on_a_pty(&dir, &[], false, "sleep 0.5; kill -TERM $pid") else {
-        eprintln!("{SKIPPED}");
         return;
     };
     run.assert_restored(143);
@@ -231,7 +244,6 @@ fn sighup_and_sigquit_end_the_interface_with_their_own_codes() {
         let dir = scratch(&format!("interface-{signal}"));
         let then = format!("sleep 0.5; kill -{signal} $pid");
         let Some(run) = on_a_pty(&dir, &[], false, &then) else {
-            eprintln!("{SKIPPED}");
             return;
         };
         run.assert_restored(code);
@@ -246,7 +258,6 @@ fn sigterm_ends_the_add_prompt_and_gives_the_terminal_back() {
     let dir = scratch("prompt-term");
     let then = "sleep 1; kill -TERM $pid";
     let Some(run) = on_a_pty(&dir, &["add", "--offline"], true, then) else {
-        eprintln!("{SKIPPED}");
         return;
     };
     run.assert_restored(143);
