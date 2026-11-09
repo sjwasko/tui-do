@@ -12,6 +12,20 @@
 //! write, and replays it over every load. An entry stops being replayed once the store has
 //! acknowledged it *and* a load issued after that acknowledgement has answered: that load
 //! read a store which already held the write, so it is the truth and the copy is not.
+//!
+//! # Why there is no cap
+//!
+//! Nothing here is dropped by age or count, and that is a decision rather than an
+//! omission. An entry goes in one of three ways: its write fails ([`Overlay::failed`]),
+//! or it is acknowledged and then any task load issued afterwards answers. The runtime
+//! sends a reload straight after every acknowledgement, so in practice an entry outlives
+//! its write by one local read. What can keep one alive longer is task loads failing
+//! repeatedly, and then the list is already frozen under a `StoreFailed` banner; the
+//! entries are one mutation per edit the user made in that time, kilobytes at most.
+//! Dropping an *acknowledged* entry early is safe only once a load issued after the
+//! acknowledgement has answered, which is exactly the rule already applied. Dropping an
+//! *unacknowledged* one is never safe, since it brings BUG-22 back for that task. A cap
+//! would trade a bounded, user-sized amount of memory for a correctness bug.
 
 use tui_do_core::models::{Label, Task, TaskId};
 use tui_do_core::store::Mutation;
