@@ -729,6 +729,14 @@ that edits the tree away from the tag. And `cargo install tui-do` now resolves �
 not the recommended path, because `rusqlite` is `bundled` and wants a C toolchain, which is
 the friction the static binary exists to remove.
 
+**`clap_complete` is pinned with a tilde, `~4.6.9`, on purpose.** Shell name completion
+(`crates/tui-do/src/complete.rs`, the `dynamic-completion` feature, on by default) is built
+on clap_complete's `unstable-dynamic`, which upstream may change in any minor release, and
+`cargo install tui-do` resolves without `--locked`, so a caret would let a 4.7 break it on a
+stranger's machine. Before bumping it: check `CompleteEnv` and `ArgValueCompleter` still
+compile, run `tests/complete_names.rs` and `complete::tests`, and build with
+`--no-default-features` too.
+
 What ships in each crate was checked rather than assumed: `cargo package --list` carries
 nothing but `src/` and `tests/` — no `deploy/`, no `md/`, no credentials — and all four
 declare `description`, `license` and `repository`. Re-check that list before adding a crate,

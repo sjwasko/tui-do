@@ -11,6 +11,7 @@ use anyhow::{bail, Context};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use tui_do_core::config::{migrate, Config};
 
+#[cfg(feature = "dynamic-completion")]
 mod complete;
 mod login;
 mod runtime;
@@ -229,6 +230,10 @@ enum Command {
     ///
     /// It completes unquoted words. Inside a quoted '...' argument, what happens differs
     /// by shell. `?` is not attempted in a shell; the `tui-do add` prompt has it.
+    ///
+    /// It needs tui-do's `dynamic-completion` feature, which is on by default. A build
+    /// without it treats TUI_DO_COMPLETE as an ordinary variable and starts normally;
+    /// use the static script above there.
     #[command(verbatim_doc_comment)]
     Completions(CompletionsArgs),
 }
@@ -486,6 +491,7 @@ fn init_logging() -> Option<PathBuf> {
 
 fn main() -> anyhow::Result<()> {
     // First: a shell asking for completions gets them and nothing else on stdout.
+    #[cfg(feature = "dynamic-completion")]
     complete::handle(Cli::command);
     let cli = Cli::parse();
     init_logging();

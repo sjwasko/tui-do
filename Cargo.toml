@@ -39,7 +39,9 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive", "env"] }
-clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
+# Tilde, not caret: `tui-do` turns on `unstable-dynamic`, which may break in any minor
+# release, and `cargo install tui-do` without `--locked` would take a 4.7. See CLAUDE.md.
+clap_complete = "~4.6.9"
 regex = "1.13"
 aho-corasick = "1.1"
 fuzzy-matcher = "0.3"

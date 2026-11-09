@@ -534,6 +534,10 @@ prompt has it. bash puts a bracketed name in unescaped, as two words, which is f
 `tui-do add` joins its words with a space. An unquoted `!3` is still bash history expansion,
 as above.
 
+Name completion is the `dynamic-completion` cargo feature, on by default and in the release
+binaries. A build with `--no-default-features` ignores `TUI_DO_COMPLETE`; use the static
+script below there.
+
 **Flags only**, from a file written once, still works as it always did:
 
 ```sh

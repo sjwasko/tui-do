@@ -23,6 +23,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      # Without the clap_complete feature that is unstable upstream, as a packager may build.
+      - run: cargo clippy -p tui-do --all-targets --no-default-features
+      - run: cargo test -p tui-do --no-default-features
 
   # Ubuntu LTS is the second tier-1 target. Arch and Ubuntu LTS diverge sharply on glibc,
   # so a green build on the dev workstation does not imply a green build here.

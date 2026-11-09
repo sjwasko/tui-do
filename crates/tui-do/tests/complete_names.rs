@@ -4,6 +4,8 @@
 //! Each test sets a scratch config *and* a scratch store, never one alone. Nothing here
 //! reaches a network: completion never opens one, and the config names a loopback port
 //! nothing listens on.
+// Only with the feature: without it `TUI_DO_COMPLETE` is an ordinary variable.
+#![cfg(feature = "dynamic-completion")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};

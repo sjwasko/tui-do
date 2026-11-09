@@ -13,6 +13,13 @@ default-run = "tui-do"
 name = "tui-do"
 path = "src/main.rs"
 
+[features]
+default = ["dynamic-completion"]
+# Shell completion of project, label and user names from the store (`TUI_DO_COMPLETE`).
+# Built on clap_complete's `unstable-dynamic`, which may change in any minor release; off,
+# `tui-do completions <shell>` still prints the static script.
+dynamic-completion = ["clap_complete/unstable-dynamic"]
+
 [dependencies]
 tui-do-api.workspace = true
 tui-do-core.workspace = true
