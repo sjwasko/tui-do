@@ -660,9 +660,12 @@ attaches both tarballs plus `SHA256SUMS` to a GitHub Release. A tag containing a
 (`v1.0.0-rc.1`) publishes as a pre-release; one without publishes as a full release, which
 is the whole of the difference between an rc and GA.
 
-The version lives in `Cargo.toml` in **four** places — `[workspace.package] version` and the
-three internal path dependencies, which carry a literal version because `cargo-deny`'s
-`wildcards = "deny"` rejects a versionless path dependency. They move together, and the
+The version lives in **six** places — `[workspace.package] version` and the three internal
+path dependencies in `Cargo.toml`, which carry a literal version because `cargo-deny`'s
+`wildcards = "deny"` rejects a versionless path dependency, plus the explicit `version` in
+`crates/tui-do-core/Cargo.toml` and `crates/tui-do-ui/Cargo.toml`. Since 1.1.0 those two
+are on 2.x for breaking API changes while the binary and `tui-do-api` stay on 1.x, so each
+path dependency's version matches its own crate, not the workspace. The
 obvious `sed` one-liner using `|` as both delimiter and alternation **silently bumps only
 the first and exits 0** — verified 2026-09-06. Use line-addressed substitution.
 
