@@ -703,6 +703,61 @@ fn the_add_prompt_still_shows_a_date_kept_in_the_title() {
     assert!(status.contains("due Tomorrow"), "{status}");
 }
 
+/// Press each of `keys` in turn.
+fn press_all(model: &mut Model, keys: &[KeyEvent]) {
+    for key in keys {
+        update(model, Msg::Key(*key));
+    }
+}
+
+fn chars(text: &str) -> Vec<KeyEvent> {
+    text.chars()
+        .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+        .collect()
+}
+
+#[test]
+fn the_add_prompt_completes_a_project_and_lists_on_a_second_tab() {
+    // Item 12: `a` shares the completion `tui-do add` has, fed from what the model holds.
+    let mut model = fixture((110, 40));
+    let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+    press_all(&mut model, &chars("aBuy stamps +Err"));
+    press_all(&mut model, &[tab]);
+    let screen = draw(&model);
+    let status = screen.lines().last().unwrap_or_default();
+    assert!(status.starts_with("+ Buy stamps +Errands "), "{status}");
+
+    press_all(&mut model, &chars("+"));
+    press_all(&mut model, &[tab]);
+    assert!(
+        !draw(&model).contains("+Errands  +Home"),
+        "one Tab does not list"
+    );
+    press_all(&mut model, &[tab]);
+    let screen = draw(&model);
+    assert!(
+        screen.contains("+Errands  +Home  +Work"),
+        "the second Tab lists the projects:\n{screen}"
+    );
+}
+
+#[test]
+fn a_question_mark_after_a_sigil_in_the_add_prompt_is_help() {
+    let mut model = fixture((110, 40));
+    press_all(&mut model, &chars("aCall +?"));
+    let screen = draw(&model);
+    let status = screen.lines().last().unwrap_or_default();
+    assert!(status.starts_with("+ Call + "), "the ? was typed: {status}");
+    assert!(screen.contains("+Errands  +Home  +Work"), "{screen}");
+
+    // In a sentence it is the character.
+    let mut model = fixture((110, 40));
+    press_all(&mut model, &chars("aIs that the date?"));
+    let screen = draw(&model);
+    let status = screen.lines().last().unwrap_or_default();
+    assert!(status.starts_with("+ Is that the date?"), "{status}");
+}
+
 #[test]
 fn an_empty_list_says_which_kind_of_empty_it_is() {
     let mut model = fixture((80, 24));

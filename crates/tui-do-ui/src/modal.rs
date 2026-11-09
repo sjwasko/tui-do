@@ -421,8 +421,8 @@ pub enum Modal {
     Help(HelpState),
     /// Searching the current list, incrementally.
     Search(SearchState),
-    /// Typing a new task in quick-add syntax.
-    Add(TextInput),
+    /// Typing a new task in quick-add syntax, with Tab completion and `?` help.
+    Add(crate::assist::QuickAddInput),
     /// Choosing a project or a label.
     Picker(PickerState),
     /// Editing every field of one task.
@@ -1728,7 +1728,7 @@ impl ModalView for HelpState {
     }
 }
 
-impl ModalView for TextInput {
+impl ModalView for crate::assist::QuickAddInput {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,

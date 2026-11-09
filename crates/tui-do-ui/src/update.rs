@@ -20,7 +20,7 @@ use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
     Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
     LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled, PriorityState,
-    QuickActionsState, SearchState, Submission, TextInput,
+    QuickActionsState, SearchState, Submission,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -664,7 +664,19 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::AddTask => {
-            model.modals.push(Modal::Add(TextInput::default()));
+            // What `a` can complete, from what the interface already holds. Users come
+            // from the tasks on screen: the store keeps no other list the model sees.
+            let users = model
+                .data
+                .tasks
+                .iter()
+                .flat_map(|task| &task.assignees)
+                .map(|user| user.username.clone());
+            let vocabulary =
+                crate::assist::Vocabulary::new(&model.data.projects, &model.data.labels, users);
+            model
+                .modals
+                .push(Modal::Add(crate::assist::QuickAddInput::new(vocabulary)));
             Vec::new()
         }
         Action::DeleteTask => match model.selected_task() {
