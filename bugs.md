@@ -209,11 +209,12 @@ is the user's own memory of when things were due.
 
 **Fixed 2026-11-08, as the user decided.**
 
-- **Untouched means untouched.** `EditState` keeps `due_was`, the text it prefilled, and
-  `DueState` keeps `was`; `EditDraft` and `Submission::Due` carry it to `update`. A field
-  whose text still equals its prefill keeps the stored instant exactly, time of day
-  included, and is not parsed. Enter on the unchanged `D` prompt queues nothing and says
-  "Nothing changed". The same comparison `project_was` already made for the project field.
+- **Untouched means untouched.** `EditState` and `DueState` keep the text they were
+  prefilled with, and `EditDraft::due` and `Submission::Due` carry it to `update` as a
+  `modal::Prefilled`, whose `is_untouched` owns the comparison. A field whose text still
+  equals its prefill keeps the stored instant exactly, time of day included, and is not
+  parsed. Enter on the unchanged `D` prompt queues nothing and says "Nothing changed".
+  The project field keeps its own `project_was`, because its comparison folds case.
 - **The prefill is in the user's zone**, through one helper both places use,
   `quickadd::due_text` beside `parse_due`, which converts with
   `.with_timezone(&now.timezone())` first. `EditState::new` takes `now` for it.

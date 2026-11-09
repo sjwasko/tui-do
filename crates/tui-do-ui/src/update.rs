@@ -19,7 +19,7 @@ use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
     Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
-    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, PriorityState,
+    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled, PriorityState,
     QuickActionsState, SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
@@ -533,7 +533,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::Add(text) => add_task(model, &text, Unknown::Ask),
         Submission::Edited(draft) => apply_edit(model, *draft, Unknown::Ask),
         Submission::Priority(value) => set_priority(model, value),
-        Submission::Due { typed, was } => set_due(model, &typed, &was),
+        Submission::Due(due) => set_due(model, &due),
         Submission::Labels(chosen) => set_labels(model, &chosen),
         Submission::CreateLabel(title) => create_label(model, title),
         Submission::CreateLabels(titles) => create_labels(model, titles),
@@ -1295,14 +1295,14 @@ fn move_task(model: &mut Model, project: ProjectId) -> Vec<Effect> {
     )
 }
 
-/// Set the selected task's due date from `text`, which is empty to clear it.
+/// Set the selected task's due date from `due`, which is empty to clear it.
 ///
-/// `was` is what the prompt was prefilled with. Enter on it unchanged keeps the stored
-/// instant: re-reading the prefill gives back a day at 23:59, not the time the task had,
-/// and was how a prefill in the wrong zone moved a date a day per press (BUG-30).
-fn set_due(model: &mut Model, text: &str, was: &str) -> Vec<Effect> {
-    let text = text.trim();
-    if text == was.trim() {
+/// Enter on the unchanged prefill keeps the stored instant: re-reading it gives back a
+/// day at 23:59, not the time the task had, and was how a prefill in the wrong zone
+/// moved a date a day per press (BUG-30).
+fn set_due(model: &mut Model, due: &Prefilled) -> Vec<Effect> {
+    let text = due.text();
+    if due.is_untouched() {
         if model.selected_task().is_none() {
             return nothing_selected(model);
         }
@@ -1831,15 +1831,18 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // the wrong zone moved the date a day as well, whatever field was edited.
     // An empty field clears the date. Anything else goes through the quick-add parser, so
     // the field understands `tomorrow` and `next friday` and not just `24/12/2026`.
-    if draft.due == draft.due_was {
+    if draft.due.is_untouched() {
         // Untouched: `after` already carries `before`'s due date.
-    } else if draft.due.is_empty() {
+    } else if draft.due.text().is_empty() {
         after.due_date = None.into();
     } else {
-        let parsed = quickadd::parse_due(&draft.due, &model.now);
+        let parsed = quickadd::parse_due(draft.due.text(), &model.now);
         match parsed {
             Some(due) => after.due_date = Some(due).into(),
-            None => notes.push(format!("{:?} is not a date tui-do understands", draft.due)),
+            None => notes.push(format!(
+                "{:?} is not a date tui-do understands",
+                draft.due.text()
+            )),
         }
     }
 
