@@ -45,16 +45,19 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace
 
-  # Non-gating. macOS is a post-GA port; this exists only so the port is not an excavation.
-  macos-drift:
-    name: cargo check (macos, non-gating)
+  # Gating since 2026-11-09: every release ships a macOS binary, so its tests gate like
+  # Linux's. TUI_DO_REQUIRE_PTY is emptied because macOS `script` is BSD's, not
+  # util-linux's, and the pty tests skip without the latter.
+  macos:
+    name: test (macos)
     runs-on: macos-latest
-    continue-on-error: true
+    env:
+      TUI_DO_REQUIRE_PTY: ""
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace
+      - run: cargo test --workspace
 
   deny:
     name: cargo-deny
