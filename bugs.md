@@ -47,6 +47,8 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
 | ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
 | ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
+| BUG-34 | `quick_add` of `x @alice` with alice known builds a task assigned to user 3; unknown, it builds none and reports it | yes |
+| BUG-35 | wiremock `PUT` answering `412`/`2002`: `add` exits non-zero, prints the message, never `Sent.` | yes |
 | BUG-33 | abort a push once a held mock has received the create, then push again: one `PUT` must reach the server, or the second must adopt | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
@@ -74,6 +76,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
+| **Found by the `tui-do add` smoke test** | **BUG-34** — open, Important: `@user` is parsed and never assigned. **BUG-35** — open, Important: a create the server rejects prints `Sent.` and exits 0. Six minor findings under Minor |
 | **Found fixing BUG-31** | **BUG-33** — open, Important: a create whose request reached the server before the process ended is sent again on the next launch, and makes a second task. The read-before-retry BUG-19 added only runs for an entry with a recorded failure, and a killed process records nothing |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
@@ -82,7 +85,7 @@ throughout, both learned the hard way in this pass:
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
-| **Minor** | 13 remaining, none urgent |
+| **Minor** | 19 remaining, none urgent |
 
 Every open item needed either a decision or a measurement — that was the point of the
 2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
@@ -2288,8 +2291,79 @@ and push again. Today the second push sends a second `PUT` and nothing calls the
 the fix must send no second `PUT` and adopt the found task's id. A second case with no
 match on the server must still create, so the gate does not turn into "never retry".
 
+### BUG-34 — `@user` is parsed, promised and never assigned
+
+`crates/tui-do-ui/src/update.rs`: `build_task` (~1237). Found 2026-11-09 by the `tui-do add`
+smoke test (1,193 lines against dev); diagnosis only, nothing is fixed.
+
+`quickadd` reads `@demo`, takes it out of the title, and `--dry-run` reports it
+(`Parsed: title "smoke" · @demo`). Then `build_task` builds the `Task` from the title,
+project, priority, dates, labels and repeat, and **never reads `parsed.assignees`**: no code
+outside the parser and the echo touches that field, and it has been so since the parser was
+added (`a0deffb`). All 137 smoke lines naming a user created a task with no assignees,
+including `@demo` assigning the token's own account; `GET /tasks/{id}` and
+`/tasks/{id}/assignees` both answer empty. The interface's `a` goes through the same
+`build_task`, so it has the same gap.
+
+It is silent in every direction: the word leaves the title, the dry run and the echo name the
+assignee, `Sent.` is printed, and the server has nobody.
+
+**The fix needs a user id, not a name.** `Task.assignees` is `Vec<User>` and the server wants
+ids. `Store::usernames` knows only the names it has seen as creators and assignees, so an
+unknown name must be reported the way an unknown label is ("No user called @nobody — left
+off"), not sent. And assignees travel in the task body (CLAUDE.md, "Assignees travel in the
+task body"), so a create that carries them needs no extra endpoint, but needs measuring:
+whether `PUT /projects/{id}/tasks` honours `assignees` on create is not yet known.
+
+**Suggested test, deterministic.** `quick_add` of `x @alice`, with a store that knows alice
+as user 3, must build a task whose `assignees` is `[User { id: 3, .. }]`; with no alice
+known, it must build none and report the name. A live test: create with one assignee, read
+it back.
+
+### BUG-35 — a create the server rejects is reported as `Sent.`, exit 0
+
+`crates/tui-do/src/runtime/mod.rs`: `add` (~1486), `PushReport::is_complete` in
+`tui-do-core/src/sync/mod.rs` (~147). Found by the same smoke test; diagnosis only.
+
+`is_complete` is `deferred == 0`. A rejected entry is not deferred: it is rolled back and
+dropped, so a push whose only entry was refused reports complete and `tui-do add` prints
+`Added "…" to Inbox` and `Sent.` and exits 0, while the task exists nowhere: the server
+refused it and the rollback removed the local row. Fifteen smoke lines did this, with the
+server's reasons measured directly:
+
+| line | server's answer |
+|---|---|
+| a title over 1,000 characters | `412`, code `2002`, "The task title may be at most 1000 characters long." |
+| `every 1000 years` (and anything over 10 years) | `400`, code `4029`, "The task repeat interval must be between 0 and 315360000 seconds (10 years)." |
+
+For a script or an agent this is the worst shape: success, and nothing. `--dry-run` says
+`Would add` to both, so the dry run cannot catch it either.
+
+**The fix has two halves.** `tui-do add` must count `report.rejected` and say what the server
+said, exiting non-zero ("Rejected by the server: …"). And the parser should refuse what the
+server is known to refuse, so `--dry-run` catches it before anything is queued: a title over
+1,000 characters, and a repeat over 315,360,000 seconds.
+
+**Suggested test, deterministic.** A wiremock `PUT` answering `412` with code `2002`: `add`
+must exit non-zero and print the message, and must not print `Sent.`.
+
 ## Minor
 
+- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
+  - An unknown `*label` takes its text out of the title and is then left off, so the words
+    are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned
+    about, but the task is already queued and re-running adds a second one.
+  - `*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
+    and ignores an exact one.
+  - `due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
+    server ends up with no due date: the first is Go's zero time, which means unset, and the
+    second is year 10000 in UTC once 23:59 local is converted.
+  - The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
+    `Parsed` line already passes it through `printable`.
+  - A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
+    copy-safe: pasted back, it reads as the flag.
+  - `-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;
+    the help says both are stored exactly as given (the server keeps `\r\n` when sent it).
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for
   `RepeatMode::FromCurrentDate` with `repeat_after == 0`. Cosmetic badge only, unverified.
 - `crates/tui-do-ui/src/theme.rs:248` — `Theme::label` paints a background, the one exception
