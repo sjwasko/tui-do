@@ -189,6 +189,30 @@ impl Store {
         .await
     }
 
+    /// The username of every user the store has seen, sorted ignoring case.
+    ///
+    /// There is no user list to pull: a user is stored when a task arrives naming them as
+    /// its creator or an assignee. So this is everyone who has created or been given a
+    /// task this box knows, which is what `@` completes from in `tui-do add`.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn usernames(&self) -> Result<Vec<String>> {
+        self.read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT username FROM users WHERE username <> ''
+                  ORDER BY username COLLATE NOCASE",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut names = Vec::new();
+            for name in rows {
+                names.push(name?);
+            }
+            Ok(names)
+        })
+        .await
+    }
+
     /// Read one task, with its labels and assignees.
     ///
     /// # Errors
@@ -902,6 +926,26 @@ mod tests {
             store.task(TaskId(1)).await.unwrap().unwrap().title,
             "second"
         );
+    }
+
+    #[tokio::test]
+    async fn usernames_are_everyone_a_stored_task_names() {
+        let store = Store::in_memory().unwrap();
+        assert!(store.usernames().await.unwrap().is_empty());
+        let mut assigned = task(1, "assigned");
+        assigned.assignees = ["bob", "Alice"]
+            .into_iter()
+            .zip(1..)
+            .map(|(name, id)| User {
+                id: UserId(id),
+                username: name.into(),
+                ..User::default()
+            })
+            .collect();
+        let mut again = task(2, "again");
+        again.assignees = vec![assigned.assignees[0].clone()];
+        store.upsert_tasks(vec![assigned, again]).await.unwrap();
+        assert_eq!(store.usernames().await.unwrap(), vec!["Alice", "bob"]);
     }
 
     #[tokio::test]
