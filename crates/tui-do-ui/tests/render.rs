@@ -683,6 +683,27 @@ fn the_add_prompt_teaches_the_syntax_and_then_shows_the_parse() {
 }
 
 #[test]
+fn the_add_prompt_still_shows_a_date_kept_in_the_title() {
+    // BUG-29: a date mid-sentence stays in the title but is still set, so the summary
+    // must still name it, or the user cannot tell it was read.
+    let mut model = fixture((110, 40));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+    );
+    for c in "tomorrow buy milk".chars() {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        );
+    }
+    let typed = draw(&model);
+    let status = typed.lines().last().unwrap_or_default();
+    assert!(status.starts_with("+ tomorrow buy milk"), "{status}");
+    assert!(status.contains("due Tomorrow"), "{status}");
+}
+
+#[test]
 fn an_empty_list_says_which_kind_of_empty_it_is() {
     let mut model = fixture((80, 24));
     let id = model.query_id;

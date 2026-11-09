@@ -29,7 +29,10 @@ is a second writer with none of that.
 
 ## The tokens
 
-Tokens may appear anywhere in the line and are removed from the title.
+Tokens may appear anywhere in the line. Every token but a date is removed from the title. A
+date is always read, but removed only when nothing but punctuation and other tokens follow
+it: `call mom tomorrow` is titled `call mom`, `tomorrow buy milk` keeps its title and is
+still due tomorrow. So put the date last when it should not be part of the title.
 
 | token | meaning |
 |---|---|

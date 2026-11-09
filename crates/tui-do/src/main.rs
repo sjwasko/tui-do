@@ -40,9 +40,13 @@ enum Command {
     ///
     /// SYNTAX
     ///
-    /// Tokens may appear anywhere in the line and are taken out of the title. These are
-    /// not the interface's keys — `p3` and `D` are ordinary words here, and stay in the
-    /// title where you typed them.
+    /// Tokens may appear anywhere in the line. Labels, projects, users, priorities and
+    /// repeats are always taken out of the title. A date is always read, but leaves the
+    /// title only when it is the last thing in the line, give or take punctuation and
+    /// other tokens: `call mom tomorrow` is "call mom", while `tomorrow buy milk` keeps
+    /// its title as typed and is still due tomorrow. These are not the interface's keys
+    /// — `p3` and `D` are ordinary words here, and stay in the title where you typed
+    /// them.
     ///
     ///   +project          file it in a project, by title or id: +Legal, +#12
     ///   *label            attach a label that already exists: *urgent
