@@ -155,32 +155,78 @@ struct Scratch {
     path: PathBuf,
 }
 
+/// How many names [`Scratch::create`] tries before giving up.
+const ATTEMPTS: usize = 8;
+
 impl Scratch {
-    /// Create a new, empty, owner-only file in the platform's temporary directory.
+    /// Create a new, owner-only file holding `contents` in the platform's temporary
+    /// directory, under a name nobody else can predict.
     fn create(contents: &str) -> anyhow::Result<Self> {
-        let dir = std::env::temp_dir();
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos());
-        let path = dir.join(format!(
-            "tui-do-description-{}-{stamp}.md",
-            std::process::id()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        // `create_new` so a file someone else planted at that name is refused rather
-        // than written through, and 0600 so the description is never readable by
-        // another account, even for the minutes the editor is open.
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options
-            .open(&path)
-            .with_context(|| format!("could not create {}", path.display()))?;
-        let scratch = Self { path };
-        file.write_all(contents.as_bytes())
-            .with_context(|| format!("could not write {}", scratch.path.display()))?;
-        Ok(scratch)
+        Self::create_in(&std::env::temp_dir(), contents, || {
+            format!("tui-do-description-{}.md", random_hex())
+        })
     }
+
+    /// [`Scratch::create`], with the directory and the names to try given.
+    ///
+    /// A name that is already taken is skipped for the next one, up to [`ATTEMPTS`]
+    /// times. `create_new` is what makes that safe: a file or a symlink someone planted
+    /// at the name is refused, never opened or written through.
+    fn create_in(
+        dir: &Path,
+        contents: &str,
+        mut name: impl FnMut() -> String,
+    ) -> anyhow::Result<Self> {
+        for _ in 0..ATTEMPTS {
+            let path = dir.join(name());
+            let mut options = std::fs::OpenOptions::new();
+            // 0600 so the description is never readable by another account, even for
+            // the minutes the editor is open.
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut file = match options.open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(anyhow::Error::new(error)
+                        .context(format!("could not create {}", path.display())))
+                }
+            };
+            let scratch = Self { path };
+            file.write_all(contents.as_bytes())
+                .with_context(|| format!("could not write {}", scratch.path.display()))?;
+            return Ok(scratch);
+        }
+        anyhow::bail!(
+            "could not create a temporary file in {}: {ATTEMPTS} names in a row were taken",
+            dir.display()
+        )
+    }
+}
+
+/// 128 bits from the operating system's random source, as hex, with no new dependency.
+///
+/// `RandomState` is std's `HashMap` seed: its keys come from the OS (`getrandom(2)` on
+/// Linux) and are secret, so a hash under them cannot be predicted by another account.
+/// Two hashers give 128 bits; the clock and the process id are mixed in so two calls
+/// differ even where std derives the second seed from the first. No crate in the tree
+/// offers this on Linux -- `getrandom` reaches the build only for other targets and as a
+/// build dependency -- and a temporary file name does not justify adding one.
+fn random_hex() -> String {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let mut out = String::with_capacity(32);
+    for round in 0..2_u8 {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(nanos);
+        hasher.write_u32(std::process::id());
+        hasher.write_u8(round);
+        out.push_str(&format!("{:016x}", hasher.finish()));
+    }
+    out
 }
 
 impl Drop for Scratch {
@@ -406,6 +452,47 @@ pub(crate) mod tests {
         );
         assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
         assert!(!path.exists(), "the temporary file was left behind");
+    }
+
+    #[test]
+    fn the_temporary_name_is_random() {
+        let one = random_hex();
+        let two = random_hex();
+        assert_eq!(one.len(), 32, "{one}");
+        assert!(one.chars().all(|c| c.is_ascii_hexdigit()), "{one}");
+        assert_ne!(one, two);
+    }
+
+    #[test]
+    fn a_taken_name_is_skipped_and_never_written_through() {
+        let dir = std::env::temp_dir().join(format!("tui-do-scratch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taken.md"), "someone else's").unwrap();
+
+        let mut names = ["taken.md", "taken.md", "fresh.md"].into_iter();
+        let scratch =
+            Scratch::create_in(&dir, "ours", || names.next().unwrap().to_string()).unwrap();
+        assert_eq!(scratch.path, dir.join("fresh.md"));
+        assert_eq!(std::fs::read_to_string(&scratch.path).unwrap(), "ours");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("taken.md")).unwrap(),
+            "someone else's"
+        );
+        drop(scratch);
+        assert!(!dir.join("fresh.md").exists());
+
+        // Every name taken: an error, after a bounded number of tries.
+        let mut tries = 0;
+        let error = Scratch::create_in(&dir, "ours", || {
+            tries += 1;
+            "taken.md".to_string()
+        })
+        .err()
+        .expect("every name was taken");
+        assert_eq!(tries, ATTEMPTS);
+        assert!(error.to_string().contains("were taken"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
