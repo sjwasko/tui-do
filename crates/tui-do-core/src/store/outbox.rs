@@ -34,7 +34,6 @@
 //! One entry, one request, so a retry means exactly what it says.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,7 +45,7 @@ use tui_do_api::models::{Label, LabelId, Task, TaskId};
 use super::labels::{attach_label, is_being_created, upsert_label};
 use super::state::{read_state, write_state};
 use super::tasks::upsert_task;
-use super::Store;
+use super::{DecodeCount, Store};
 use crate::error::Result;
 
 /// The `sync_state` key holding the next provisional task id.
@@ -544,7 +543,7 @@ impl StoredEntry {
         })
     }
 
-    fn decode(self, decodes: &AtomicU64) -> Result<OutboxEntry> {
+    fn decode(self, decodes: &DecodeCount) -> Result<OutboxEntry> {
         Ok(OutboxEntry {
             id: self.id,
             created: DateTime::parse_from_rfc3339(&self.created)
@@ -1179,8 +1178,8 @@ impl Store {
 }
 
 /// Parse one stored payload, counting it. See [`Store::payload_decodes`].
-fn decode(decodes: &AtomicU64, payload: &str) -> Result<Mutation> {
-    decodes.fetch_add(1, Ordering::Relaxed);
+fn decode(decodes: &DecodeCount, payload: &str) -> Result<Mutation> {
+    decodes.bump();
     Ok(serde_json::from_str(payload)?)
 }
 

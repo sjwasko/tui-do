@@ -28,7 +28,6 @@ mod state;
 mod tasks;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rusqlite::Connection;
@@ -54,7 +53,25 @@ pub struct Store {
     path: StorePath,
     /// How many outbox payloads the drain's reads have parsed. See
     /// [`Store::payload_decodes`].
-    decodes: Arc<AtomicU64>,
+    decodes: Arc<DecodeCount>,
+}
+
+/// Counts payload parses for [`Store::payload_decodes`]. Holds nothing, and counts
+/// nothing, in a build without the `test-hooks` feature.
+#[derive(Debug, Default)]
+pub(crate) struct DecodeCount {
+    #[cfg(any(test, feature = "test-hooks"))]
+    count: std::sync::atomic::AtomicU64,
+}
+
+impl DecodeCount {
+    /// One more payload parsed.
+    #[allow(clippy::unused_self)]
+    pub(crate) fn bump(&self) {
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Where a store lives, for error messages.
@@ -168,13 +185,17 @@ impl Store {
     /// How many queued payloads have been parsed by [`Store::pending`] and the reads the
     /// drain makes, since this store was opened.
     ///
-    /// For tests and measurement only. BUG-23: the drain re-read and re-parsed the whole
-    /// queue before every entry it sent, which is quadratic in the depth of the queue,
-    /// and a count is the one way to assert that it no longer does without timing it.
+    /// For tests only, and absent from a build without the `test-hooks` feature. BUG-23:
+    /// the drain re-read and re-parsed the whole queue before every entry it sent, which
+    /// is quadratic in the depth of the queue, and a count is the one way to assert that
+    /// it no longer does without timing it.
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     #[must_use]
     pub fn payload_decodes(&self) -> u64 {
-        self.decodes.load(Ordering::Relaxed)
+        self.decodes
+            .count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Where this store lives, for diagnostics.

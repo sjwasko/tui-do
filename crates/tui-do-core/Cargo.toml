@@ -22,11 +22,18 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[features]
+# Counters the integration tests read, such as `Store::payload_decodes`. Never needed by
+# a build anyone runs; the dev-dependency below turns it on for this crate's own tests,
+# and is path-only so `cargo publish` drops it rather than publishing a self-dependency.
+test-hooks = []
+
 [dev-dependencies]
 wiremock.workspace = true
 # Real zone rules, to test that quick-add resolves a date at the offset in force on that
 # date (BUG-20). Tests only: the runtime gets its rules from `chrono::Local`.
 chrono-tz.workspace = true
+tui-do-core = { path = ".", features = ["test-hooks"] }
 
 [lints]
 workspace = true
