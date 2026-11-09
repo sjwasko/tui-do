@@ -1161,6 +1161,128 @@ pub fn edit_layout(
     (window, (caret_row, caret.1))
 }
 
+/// What a single-line field shows of its value, and where its caret goes.
+///
+/// [`input_window`] makes one. `text` is never wider than the width it was asked for, and
+/// `caret_x` is the caret's column inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputWindow {
+    /// What to draw: the visible graphemes, with a `…` on each side that hides text.
+    pub text: String,
+    /// The caret's column within `text`, always less than the width when there is one.
+    pub caret_x: u16,
+}
+
+/// Which part of a value a window shows, in byte offsets, and which markers it wears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Placed {
+    start: usize,
+    end: usize,
+    left: bool,
+    right: bool,
+    caret_x: u16,
+}
+
+/// Window `value` into `width` columns so the caret at byte offset `cursor` is visible.
+///
+/// If the whole value fits it is all shown. Otherwise the window starts at the beginning
+/// while the caret is inside it, and once the caret would leave, it ends at the caret,
+/// with a `…` on each side that hides text. The markers count toward `width`, and a
+/// scrolled window keeps one cell after the text for the caret, so stepping back from the
+/// end does not shift it.
+///
+/// It is worked out from the cursor alone, every frame, and remembers nothing: the view
+/// only reads the model (Rule 1).
+///
+/// Per grapheme, measured with `UnicodeWidthStr`: a flag or a ZWJ sequence is never cut,
+/// and a wide glyph that does not fit at the right edge leaves its column blank rather than
+/// drawing half of it. A width too narrow for the markers and the caret's glyph together
+/// drops the markers. At width `0` nothing is drawn and the caret has nowhere to go.
+#[must_use]
+pub fn input_window(value: &str, cursor: usize, width: u16) -> InputWindow {
+    let Some(placed) = place(value, cursor, width) else {
+        return InputWindow {
+            text: String::new(),
+            caret_x: 0,
+        };
+    };
+    let mut text = String::new();
+    if placed.left {
+        text.push('…');
+    }
+    text.push_str(&value[placed.start..placed.end]);
+    if placed.right {
+        // A wide glyph that did not fit leaves its column blank, and the marker still
+        // sits at the right edge.
+        let drawn = usize::from(display_width(&text));
+        text.push_str(&" ".repeat(usize::from(width).saturating_sub(drawn + 1)));
+        text.push('…');
+    }
+    InputWindow {
+        text,
+        caret_x: placed.caret_x,
+    }
+}
+
+/// Where [`input_window`]'s window falls, or `None` when not even the caret's glyph fits.
+fn place(value: &str, cursor: usize, width: u16) -> Option<Placed> {
+    let graphemes: Vec<(usize, u16)> = value
+        .grapheme_indices(true)
+        .map(|(at, grapheme)| (at, display_width(grapheme)))
+        .collect();
+    let count = graphemes.len();
+    let byte = |index: usize| graphemes.get(index).map_or(value.len(), |(at, _)| *at);
+    // The grapheme the caret sits before.
+    let caret = graphemes
+        .iter()
+        .position(|(at, _)| *at >= cursor)
+        .unwrap_or(count);
+    // Columns before each grapheme, so any run's width is one subtraction.
+    let mut columns = Vec::with_capacity(count + 1);
+    let mut used = 0_usize;
+    columns.push(used);
+    for (_, w) in &graphemes {
+        used += usize::from(*w);
+        columns.push(used);
+    }
+    let between = |from: usize, to: usize| columns[to] - columns[from];
+    let width = usize::from(width);
+
+    // The window that starts at grapheme `from`, if the caret is inside it.
+    let fit = |from: usize, markers: bool| -> Option<Placed> {
+        let left = markers && from > 0;
+        let lead = usize::from(left);
+        let caret_x = u16::try_from(lead + between(from, caret)).ok()?;
+        let reserve = caret == count || from > 0;
+        let (end, right) = if lead + between(from, count) + usize::from(reserve) <= width {
+            (count, false)
+        } else {
+            let room = width.checked_sub(lead + usize::from(markers))?;
+            let mut end = from;
+            while end < count && between(from, end + 1) <= room {
+                end += 1;
+            }
+            // The caret's own glyph must be among those drawn.
+            if caret >= end {
+                return None;
+            }
+            (end, markers)
+        };
+        (usize::from(caret_x) < width).then_some(Placed {
+            start: byte(from),
+            end: byte(end),
+            left,
+            right,
+            caret_x,
+        })
+    };
+
+    // The earliest start that holds the caret: the beginning if it fits there, and
+    // otherwise the one that puts the caret at the right edge.
+    let earliest = |markers: bool| (0..=caret).find_map(|from| fit(from, markers));
+    earliest(true).or_else(|| earliest(false))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod edit_layout_tests {
@@ -1239,5 +1361,198 @@ mod edit_layout_tests {
         let text = "a\n日本x";
         let (_, caret) = edit_layout(text, 40, 4, text.len() - 1);
         assert_eq!(caret, (1, 4));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod input_window_tests {
+    use super::*;
+
+    const FLAG: &str = "\u{1F1EC}\u{1F1E7}";
+    const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+
+    /// Every grapheme boundary in `value`, both ends included.
+    fn boundaries(value: &str) -> Vec<usize> {
+        let mut all: Vec<usize> = value.grapheme_indices(true).map(|(at, _)| at).collect();
+        all.push(value.len());
+        all
+    }
+
+    /// Window `value` and assert what must hold of every window.
+    fn checked(value: &str, cursor: usize, width: u16) -> InputWindow {
+        let window = input_window(value, cursor, width);
+        let placed = place(value, cursor, width);
+        let context = format!("{value:?} cursor {cursor} width {width}: {placed:?} {window:?}");
+        assert!(display_width(&window.text) <= width, "too wide, {context}");
+        let Some(placed) = placed else {
+            assert_eq!(window.text, "", "{context}");
+            return window;
+        };
+        // Both cuts fall between graphemes.
+        let bounds = boundaries(value);
+        assert!(
+            bounds.contains(&placed.start),
+            "split at the left, {context}"
+        );
+        assert!(
+            bounds.contains(&placed.end),
+            "split at the right, {context}"
+        );
+        // The text is the markers around exactly that run.
+        let mut inner = window.text.as_str();
+        if placed.left {
+            inner = inner.strip_prefix('…').expect(&context);
+        }
+        if placed.right {
+            inner = inner
+                .strip_suffix('…')
+                .expect(&context)
+                .trim_end_matches(' ');
+        }
+        assert_eq!(inner, &value[placed.start..placed.end], "{context}");
+        // The caret is inside the window, on the cell its offset says, over a glyph that
+        // is drawn or in the cell after the end of the value.
+        assert!(window.caret_x < width, "caret outside, {context}");
+        assert!(
+            (placed.start..placed.end).contains(&cursor) || cursor == value.len(),
+            "caret's glyph hidden, {context}"
+        );
+        assert_eq!(
+            window.caret_x,
+            u16::from(placed.left) + display_width(&value[placed.start..cursor]),
+            "caret column, {context}"
+        );
+        // A marker never claims text is hidden that is not.
+        assert!(!placed.left || placed.start > 0, "{context}");
+        assert!(!placed.right || placed.end < value.len(), "{context}");
+        // And wherever there is room for both, one is drawn wherever text is hidden.
+        if width >= 5 {
+            assert_eq!(placed.left, placed.start > 0, "left marker, {context}");
+            assert_eq!(
+                placed.right,
+                placed.end < value.len(),
+                "right marker, {context}"
+            );
+        }
+        window
+    }
+
+    fn long() -> String {
+        "abcdefghij".repeat(12)
+    }
+
+    #[test]
+    fn a_value_that_fits_is_shown_whole() {
+        let window = checked("hello", 5, 10);
+        assert_eq!((window.text.as_str(), window.caret_x), ("hello", 5));
+        let window = checked("hello", 2, 10);
+        assert_eq!((window.text.as_str(), window.caret_x), ("hello", 2));
+        // Exactly the width: whole while the caret is on a glyph, scrolled once it needs
+        // the cell after the last one.
+        assert_eq!(checked("abcde", 0, 5).text, "abcde");
+        assert_eq!(checked("abcde", 5, 5).text, "…cde");
+    }
+
+    #[test]
+    fn a_caret_at_the_end_of_a_long_value_shows_the_end() {
+        let value = long();
+        let window = checked(&value, value.len(), 20);
+        assert_eq!(window.text, format!("…{}", &value[value.len() - 18..]));
+        assert_eq!(window.caret_x, 19);
+    }
+
+    #[test]
+    fn a_caret_at_the_start_shows_the_start() {
+        let value = long();
+        let window = checked(&value, 0, 20);
+        assert_eq!(window.text, format!("{}…", &value[..19]));
+        assert_eq!(window.caret_x, 0);
+    }
+
+    #[test]
+    fn a_caret_in_the_middle_sits_at_the_right_edge() {
+        let value = long();
+        let window = checked(&value, 60, 20);
+        assert!(window.text.starts_with('…') && window.text.ends_with('…'));
+        assert_eq!(window.caret_x, 18);
+        // While the caret is still inside the first window, it starts at the beginning.
+        let window = checked(&value, 10, 20);
+        assert_eq!(window.text, format!("{}…", &value[..19]));
+        assert_eq!(window.caret_x, 10);
+    }
+
+    #[test]
+    fn the_window_is_anchored_to_the_caret_alone() {
+        let value = long();
+        // Walking right: the start holds until the caret reaches the edge, then the
+        // caret stays on the last text column while the text moves under it.
+        for cursor in 0..value.len() {
+            let window = checked(&value, cursor, 20);
+            assert_eq!(window.caret_x, u16::try_from(cursor.min(18)).unwrap());
+        }
+        // A scrolled window keeps the caret's cell, so the step back from the end
+        // leaves the text where it was.
+        let end = checked(&value, value.len(), 20);
+        let back = checked(&value, value.len() - 1, 20);
+        assert_eq!(back.text, end.text);
+        assert_eq!(back.caret_x, end.caret_x - 1);
+    }
+
+    #[test]
+    fn typing_at_the_end_keeps_the_caret_in_view() {
+        let mut value = String::new();
+        for c in long().chars() {
+            value.push(c);
+            let window = checked(&value, value.len(), 20);
+            assert_eq!(window.caret_x, display_width(&value).min(19));
+        }
+    }
+
+    #[test]
+    fn a_wide_value_is_cut_between_glyphs() {
+        let value = "日本語のテキスト".repeat(4);
+        for width in 0..=12 {
+            for cursor in boundaries(&value) {
+                checked(&value, cursor, width);
+            }
+        }
+        // An odd width: a glyph that does not fit leaves its column blank.
+        let window = checked(&value, 0, 8);
+        assert_eq!(window.text, "日本語 …");
+    }
+
+    #[test]
+    fn a_flag_or_a_family_at_the_edge_is_never_split() {
+        for glyph in [FLAG, FAMILY] {
+            let value = format!("abc{glyph}defghij{glyph}klmnop");
+            for width in 0..=12 {
+                for cursor in boundaries(&value) {
+                    checked(&value, cursor, width);
+                }
+            }
+            // The glyph would straddle the edge of a five-column window, so it is left out.
+            let window = checked(&value, 0, 5);
+            assert_eq!(window.text, "abc …");
+        }
+    }
+
+    #[test]
+    fn narrow_fields_still_hold_the_caret() {
+        let value = long();
+        for width in 1..=3 {
+            for cursor in [0, 1, 50, value.len() - 1, value.len()] {
+                let window = checked(&value, cursor, width);
+                assert!(window.caret_x < width);
+            }
+        }
+        // Width 1 at the end has room for the caret and nothing else.
+        assert_eq!(checked(&value, value.len(), 1).text, "");
+        assert_eq!(checked(&value, 0, 1).text, "a");
+        // Width 2 in the middle has no room for markers, so it drops them.
+        assert_eq!(checked(&value, 50, 2).text, "ja");
+        assert_eq!(checked(&value, value.len(), 2).text, "…");
+        // Width 0 draws nothing.
+        assert_eq!(checked(&value, 50, 0).text, "");
     }
 }
