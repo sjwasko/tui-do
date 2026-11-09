@@ -4,7 +4,11 @@
 pub type Result<T> = std::result::Result<T, CoreError>;
 
 /// A failure in the store, sync engine, parser or configuration layer.
+///
+/// `#[non_exhaustive]` since `Refused` was added (BUG-27): a match outside this crate
+/// needs a wildcard arm, so the next new variant is not a breaking change.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CoreError {
     /// The local SQLite store failed.
     #[error("local store error: {0}")]
@@ -29,6 +33,14 @@ pub enum CoreError {
     /// entry written by one that spelled a variant differently.
     #[error("could not encode a queued change: {0}")]
     Encoding(#[from] serde_json::Error),
+
+    /// The store would not queue a change, because it could only ever fail on the wire.
+    ///
+    /// An attach or a detach naming a provisional label whose `CreateLabel` is no longer
+    /// queued: no server will ever issue that id, so the request is a 4xx that discards
+    /// every other entry queued for the task (BUG-27).
+    #[error("not queued: {0}")]
+    Refused(String),
 
     /// An I/O operation outside the store failed.
     #[error("io error: {0}")]

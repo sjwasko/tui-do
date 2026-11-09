@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::datetime::Timestamp;
-use super::ids::{AttachmentId, CommentId, ProjectId, TaskId};
+use super::ids::{AttachmentId, CommentId, LabelId, ProjectId, TaskId};
 use super::label::Label;
 use super::user::User;
 
@@ -296,6 +296,11 @@ impl Task {
     #[must_use]
     pub fn repeats(&self) -> bool {
         self.repeat_after > 0 || self.repeat_mode != RepeatMode::AfterAmount
+    }
+
+    /// Take a label off this task, if it carries it.
+    pub fn drop_label(&mut self, label: LabelId) {
+        self.labels.retain(|held| held.id != label);
     }
 }
 

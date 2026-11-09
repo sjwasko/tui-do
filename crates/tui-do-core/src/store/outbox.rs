@@ -40,7 +40,7 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use tui_do_api::models::{Label, LabelId, Task, TaskId};
 
-use super::labels::{attach_label, upsert_label};
+use super::labels::{attach_label, is_being_created, upsert_label};
 use super::state::{read_state, write_state};
 use super::tasks::upsert_task;
 use super::Store;
@@ -265,6 +265,54 @@ impl Mutation {
                 swap(&mut before.id);
                 swap(&mut after.id);
             }
+        }
+    }
+
+    /// The label id this entry's own request sends, when it sends one.
+    ///
+    /// This is what depends on a `CreateLabel`: an attach or a detach puts the id in its
+    /// path, and a rename in its path and body. Exhaustive over [`Mutation`] rather than a
+    /// wildcard arm, so a new variant fails to compile here rather than silently
+    /// answering "sends no label".
+    ///
+    /// `None` for the three task-carrying variants even when their task holds labels.
+    /// `CLAUDE.md` records, measured, that a task body's `labels` field is ignored by the
+    /// server, and a delete sends no body at all -- so none of them asks the server for a
+    /// label. What they carry is [`Self::strip_label`]'s business instead. `None` for
+    /// `CreateLabel` too: the id it carries is the one it defines, and the server ignores
+    /// it.
+    #[must_use]
+    pub fn wire_label(&self) -> Option<LabelId> {
+        match self {
+            Self::AttachLabel { label, .. } | Self::DetachLabel { label, .. } => Some(label.id),
+            Self::UpdateLabel { after, .. } => Some(after.id),
+            Self::CreateTask { .. }
+            | Self::UpdateTask { .. }
+            | Self::DeleteTask { .. }
+            | Self::CreateLabel { .. } => None,
+        }
+    }
+
+    /// Take a label off every task this entry carries.
+    ///
+    /// For a label that will never exist: a provisional one whose create the server
+    /// refused. A task-carrying entry is still the user's change to everything else, so
+    /// it loses the label rather than being dropped -- and the label has to go, because
+    /// `decompose` turns a `CreateTask`'s labels into one `AttachLabel` each, which would
+    /// send the id no server issued. The variants that [`Self::wire_label`] answers for
+    /// are left alone; an entry that *is* about the label has nothing to strip it from.
+    pub fn strip_label(&mut self, label: LabelId) {
+        match self {
+            Self::CreateTask { task } => task.drop_label(label),
+            Self::UpdateTask { before, after } => {
+                before.drop_label(label);
+                after.drop_label(label);
+            }
+            Self::DeleteTask { before } => before.drop_label(label),
+            Self::AttachLabel { .. }
+            | Self::DetachLabel { .. }
+            | Self::CreateLabel { .. }
+            | Self::UpdateLabel { .. } => {}
         }
     }
 
@@ -531,10 +579,12 @@ impl Store {
     /// its labels move to entries of their own.
     ///
     /// # Errors
-    /// [`crate::CoreError::Store`] on any SQL failure, or
-    /// [`crate::CoreError::Encoding`] if the mutation cannot be serialized. Either way
-    /// nothing is written -- the local change and its queue entries stand or fall
-    /// together.
+    /// [`crate::CoreError::Store`] on any SQL failure,
+    /// [`crate::CoreError::Encoding`] if the mutation cannot be serialized, or
+    /// [`crate::CoreError::Refused`] if any part would attach or detach a provisional
+    /// label whose `CreateLabel` is no longer queued. In every case nothing is written,
+    /// not even a provisional id -- the local change, its queue entries and the id
+    /// counters stand or fall together in one transaction.
     pub async fn queue(&self, mutation: Mutation) -> Result<OutboxEntry> {
         let now = Utc::now();
         self.write(move |tx| {
@@ -552,6 +602,20 @@ impl Store {
 
             let mut first = None;
             for part in mutation.decompose() {
+                // An id no server will issue. The interface forgets a refused create's
+                // label everywhere it holds one, and this is the backstop for a holder
+                // it missed: refusing here is a toast, where sending it would be a 4xx
+                // that takes every other entry queued for the task with it.
+                if let Mutation::AttachLabel { label, .. } | Mutation::DetachLabel { label, .. } =
+                    &part
+                {
+                    if is_provisional_label(label.id) && !is_being_created(tx, label.id)? {
+                        return Err(crate::CoreError::Refused(format!(
+                            "label \"{}\" was never created",
+                            label.title
+                        )));
+                    }
+                }
                 // The entry goes in before the change is applied, or `attach_label`'s
                 // guard would refuse the label a `CreateLabel` is creating.
                 tx.execute(
@@ -1941,20 +2005,64 @@ mod tests {
     async fn a_rolled_back_detach_does_not_resurrect_a_rolled_back_label() {
         // `DetachLabel`'s rollback writes the label back too. A detach queued while the
         // create is alive is discarded with it, but one queued after -- an undo of the
-        // attach, built from a copy still naming -1 -- is not.
+        // attach, built from a copy still naming -1 -- is not. `queue` now refuses that
+        // detach (BUG-27), so the entry is built by hand: the rollback guard stands on
+        // its own, for a row written by a build that did not refuse it.
         let store = Store::in_memory().unwrap();
         let (create, carrying) = task_carrying_a_provisional_label(&store).await;
         store.discard(&create).await.unwrap();
-        let detach = store
-            .queue(Mutation::DetachLabel {
+        let detach = OutboxEntry {
+            id: 9_999,
+            created: Utc::now(),
+            mutation: Mutation::DetachLabel {
                 task: TaskId(1),
                 label: Box::new(carrying.labels[0].clone()),
-            })
-            .await
-            .unwrap();
+            },
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+        };
 
         store.discard(&detach).await.unwrap();
 
+        assert_eq!(negative_label_ids(&store).await, Vec::<i64>::new());
+    }
+
+    #[tokio::test]
+    async fn a_label_change_naming_a_label_never_created_is_not_queued() {
+        // BUG-27. Once a create is gone, no server will issue its id, so an attach or a
+        // detach naming it is a 4xx that discards every other entry queued for the task.
+        // Undoing a delete reaches the same attach through `decompose`.
+        let store = Store::in_memory().unwrap();
+        let (create, carrying) = task_carrying_a_provisional_label(&store).await;
+        store.discard(&create).await.unwrap();
+        let dead = Box::new(carrying.labels[0].clone());
+        let before = store.pending(None).await.unwrap();
+
+        for mutation in [
+            Mutation::DetachLabel {
+                task: TaskId(1),
+                label: dead.clone(),
+            },
+            Mutation::AttachLabel {
+                task: TaskId(1),
+                label: dead.clone(),
+            },
+            Mutation::CreateTask {
+                task: Box::new(carrying.clone()),
+            },
+        ] {
+            let kind = mutation.kind();
+            match store.queue(mutation).await {
+                Err(crate::CoreError::Refused(reason)) => assert!(reason.contains("errands")),
+                other => panic!("{kind} naming a dead label was not refused: {other:?}"),
+            }
+        }
+        assert_eq!(
+            store.pending(None).await.unwrap(),
+            before,
+            "a refusal left something queued"
+        );
         assert_eq!(negative_label_ids(&store).await, Vec::<i64>::new());
     }
 

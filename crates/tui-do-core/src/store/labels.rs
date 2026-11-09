@@ -281,7 +281,7 @@ fn write_label(tx: &Transaction<'_>, label: &Label, now: DateTime<Utc>) -> Resul
 ///
 /// Filters on `subject_kind`: provisional task `-1` and label `-1` share a value in the
 /// untyped `subject_id` column, and a queued `CreateTask` must not keep a label alive.
-fn is_being_created(tx: &Transaction<'_>, label: LabelId) -> Result<bool> {
+pub(super) fn is_being_created(tx: &Transaction<'_>, label: LabelId) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT exists(SELECT 1 FROM outbox
                         WHERE subject_id = ?1 AND subject_kind = 'label'

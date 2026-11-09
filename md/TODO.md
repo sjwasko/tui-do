@@ -1018,6 +1018,18 @@ they are commitments rather than ideas.
 
 ---
 
+## Owed at the next publish
+
+- **`tui-do-core` must go out as `2.0.0`.** Its public `CoreError` gained a `Refused`
+  variant with the BUG-27 fix (2026-11-08) and became `#[non_exhaustive]` in the same
+  change. Either is a breaking change for anything outside the workspace that matched it
+  exhaustively, so a `1.x` publish would break a semver promise. No version was bumped
+  then; the bump belongs to the release that ships it, along with the other three crates'
+  path-dependency versions (see `CLAUDE.md`, "The version lives in `Cargo.toml` in four
+  places").
+
+---
+
 ## Open defects
 
 Tracked in full in `bugs.md`; listed here only so this file is a complete picture.

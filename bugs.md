@@ -53,7 +53,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-14~~ | FIXED — five store-level rollback tests, four that failed before the fix | yes |
 | ~~BUG-26~~ | FIXED — pure `TextInput` and `edit_layout` tests, eight | yes |
 | ~~BUG-20~~ | FIXED — four rows of the table, plus skipped and ambiguous hours, all failing on the old wiring | yes |
-| BUG-27 | UI-level undo/redo sequence after a rejected label create | yes |
+| ~~BUG-27~~ | FIXED — seven UI undo, redo and save sequences after a rejected label create, all failing before the fix, plus a store refusal test | yes |
 | ~~BUG-25~~ | FIXED — predicate table, loop test, and the binary run with no terminal | yes |
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
@@ -67,7 +67,7 @@ throughout, both learned the hard way in this pass:
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | BUG-22, BUG-23 — new 2026-09-13, both need fixing. ~~BUG-21~~ is fixed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
-| **Found fixing BUG-14** | BUG-27 — an undo built before a rejected label create can send label id `-1`; diagnosed, the server's answer not yet measured |
+| **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
 | **Minor** | 13 remaining, none urgent |
 
@@ -1673,7 +1673,22 @@ was fixed with the field. `help_column_width` measures display width now too. Ei
 tests (Backspace and Left over a flag, ZWJ family, combining mark, `日本` caret column,
 picker rub-out, flag wrap, caret mapping); all eight failed on the old code.
 
-### BUG-27 — an undo can queue a label change naming a provisional id no server issued
+### ~~BUG-27~~ — FIXED — an undo can queue a label change naming a provisional id no server issued
+
+**Fixed.** The diagnosis below held step for step: the five UI sequences it suggested failed before the
+fix. A rejection of a provisional label now runs `update::forget_label`, which drops from
+both stacks every entry that *sends* the id (`Mutation::wire_label`, the same test
+`sync::references` now asks) and strips it from every task an entry *carries*
+(`Mutation::strip_label`), so undoing an unrelated edit or a delete still works. An
+`UpdateTask` left changing nothing is dropped. The pool, the rows on screen, an open edit
+form (its `before` and its labels field), the label form and the label picker lose it
+too, since the reload has not answered yet; review found the edit form's field, where a
+save still resolved `next` to `-1`. As a backstop `Store::queue` refuses an attach or
+detach naming a provisional label whose `CreateLabel` is gone (`CoreError::Refused`,
+shown as a store toast). **That is a semver break:** `CoreError` gained the variant and
+became `#[non_exhaustive]`, so the next `tui-do-core` publish must be `2.0.0` (recorded
+in `md/TODO.md`). The server's answer to `label_id: -1` is still **not measured**; the
+fix makes the request unreachable rather than handling it.
 
 `crates/tui-do-ui/src/update.rs:148` (`on_rejected`'s undo-stack prune), with
 `sync/mod.rs` `is_already_done` and `is_permanent`. Found while fixing BUG-14; diagnosed,
