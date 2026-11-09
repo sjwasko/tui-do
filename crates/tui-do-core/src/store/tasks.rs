@@ -11,8 +11,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use tui_do_api::models::{ProjectId, Task, TaskId, TaskReminder, User};
 
-use super::labels::{attach_label, labels_for};
-use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
+use super::labels::{attach_label, labels_for_tasks};
+use super::sql::{escape_like, group_by_task, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
 use crate::error::Result;
 
@@ -229,9 +229,7 @@ impl Store {
             else {
                 return Ok(None);
             };
-            task.labels = labels_for(connection, id)?;
-            task.assignees = assignees_for(connection, id)?;
-            task.reminders = reminders_for(connection, id)?;
+            fill_children(connection, std::slice::from_mut(&mut task))?;
             Ok(Some(task))
         })
         .await
@@ -242,61 +240,8 @@ impl Store {
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn tasks(&self, filter: TaskFilter, sort: TaskSort) -> Result<Vec<Task>> {
-        self.read(move |connection| {
-            let mut sql = String::from(SELECT);
-            let mut clauses: Vec<String> = Vec::new();
-            let mut values: Vec<rusqlite::types::Value> = Vec::new();
-
-            if let Some(label) = filter.label {
-                sql.push_str(" JOIN task_labels ON task_labels.task_id = tasks.id");
-                clauses.push(format!("task_labels.label_id = ?{}", values.len() + 1));
-                values.push(label.get().into());
-            }
-            if let Some(project) = filter.project {
-                clauses.push(format!("tasks.project_id = ?{}", values.len() + 1));
-                values.push(project.get().into());
-            }
-            if let Some(done) = filter.done {
-                clauses.push(format!("tasks.done = ?{}", values.len() + 1));
-                values.push(i64::from(done).into());
-            }
-            if let Some(favorite) = filter.favorite {
-                clauses.push(format!("tasks.is_favorite = ?{}", values.len() + 1));
-                values.push(i64::from(favorite).into());
-            }
-            if let Some(search) = &filter.search {
-                clauses.push(format!(
-                    "tasks.title LIKE ?{} ESCAPE '\\' COLLATE NOCASE",
-                    values.len() + 1
-                ));
-                values.push(format!("%{}%", escape_like(search)).into());
-            }
-
-            if !clauses.is_empty() {
-                sql.push_str(" WHERE ");
-                sql.push_str(&clauses.join(" AND "));
-            }
-            sql.push_str(" ORDER BY ");
-            sql.push_str(sort.sql());
-            if let Some(limit) = filter.limit {
-                sql.push_str(&format!(" LIMIT {limit}"));
-            }
-
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(rusqlite::params_from_iter(values), row_to_task)?;
-
-            let mut tasks: Vec<Task> = Vec::new();
-            for task in rows {
-                tasks.push(task?);
-            }
-            for task in &mut tasks {
-                task.labels = labels_for(connection, task.id)?;
-                task.assignees = assignees_for(connection, task.id)?;
-                task.reminders = reminders_for(connection, task.id)?;
-            }
-            Ok(tasks)
-        })
-        .await
+        self.read(move |connection| read_tasks(connection, &filter, sort))
+            .await
     }
 
     /// How many tasks are stored, in total and undone.
@@ -569,52 +514,129 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
     Ok(())
 }
 
-/// The reminders set on a task.
+/// The tasks matching `filter`, ordered by `sort`, each with its labels, assignees and
+/// reminders. The body of [`Store::tasks`].
+fn read_tasks(connection: &Connection, filter: &TaskFilter, sort: TaskSort) -> Result<Vec<Task>> {
+    let mut sql = String::from(SELECT);
+    let mut clauses: Vec<String> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(label) = filter.label {
+        sql.push_str(" JOIN task_labels ON task_labels.task_id = tasks.id");
+        clauses.push(format!("task_labels.label_id = ?{}", values.len() + 1));
+        values.push(label.get().into());
+    }
+    if let Some(project) = filter.project {
+        clauses.push(format!("tasks.project_id = ?{}", values.len() + 1));
+        values.push(project.get().into());
+    }
+    if let Some(done) = filter.done {
+        clauses.push(format!("tasks.done = ?{}", values.len() + 1));
+        values.push(i64::from(done).into());
+    }
+    if let Some(favorite) = filter.favorite {
+        clauses.push(format!("tasks.is_favorite = ?{}", values.len() + 1));
+        values.push(i64::from(favorite).into());
+    }
+    if let Some(search) = &filter.search {
+        clauses.push(format!(
+            "tasks.title LIKE ?{} ESCAPE '\\' COLLATE NOCASE",
+            values.len() + 1
+        ));
+        values.push(format!("%{}%", escape_like(search)).into());
+    }
+
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(" ORDER BY ");
+    sql.push_str(sort.sql());
+    if let Some(limit) = filter.limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(values), row_to_task)?;
+
+    let mut tasks: Vec<Task> = Vec::new();
+    for task in rows {
+        tasks.push(task?);
+    }
+    fill_children(connection, &mut tasks)?;
+    Ok(tasks)
+}
+
+/// Fill in the labels, assignees and reminders of `tasks`: one statement per table,
+/// however many tasks there are.
+///
+/// BUG-28. This was three statements per task, about 5,800 for the open list on dev,
+/// and a held key keeps one task-list read running back to back on the store's one
+/// connection, so the push got about 1.4 sends a second. Each child table is read once
+/// for every id at the same time and the rows dealt out in memory, in the order the
+/// per-task statements gave them.
+fn fill_children(connection: &Connection, tasks: &mut [Task]) -> Result<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<TaskId> = tasks.iter().map(|task| task.id).collect();
+    let mut labels = labels_for_tasks(connection, &ids)?;
+    let mut assignees = assignees_for_tasks(connection, &ids)?;
+    let mut reminders = reminders_for_tasks(connection, &ids)?;
+    for task in tasks {
+        task.labels = labels.remove(&task.id).unwrap_or_default();
+        task.assignees = assignees.remove(&task.id).unwrap_or_default();
+        task.reminders = reminders.remove(&task.id).unwrap_or_default();
+    }
+    Ok(())
+}
+
+/// The reminders set on each of `tasks`, keyed by task.
 ///
 /// Loaded with every task rather than on demand, because the reason they are stored is
 /// that `update_task` sends them back — a task read for editing must carry them or the
 /// server deletes them.
-fn reminders_for(connection: &Connection, task: TaskId) -> Result<Vec<TaskReminder>> {
-    let mut statement = connection.prepare(
-        "SELECT reminder, relative_period FROM task_reminders
-          WHERE task_id = ?1
-          ORDER BY reminder, relative_period",
-    )?;
-    let rows = statement.query_map(params![task.get()], |row| {
-        Ok(TaskReminder {
-            reminder: instant(row, "reminder")?.into(),
-            relative_period: row.get("relative_period")?,
-        })
-    })?;
-    let mut reminders = Vec::new();
-    for reminder in rows {
-        reminders.push(reminder?);
-    }
-    Ok(reminders)
+fn reminders_for_tasks(
+    connection: &Connection,
+    tasks: &[TaskId],
+) -> Result<HashMap<TaskId, Vec<TaskReminder>>> {
+    group_by_task(
+        connection,
+        "SELECT task_id, reminder, relative_period FROM task_reminders
+          WHERE task_id IN (SELECT value FROM json_each(?1))
+          ORDER BY task_id, reminder, relative_period",
+        tasks,
+        |row| {
+            Ok(TaskReminder {
+                reminder: instant(row, "reminder")?.into(),
+                relative_period: row.get("relative_period")?,
+            })
+        },
+    )
 }
 
-/// The users assigned to a task.
-fn assignees_for(connection: &Connection, task: TaskId) -> Result<Vec<User>> {
-    let mut statement = connection.prepare(
-        "SELECT users.id, users.username, users.name, users.email
+/// The users assigned to each of `tasks`, keyed by task, each task's in username order.
+fn assignees_for_tasks(
+    connection: &Connection,
+    tasks: &[TaskId],
+) -> Result<HashMap<TaskId, Vec<User>>> {
+    group_by_task(
+        connection,
+        "SELECT task_assignees.task_id, users.id, users.username, users.name, users.email
            FROM users JOIN task_assignees ON task_assignees.user_id = users.id
-          WHERE task_assignees.task_id = ?1
-          ORDER BY users.username COLLATE NOCASE",
-    )?;
-    let rows = statement.query_map(params![task.get()], |row| {
-        Ok(User {
-            id: row.get::<_, i64>(0)?.into(),
-            username: row.get(1)?,
-            name: row.get(2)?,
-            email: row.get(3)?,
-            ..User::default()
-        })
-    })?;
-    let mut users = Vec::new();
-    for user in rows {
-        users.push(user?);
-    }
-    Ok(users)
+          WHERE task_assignees.task_id IN (SELECT value FROM json_each(?1))
+          ORDER BY task_assignees.task_id, users.username COLLATE NOCASE, users.id",
+        tasks,
+        |row| {
+            Ok(User {
+                id: row.get::<_, i64>(1)?.into(),
+                username: row.get(2)?,
+                name: row.get(3)?,
+                email: row.get(4)?,
+                ..User::default()
+            })
+        },
+    )
 }
 
 /// Build a task from a row of the `tasks` table. Labels and assignees are filled after.
@@ -1243,5 +1265,336 @@ mod tests {
         let batch: Vec<Task> = (1..=200).map(|i| task(i, &format!("task {i}"))).collect();
         assert_eq!(store.upsert_tasks(batch).await.unwrap(), 200);
         assert_eq!(store.task_counts().await.unwrap(), (200, 200));
+    }
+
+    /// BUG-28: the children of a task list are read once per table, not once per task.
+    mod batched {
+        use std::cell::Cell;
+
+        use super::*;
+
+        /// The per-task reads `Store::tasks` made before BUG-28, kept as the reference
+        /// the batched reads must agree with.
+        mod per_task {
+            use super::*;
+            use crate::store::labels::row_to_label;
+
+            pub(super) fn labels_for(connection: &Connection, task: TaskId) -> Vec<Label> {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT labels.*,
+                                creator.username AS creator_username,
+                                creator.name     AS creator_name,
+                                creator.email    AS creator_email
+                           FROM labels
+                           LEFT JOIN users AS creator ON creator.id = labels.created_by_id
+                           JOIN task_labels ON task_labels.label_id = labels.id
+                          WHERE task_labels.task_id = ?1
+                          ORDER BY labels.title COLLATE NOCASE",
+                    )
+                    .unwrap();
+                let rows = statement
+                    .query_map(params![task.get()], row_to_label)
+                    .unwrap();
+                rows.map(rusqlite::Result::unwrap).collect()
+            }
+
+            pub(super) fn assignees_for(connection: &Connection, task: TaskId) -> Vec<User> {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT users.id, users.username, users.name, users.email
+                           FROM users JOIN task_assignees ON task_assignees.user_id = users.id
+                          WHERE task_assignees.task_id = ?1
+                          ORDER BY users.username COLLATE NOCASE",
+                    )
+                    .unwrap();
+                let rows = statement
+                    .query_map(params![task.get()], |row| {
+                        Ok(User {
+                            id: row.get::<_, i64>(0)?.into(),
+                            username: row.get(1)?,
+                            name: row.get(2)?,
+                            email: row.get(3)?,
+                            ..User::default()
+                        })
+                    })
+                    .unwrap();
+                rows.map(rusqlite::Result::unwrap).collect()
+            }
+
+            pub(super) fn reminders_for(
+                connection: &Connection,
+                task: TaskId,
+            ) -> Vec<TaskReminder> {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT reminder, relative_period FROM task_reminders
+                          WHERE task_id = ?1
+                          ORDER BY reminder, relative_period",
+                    )
+                    .unwrap();
+                let rows = statement
+                    .query_map(params![task.get()], |row| {
+                        Ok(TaskReminder {
+                            reminder: instant(row, "reminder")?.into(),
+                            relative_period: row.get("relative_period")?,
+                        })
+                    })
+                    .unwrap();
+                rows.map(rusqlite::Result::unwrap).collect()
+            }
+        }
+
+        fn label(id: i64, title: &str, creator: Option<&User>) -> Label {
+            Label {
+                id: LabelId(id),
+                title: title.to_string(),
+                hex_color: format!("{id:06x}"),
+                created_by: creator.cloned(),
+                ..Label::default()
+            }
+        }
+
+        fn user(id: i64, username: &str) -> User {
+            User {
+                id: UserId(id),
+                username: username.to_string(),
+                name: format!("Name {id}"),
+                ..User::default()
+            }
+        }
+
+        fn reminder(at_text: &str, relative_period: i64) -> TaskReminder {
+            TaskReminder {
+                reminder: at(at_text).into(),
+                relative_period,
+            }
+        }
+
+        /// A store whose tasks carry every shape of child: none, one, many, titles and
+        /// usernames equal but for case, labels with and without a creator, absolute and
+        /// relative reminders, done and open, favourite and not.
+        async fn varied() -> Store {
+            let store = Store::in_memory().unwrap();
+            let creator = user(90, "maker");
+            let labels = [
+                label(1, "work", Some(&creator)),
+                label(2, "Errands", None),
+                // Three titles equal ignoring case, ids out of title order.
+                label(9, "urgent", None),
+                label(4, "URGENT", Some(&creator)),
+                label(6, "Urgent", None),
+                label(3, "alpha", None),
+                label(5, "Zed", None),
+            ];
+            let users = [
+                user(1, "swasko"),
+                user(2, "Bob"),
+                user(7, "bob"),
+                user(3, "alice"),
+                user(4, "carol"),
+            ];
+            let mut tasks = Vec::new();
+            for id in 1..=60_i64 {
+                let n = usize::try_from(id).unwrap();
+                let mut task = Task {
+                    id: TaskId(id),
+                    project_id: ProjectId(1 + id % 3),
+                    title: format!("task {}", 61 - id),
+                    done: id % 4 == 0,
+                    is_favorite: id % 5 == 0,
+                    priority: id % 6,
+                    due_date: if id % 2 == 0 {
+                        at(&format!("2026-09-{:02}T10:00:00Z", 1 + id % 28)).into()
+                    } else {
+                        None.into()
+                    },
+                    created_by: Some(users[n % users.len()].clone()),
+                    ..Task::default()
+                };
+                // Every subset size from none to all, rotated so orders vary.
+                task.labels = (0..n % (labels.len() + 1))
+                    .map(|k| labels[(n + k) % labels.len()].clone())
+                    .collect();
+                task.assignees = (0..n % (users.len() + 1))
+                    .map(|k| users[(n * 3 + k) % users.len()].clone())
+                    .collect();
+                task.reminders = (0..n % 4)
+                    .map(|k| {
+                        reminder(
+                            &format!("2026-10-{:02}T0{k}:00:00Z", 1 + (n * 7 + k) % 28),
+                            if k == 2 { -3600 } else { 0 },
+                        )
+                    })
+                    .collect();
+                // Two reminders at the same instant, told apart only by their period.
+                if id == 7 {
+                    task.reminders.push(reminder("2026-10-05T00:00:00Z", 60));
+                    task.reminders.push(reminder("2026-10-05T00:00:00Z", -60));
+                }
+                tasks.push(task);
+            }
+            store.upsert_tasks(tasks).await.unwrap();
+            store
+        }
+
+        fn filters() -> Vec<(TaskFilter, TaskSort)> {
+            let sorts = [
+                TaskSort::default(),
+                TaskSort {
+                    order: TaskOrder::Title,
+                    descending: true,
+                },
+                TaskSort {
+                    order: TaskOrder::Priority,
+                    descending: false,
+                },
+            ];
+            let filters = [
+                TaskFilter::default(),
+                TaskFilter {
+                    done: Some(false),
+                    limit: Some(10_000),
+                    ..TaskFilter::default()
+                },
+                TaskFilter {
+                    label: Some(LabelId(4)),
+                    ..TaskFilter::default()
+                },
+                TaskFilter {
+                    project: Some(ProjectId(2)),
+                    favorite: Some(false),
+                    ..TaskFilter::default()
+                },
+                TaskFilter {
+                    search: Some("task 1".to_string()),
+                    limit: Some(5),
+                    ..TaskFilter::default()
+                },
+                TaskFilter {
+                    search: Some("nothing matches this".to_string()),
+                    ..TaskFilter::default()
+                },
+            ];
+            filters
+                .iter()
+                .flat_map(|filter| sorts.iter().map(|sort| (filter.clone(), *sort)))
+                .collect()
+        }
+
+        /// Each of `batched` carries exactly what the per-task reads give for it.
+        fn assert_as_per_task(store: &Store, batched: &[Task]) {
+            let connection = store.connection.lock().unwrap();
+            for task in batched {
+                let id = task.id;
+                assert_eq!(
+                    task.labels,
+                    per_task::labels_for(&connection, id),
+                    "labels of {id:?}"
+                );
+                assert_eq!(
+                    task.assignees,
+                    per_task::assignees_for(&connection, id),
+                    "assignees of {id:?}"
+                );
+                assert_eq!(
+                    task.reminders,
+                    per_task::reminders_for(&connection, id),
+                    "reminders of {id:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_batched_read_assembles_every_task_as_the_per_task_reads_did() {
+            let store = varied().await;
+            for (filter, sort) in filters() {
+                let batched = store.tasks(filter.clone(), sort).await.unwrap();
+                assert_as_per_task(&store, &batched);
+            }
+            // And `Store::task`, which reads its one task's children the same way.
+            for id in 1..=60 {
+                let one = store.task(TaskId(id)).await.unwrap().unwrap();
+                assert_as_per_task(&store, std::slice::from_ref(&one));
+            }
+            // Not vacuous: the seed reaches the shapes the comparison is for.
+            let all = store
+                .tasks(TaskFilter::default(), TaskSort::default())
+                .await
+                .unwrap();
+            assert!(all
+                .iter()
+                .any(|t| t.labels.is_empty() && t.assignees.is_empty()));
+            assert!(all.iter().any(|t| t.labels.len() == 7));
+            assert!(all.iter().any(|t| t.assignees.len() == 5));
+            assert!(all.iter().any(|t| t.reminders.len() == 5));
+            let urgent: Vec<_> = all
+                .iter()
+                .find(|t| t.labels.len() == 7)
+                .unwrap()
+                .labels
+                .iter()
+                .filter(|l| l.title.eq_ignore_ascii_case("urgent"))
+                .map(|l| l.id.get())
+                .collect();
+            assert_eq!(urgent.len(), 3, "the case-equal titles all reach one task");
+        }
+
+        thread_local! {
+            static STATEMENTS: Cell<u64> = const { Cell::new(0) };
+        }
+
+        fn counted(event: rusqlite::trace::TraceEvent<'_>) {
+            if matches!(event, rusqlite::trace::TraceEvent::Stmt(..)) {
+                STATEMENTS.with(|count| count.set(count.get() + 1));
+            }
+        }
+
+        /// How many statements one open-list read runs over a store of `tasks` tasks,
+        /// each carrying two labels, two assignees and two reminders.
+        async fn statements_for(tasks: i64) -> u64 {
+            let store = Store::in_memory().unwrap();
+            let seeded = (1..=tasks)
+                .map(|id| Task {
+                    labels: vec![label(1 + id % 5, "a", None), label(10 + id % 5, "b", None)],
+                    assignees: vec![user(1 + id % 3, "x"), user(10 + id % 3, "y")],
+                    reminders: vec![
+                        reminder("2026-10-01T00:00:00Z", 0),
+                        reminder("2026-10-02T00:00:00Z", 0),
+                    ],
+                    ..task(id, "t")
+                })
+                .collect();
+            store.upsert_tasks(seeded).await.unwrap();
+
+            let connection = store.connection.lock().unwrap();
+            // The trace callback fires on the thread that runs the statement, which is
+            // this one: the read is called directly rather than through `spawn_blocking`.
+            connection.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(counted),
+            );
+            STATEMENTS.with(|count| count.set(0));
+            let filter = TaskFilter {
+                done: Some(false),
+                limit: Some(10_000),
+                ..TaskFilter::default()
+            };
+            let read = read_tasks(&connection, &filter, TaskSort::default()).unwrap();
+            connection.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            assert_eq!(read.len(), usize::try_from(tasks).unwrap());
+            assert!(read
+                .iter()
+                .all(|t| t.labels.len() == 2 && t.reminders.len() == 2));
+            STATEMENTS.with(Cell::get)
+        }
+
+        #[tokio::test]
+        async fn a_task_list_read_runs_one_statement_per_table_however_many_tasks() {
+            // The tasks themselves, then labels, assignees and reminders. Three per task
+            // before BUG-28: 3 tasks were 10 statements and 400 were 1,201.
+            assert_eq!(statements_for(3).await, 4);
+            assert_eq!(statements_for(400).await, 4);
+        }
     }
 }
