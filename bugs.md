@@ -59,7 +59,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
 | ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
 | ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
-| ~~BUG-23~~ | FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test | yes |
+| BUG-23 | PARTLY FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset | yes |
 | BUG-28 | hold a store read on a barrier while a loop of presses runs; assert the push still sends | yes |
 
 ## What is left, at a glance
@@ -68,7 +68,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
-| **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~ and ~~BUG-23~~ are fixed; BUG-23 leaves the push slow while a key is *held*, because one task-list read is still 120-530 ms (see its entry) |
+| **Found by the drain torture test** | ~~BUG-21~~ and ~~BUG-22~~ are fixed. BUG-23 is partly fixed — the drain, the backlog at key-up and the quit wording — and what it leaves is filed as **BUG-28**: while a key is held the push still gets ~1.4 sends/s, because a task-list read is always running |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -84,14 +84,14 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | area | Critical | Important | Minor |
 |---|---|---|---|
 | UI state machine | **1** | 2 → 1 | 2 |
-| Sync engine | 0 | 5 → 4 | 7 → 5 |
+| Sync engine | 0 | 5 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
 | Runtime and CLI | 0 | 5 → 3 | 3 |
 | API client | 0 | 1 → 0 | 1 |
 | **found** | **1** | **18** | **15** |
-| **fixed** | **1** | **10** | **2** |
-| **open** | **0** | **8** | **13** |
+| **fixed** | **1** | **9** | **2** |
+| **open** | **0** | **9** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -1439,7 +1439,7 @@ and counts one `POST` per task; with the replay off it fails with
 
 ---
 
-### ~~BUG-23~~ — FIXED — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
+### ~~BUG-23~~ — PARTLY FIXED — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
 
 `crates/tui-do-core/src/store/mod.rs` (the `Arc<Mutex<Connection>>`),
 `crates/tui-do-core/src/sync/mod.rs:459` (the drain loop's `pending()` re-read), and
@@ -1516,7 +1516,9 @@ when the key came up, and they took **18.8 s** to clear — so the push's reads 
 behind seconds of reloads that had already been asked for. That fits a five-second grace
 with no requests in it; the original process's lock was never inspected.
 
-Three changes, each its own commit:
+**What is fixed, 2026-11-08:** the drain's quadratic re-read, the backlog of reloads left
+on the lock when the key comes up, and the quit message. **What is not:** the push while a
+key is *held*, which is filed as **BUG-28** below. Three changes:
 
 - **Reloads are coalesced** (`runtime/coalesce.rs`). Each of the five reads `Msg::Reload`
   asks for runs at most once at a time, with the newest request waiting behind it; anything
@@ -1543,7 +1545,8 @@ entries (the old drain made 1,830); `an_entry_queued_mid_drain_goes_out_in_the_s
 holds the first request in the mock, queues an entry, and asserts all three go out in one
 pass; `requests_made_during_a_read_become_one_read_with_the_newest` holds a read on a
 `Notify`, issues fifty more, and asserts exactly two reads ran, the first under its own id
-and the second under the newest.
+and the second under the newest; `a_read_that_panics_does_not_leave_its_kind_running`
+pins the gate's reset. The gates belong to one runtime, on its `LoopTx`.
 
 ---
 
