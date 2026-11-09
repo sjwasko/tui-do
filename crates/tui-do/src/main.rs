@@ -66,6 +66,24 @@ enum Command {
     /// which reads as a version: write 2026-01-05, or put `due` in front. Any date
     /// that was set is named in the confirmation line, so a misread one shows at once.
     ///
+    /// CHECKING A LINE
+    ///
+    /// --dry-run prints what the line would create and the best way to write it, and
+    /// queues nothing, writes nothing and contacts no server:
+    ///
+    ///   tui-do add --dry-run 'call the dentist tomorrow !3 +Personal'
+    ///
+    /// It checks projects and labels against the local store only. A project created
+    /// elsewhere since the last sync can fail a dry run and still succeed for real,
+    /// because a real add asks the server once before giving up.
+    ///
+    /// The best form is the title, then +project, *labels, @users and !N, then each
+    /// date after its keyword in ISO form (due 2026-11-12, start 2026-11-09 at 09:00),
+    /// then the repeat. Dates go last because a date leaves the title only when nothing
+    /// follows it except whitespace, punctuation and other tokens. A real add prints
+    /// the same line as "as typed best: ..." whenever what was typed differs from it;
+    /// copy that form next time.
+    ///
     /// NAMES WITH SPACES
     ///
     /// Wrap the value in brackets or quotes, which is what keeps the second word from
@@ -192,6 +210,16 @@ struct AddArgs {
     /// so it takes an instruction instead.
     #[arg(long)]
     create_labels: bool,
+
+    /// Say what would be added, and the best way to write it, without adding it.
+    ///
+    /// Parses the line and resolves its project and labels against the local store
+    /// exactly as a real add does, so a line that would fail fails the same way. Then
+    /// prints what it would create and the line rewritten in its best form, and queues
+    /// nothing, writes nothing and contacts no server. Projects are checked against the
+    /// local store only, so one created since the last sync is not known to it.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// Options for `tui-do completions`.
@@ -411,8 +439,11 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
             &config,
             &path,
             &args.text.join(" "),
-            args.offline,
-            args.create_labels,
+            runtime::AddMode {
+                offline: args.offline,
+                create_labels: args.create_labels,
+                dry_run: args.dry_run,
+            },
         ))
 }
 

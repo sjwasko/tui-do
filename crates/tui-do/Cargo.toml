@@ -34,6 +34,8 @@ dirs.workspace = true
 # Real zone rules, to test that `tui-do add` echoes a date across a daylight-saving change
 # on the day the parser resolved it to. Tests only, as in tui-do-core.
 chrono-tz.workspace = true
+# To set a scratch store's schema version back, for the dry run's no-migration test.
+rusqlite.workspace = true
 
 [lints]
 workspace = true

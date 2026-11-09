@@ -22,8 +22,12 @@
 //!
 //! [`parse`] is pure and takes `now` as an argument. Nothing here reads the clock, which
 //! is what lets the tests pin exact instants.
+//!
+//! [`Parsed::summary`] says back what a line will create, and [`Parsed::canonical`] how it
+//! is best written; `tui-do add --dry-run` prints both.
 
 mod dates;
+mod echo;
 mod words;
 
 use std::ops::Range;

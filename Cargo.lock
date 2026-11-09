@@ -3246,6 +3246,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ratatui",
+ "rusqlite",
  "tokio",
  "tracing",
  "tracing-subscriber",
