@@ -455,9 +455,13 @@ fn common_prefix(names: &[String]) -> String {
     first[..end].to_string()
 }
 
-/// The slot being typed at the end of `before`, what has been typed into it so far, and
-/// every name that begins that way. `None` outside a slot, or when nothing matches.
-fn matching(before: &str, vocabulary: &Vocabulary) -> Option<(Partial, usize, Vec<String>)> {
+/// The slot being typed at the end of `before`, the byte offset where the name typed into
+/// it begins (past any bracket or quote), and every name that begins that way. `None`
+/// outside a slot, or when nothing matches.
+fn slot_with_matches(
+    before: &str,
+    vocabulary: &Vocabulary,
+) -> Option<(Partial, usize, Vec<String>)> {
     let partial = slot_at(before)?;
     let typed = partial.start + partial.open.map_or(0, char::len_utf8);
     let lower = before[typed..].to_lowercase();
@@ -470,7 +474,7 @@ fn matching(before: &str, vocabulary: &Vocabulary) -> Option<(Partial, usize, Ve
 }
 
 /// Each matching name written whole, as it goes in the line: sigil, bracket and all.
-fn whole(partial: Partial, names: &[String]) -> Vec<String> {
+fn written_tokens(partial: Partial, names: &[String]) -> Vec<String> {
     names
         .iter()
         .map(|name| {
@@ -491,9 +495,9 @@ fn whole(partial: Partial, names: &[String]) -> Vec<String> {
 /// second Tab to list.
 #[must_use]
 pub fn complete(before: &str, vocabulary: &Vocabulary) -> Option<Completion> {
-    let (partial, typed, names) = matching(before, vocabulary)?;
+    let (partial, typed, names) = slot_with_matches(before, vocabulary)?;
     let Partial { slot, start, open } = partial;
-    let matches = whole(partial, &names);
+    let matches = written_tokens(partial, &names);
     let text = if let [only] = names.as_slice() {
         Some(format!("{} ", written(slot, only, open, Extent::Whole)))
     } else {
@@ -526,10 +530,10 @@ pub struct Candidates {
 /// [`Candidates`] for the end of `before`, or `None` outside a slot or with no match.
 #[must_use]
 pub fn candidates(before: &str, vocabulary: &Vocabulary) -> Option<Candidates> {
-    let (partial, _, names) = matching(before, vocabulary)?;
+    let (partial, _, names) = slot_with_matches(before, vocabulary)?;
     Some(Candidates {
         start: partial.start - partial.slot.sigil().len(),
-        tokens: whole(partial, &names),
+        tokens: written_tokens(partial, &names),
     })
 }
 
