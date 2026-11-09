@@ -12,6 +12,7 @@
 mod coalesce;
 mod editor;
 mod prompt;
+mod signals;
 mod terminal;
 
 use std::future::Future;
@@ -38,6 +39,7 @@ use tui_do_ui::theme::{ColorDepth, Theme};
 use tui_do_ui::update::reload_everything;
 use tui_do_ui::{update, view, Effect, Model, Msg};
 
+use signals::Signal;
 use terminal::TerminalGuard;
 
 /// How often the clock is reported to the model.
@@ -85,7 +87,12 @@ const FLUSH_DOTS: u32 = 5;
 pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Result<()> {
     let store = open_store().await?;
 
-    let (tx, rx) = LoopTx::channel();
+    let (tx, mut rx) = LoopTx::channel();
+    // Before the terminal is taken, so there is no moment when it is raw and a signal
+    // would still end the process without giving it back (BUG-31).
+    if let Some(listener) = signals::listen(tx.signals.clone()) {
+        spawn_effect(tx.clone(), listener);
+    }
 
     // The interface starts against the cache, whether or not a server is reachable. A
     // missing or unreadable credential costs the user sync, not the application: an
@@ -131,23 +138,72 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         spawn_sync_timer(sync, config.sync.clone(), Arc::clone(&stop), tx.clone());
     }
 
-    let result = event_loop(&mut model, &mut guard, &tx, rx, &store, sync.as_ref()).await;
+    let result = event_loop(&mut model, &mut guard, &tx, &mut rx, &store, sync.as_ref()).await;
     stop.store(true, Ordering::SeqCst);
 
     // The terminal goes back to the user before anything is printed to it. After a
-    // panic the hook has done this already, and the drop is a no-op.
-    drop(guard);
-    // A panicked task or lost input ends the session here too, rather than in the panic
-    // hook or the input thread, so the last push still gets its chance: the edit made
-    // just before is usually the one the user most wants to have landed.
+    // panic the hook has done this already, and the drop is a no-op. After SIGHUP the
+    // terminal has probably gone, so the restore is tried and not waited on, and the
+    // flush below says nothing: there is nobody to read it, and a write could block.
+    let signalled = match &result {
+        Ok(Exit::Signalled(caught)) => Some(*caught),
+        _ => None,
+    };
+    let hung_up = signalled.is_some_and(Signal::hung_up);
+    guard.release_for(signalled);
+    // A panicked task, lost input or a signal ends the session here too, rather than in
+    // the panic hook, the input thread or the signal's default action, so the last push
+    // still gets its chance: the edit made just before is usually the one the user most
+    // wants to have landed.
     if let Some(sync) = &sync {
-        flush_on_exit(&store, sync).await;
+        let mut out: Box<dyn Write + Send> = if hung_up {
+            Box::new(io::sink())
+        } else {
+            Box::new(io::stdout())
+        };
+        if let Some(again) = flush_unless_signalled(&store, sync, &mut rx, &mut *out).await {
+            // A signal while the flush waits -- the second, or the first after `q`: the
+            // user wants it gone now. The terminal is already back, so leave; what is
+            // queued stays queued, and a push cut off mid-request may be sent again next
+            // run (see `flush_unless_signalled`).
+            std::process::exit(again.exit_code());
+        }
     }
     match result? {
         Exit::Quit => Ok(()),
         // Returned rather than printed, so `main` reports it on stderr and exits
         // non-zero, the way every other failure to keep running does.
         Exit::Fatal(why) => Err(anyhow::anyhow!("tui-do stopped because {why}")),
+        // As a shell reports a process the signal killed, so a script or a service
+        // manager sees what it would have seen before tui-do caught the signal.
+        Exit::Signalled(caught) => std::process::exit(caught.exit_code()),
+    }
+}
+
+/// [`flush_on_exit`], unless another signal arrives first, in which case that signal.
+///
+/// The flush can wait five seconds on an unreachable server, and a signal during that
+/// wait means "now" (BUG-31). That is a *second* signal when a signal ended the session,
+/// and the *first* when `q`, a panic or lost input did -- the user quit, the flush is
+/// still waiting, and they kill it.
+///
+/// Either way, a push in flight at that moment is abandoned mid-request, exactly as the
+/// signal's default action abandoned it before tui-do caught signals, and as `kill -9`
+/// still does. That is the BUG-3 class: the entry stays queued, and if the request had
+/// already reached the server the next launch sends it again, which for a `CreateTask`
+/// means a second task (BUG-33). The push being abandoned may be the flush's own or the
+/// running pass's, which the flush is giving its grace. The third way a push is
+/// abandoned is `tui-do add`'s, in `signals::listen`.
+async fn flush_unless_signalled(
+    store: &Store,
+    sync: &Arc<Sync>,
+    rx: &mut LoopRx,
+    out: &mut (dyn Write + Send),
+) -> Option<Signal> {
+    tokio::select! {
+        biased;
+        Some(again) = rx.signals.recv() => Some(again),
+        () = flush_on_exit(store, sync, out) => None,
     }
 }
 
@@ -158,6 +214,8 @@ enum Exit {
     Quit,
     /// Something happened that the session cannot carry on from.
     Fatal(Fatal),
+    /// SIGTERM, SIGHUP or SIGQUIT: the same quit as `q`, then the signal's exit code.
+    Signalled(Signal),
 }
 
 /// Why the session cannot carry on.
@@ -192,6 +250,9 @@ impl std::fmt::Display for Fatal {
 struct LoopTx {
     msg: UnboundedSender<Msg>,
     fatal: UnboundedSender<Fatal>,
+    /// A signal that ends the session (BUG-31). Its own channel for the same reason as
+    /// `fatal`: `update` has nothing to decide about it.
+    signals: UnboundedSender<Signal>,
     /// This runtime's read gates (BUG-23). Made with the channel, so two loops in one
     /// process never share a queued request, its store or its sender.
     reads: Arc<coalesce::Reads>,
@@ -201,21 +262,25 @@ struct LoopTx {
 struct LoopRx {
     msg: UnboundedReceiver<Msg>,
     fatal: UnboundedReceiver<Fatal>,
+    signals: UnboundedReceiver<Signal>,
 }
 
 impl LoopTx {
     fn channel() -> (Self, LoopRx) {
         let (msg, msg_rx) = mpsc::unbounded_channel();
         let (fatal, fatal_rx) = mpsc::unbounded_channel();
+        let (signals, signals_rx) = mpsc::unbounded_channel();
         (
             Self {
                 msg,
                 fatal,
+                signals,
                 reads: Arc::default(),
             },
             LoopRx {
                 msg: msg_rx,
                 fatal: fatal_rx,
+                signals: signals_rx,
             },
         )
     }
@@ -311,13 +376,14 @@ where
 
 /// Read messages, update, draw. The only loop in tui-do.
 ///
-/// A panicked task is checked for first, every time round, and ends the loop the same
-/// way `q` does -- by returning -- so everything after the loop in [`run`] still runs.
+/// A signal, then a panicked task, is checked for first, every time round, and ends the
+/// loop the same way `q` does -- by returning -- so everything after the loop in [`run`]
+/// still runs. The receiver is borrowed so [`run`] can go on hearing signals afterwards.
 async fn event_loop<B: ratatui::backend::Backend>(
     model: &mut Model,
     guard: &mut TerminalGuard<B>,
     tx: &LoopTx,
-    mut rx: LoopRx,
+    rx: &mut LoopRx,
     store: &Store,
     sync: Option<&Arc<Sync>>,
 ) -> anyhow::Result<Exit> {
@@ -329,6 +395,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
     loop {
         let msg = tokio::select! {
             biased;
+            // Ahead of the fatal report, so a hangup that also kills the input thread's
+            // reads is still known for a hangup, and not written to as a live terminal.
+            Some(caught) = rx.signals.recv() => return Ok(Exit::Signalled(caught)),
             Some(why) = rx.fatal.recv() => return Ok(Exit::Fatal(why)),
             msg = rx.msg.recv() => msg,
         };
@@ -738,7 +807,11 @@ fn in_flight() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
 /// so the worst it leaves behind is a store that is a little stale — which the next pull
 /// corrects. A push that raced that pull could have its new task deleted by the retain
 /// and would have to wait for the next pull to reappear.
-async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
+///
+/// What it says goes to `out`, which is stdout but after SIGHUP, when it is a sink: the
+/// terminal has gone, and `println!` panics on a write that fails (BUG-31). Every write
+/// ignores its error for the same reason.
+async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + Send)) {
     let pending = store.pending_count().await.unwrap_or(0);
     if pending <= 0 {
         return;
@@ -762,7 +835,10 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     // it, but the request may still have gone out. There is nothing left to wait for, so
     // it goes straight to walking away.
     if sync.push_interrupted() {
-        println!("A send stopped partway; leaving the rest queued for next time.");
+        let _ = writeln!(
+            out,
+            "A send stopped partway; leaving the rest queued for next time."
+        );
         return;
     }
     if sync.is_pushing() {
@@ -778,9 +854,12 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
                 // printed after five seconds with no request on the wire at all. Say
                 // which it is.
                 if sync.is_requesting() {
-                    println!("Still sending; leaving the rest queued for next time.");
+                    let _ = writeln!(out, "Still sending; leaving the rest queued for next time.");
                 } else {
-                    println!("Waiting to send; leaving the rest queued for next time.");
+                    let _ = writeln!(
+                        out,
+                        "Waiting to send; leaving the rest queued for next time."
+                    );
                 }
                 return;
             }
@@ -792,8 +871,8 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
     }
 
     let changes = if pending == 1 { "change" } else { "changes" };
-    print!("Sending {pending} queued {changes}");
-    let _ = io::stdout().flush();
+    let _ = write!(out, "Sending {pending} queued {changes}");
+    let _ = out.flush();
 
     // A dot a second, rather than one message and a silent wait. On an unroutable
     // server the push cannot answer, and a still screen there reads as a hang —
@@ -807,22 +886,23 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
         tokio::select! {
             answered = &mut push => { outcome = Some(answered); break }
             () = tokio::time::sleep(FLUSH_TICK) => {
-                print!(".");
-                let _ = io::stdout().flush();
+                let _ = write!(out, ".");
+                let _ = out.flush();
             }
         }
     }
-    println!();
+    let _ = writeln!(out);
 
-    match outcome {
-        Some(Ok(report)) if report.is_complete() => println!("Sent."),
-        Some(Ok(report)) => println!(
+    let _ = match outcome {
+        Some(Ok(report)) if report.is_complete() => writeln!(out, "Sent."),
+        Some(Ok(report)) => writeln!(
+            out,
             "{} still queued; the next run will send them.",
             report.deferred
         ),
-        Some(Err(error)) => println!("Still queued — could not reach the server: {error}"),
-        None => println!("Still queued — the server did not answer in time."),
-    }
+        Some(Err(error)) => writeln!(out, "Still queued — could not reach the server: {error}"),
+        None => writeln!(out, "Still queued — the server did not answer in time."),
+    };
 }
 
 /// Server-written text, made safe to print on one line of a terminal.
@@ -1221,18 +1301,41 @@ fn token_listing(vocabulary: &tui_do_ui::assist::Vocabulary) -> String {
 ///
 /// Synchronous, and called outside the async runtime: there is nothing to await while a
 /// person types. The terminal goes back through `TerminalGuard`'s `Drop` and panic hook,
-/// the same ones the interface uses, on every way out.
+/// the same ones the interface uses, on every way out -- and a SIGTERM, SIGHUP or
+/// SIGQUIT is one of those ways, ending the process with `128 + signal` (BUG-31).
+/// `runtime` is the one `tui-do add` goes on to run on: the signal handlers belong to it,
+/// and its worker threads deliver a signal while this thread waits for keys.
 ///
 /// # Errors
 /// A terminal that refuses raw mode or cannot be drawn on.
 pub fn ask_for_task(
+    runtime: &tokio::runtime::Handle,
     vocabulary: tui_do_ui::assist::Vocabulary,
     dry_run: bool,
 ) -> anyhow::Result<Option<String>> {
     let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
+    // Before raw mode, as in `run` (BUG-31). Spawned plainly rather than through
+    // `spawn_effect`, which reports to an event loop the prompt does not have; the
+    // listener does nothing that could panic. Its receiver goes when this returns, and a
+    // signal after that ends the process with its code as the default action would --
+    // the terminal is no longer raw by then, but `add`'s push may be mid-request
+    // (`signals::listen` says what that costs).
+    let (to, mut caught) = mpsc::unbounded_channel();
+    let listener = {
+        let _context = runtime.enter();
+        signals::listen(to)
+    };
+    if let Some(listener) = listener {
+        runtime.spawn(listener);
+    }
     let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
-    let answer = prompt::ask(guard.terminal(), &mut prompt, next_event);
-    drop(guard);
+    let answer = prompt::ask(guard.terminal(), &mut prompt, next_event, || {
+        caught.try_recv().ok()
+    });
+    guard.release_for(match &answer {
+        Ok(prompt::Answer::Signalled(signal)) => Some(*signal),
+        _ => None,
+    });
     match answer? {
         prompt::Answer::Add(text) => {
             // Left in the scrollback where the prompt was, so the line that was added
@@ -1241,6 +1344,9 @@ pub fn ask_for_task(
             Ok(Some(text))
         }
         prompt::Answer::Cancelled => Ok(None),
+        // Nothing was typed that could be added, nothing is queued, and the terminal is
+        // back: leave with the signal's code, as from the interface.
+        prompt::Answer::Signalled(signal) => std::process::exit(signal.exit_code()),
     }
 }
 
@@ -2254,7 +2360,7 @@ mod tests {
         let store = scratch_store();
         let config = Config::example();
         let mut model = Model::new(&config, tui_do_ui::Scope::All, now(), (120, 40));
-        let (tx, rx) = LoopTx::channel();
+        let (tx, mut rx) = LoopTx::channel();
         let mut guard = TerminalGuard::over(TestBackend::new(40, 5)).unwrap();
 
         // The task panics, and the panic hook gives the terminal back -- `over` installs
@@ -2267,7 +2373,7 @@ mod tests {
 
         let exit = tokio::time::timeout(
             REPORTED_WITHIN,
-            event_loop(&mut model, &mut guard, &tx, rx, &store, None),
+            event_loop(&mut model, &mut guard, &tx, &mut rx, &store, None),
         )
         .await
         .expect("the loop kept running after a task panicked")
@@ -2299,7 +2405,7 @@ mod tests {
         let store = scratch_store();
         let config = Config::example();
         let mut model = Model::new(&config, tui_do_ui::Scope::All, now(), (120, 40));
-        let (tx, rx) = LoopTx::channel();
+        let (tx, mut rx) = LoopTx::channel();
         let mut guard = TerminalGuard::over(TestBackend::new(40, 5)).unwrap();
 
         // One key, then the terminal fails. The key still arrives, and the reader stops
@@ -2321,7 +2427,7 @@ mod tests {
 
         let exit = tokio::time::timeout(
             REPORTED_WITHIN,
-            event_loop(&mut model, &mut guard, &tx, rx, &store, None),
+            event_loop(&mut model, &mut guard, &tx, &mut rx, &store, None),
         )
         .await
         .expect("the loop kept running after input was lost")
@@ -2357,6 +2463,113 @@ mod tests {
         finished
             .recv_timeout(REPORTED_WITHIN)
             .expect("the input thread kept reading after the loop had gone");
+    }
+
+    /// A store with one task queued for creation, and a sync engine pointed at `url`.
+    async fn one_queued_create(url: &str) -> (Store, Arc<Sync>) {
+        let store = scratch_store();
+        store
+            .upsert_projects(vec![a_project(1, "Inbox")])
+            .await
+            .unwrap();
+        store
+            .queue(Mutation::CreateTask {
+                task: Box::new(tui_do_core::models::Task {
+                    project_id: ProjectId(1),
+                    title: "queued before the signal".to_string(),
+                    ..tui_do_core::models::Task::default()
+                }),
+            })
+            .await
+            .unwrap();
+        let client = Client::builder(url)
+            .credentials(tui_do_api::Credentials::api_token("tk_test"))
+            .build()
+            .unwrap();
+        let sync = Arc::new(Sync::new(client, store.clone()));
+        (store, sync)
+    }
+
+    /// BUG-31: a signal is the same quit as `q`. It ends the loop by returning, so `run`
+    /// still gives the terminal back and still flushes -- which the signal's default
+    /// action never allowed. The server is a closed port, so the push answers at once
+    /// and the flush says what became of the change.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_signal_ends_the_loop_through_the_normal_exit_and_still_flushes() {
+        let _terminal = terminal::lock_for_test();
+        let (store, sync) = one_queued_create("http://127.0.0.1:9").await;
+        let config = Config::example();
+        let mut model = Model::new(&config, tui_do_ui::Scope::All, now(), (120, 40));
+        let (tx, mut rx) = LoopTx::channel();
+        let mut guard = TerminalGuard::over(TestBackend::new(40, 5)).unwrap();
+
+        tx.signals.send(Signal::Terminate).unwrap();
+        // A key the loop would otherwise act on.
+        tx.send(Msg::Tick(now())).unwrap();
+        let exit = tokio::time::timeout(
+            REPORTED_WITHIN,
+            event_loop(&mut model, &mut guard, &tx, &mut rx, &store, None),
+        )
+        .await
+        .expect("the loop kept running after SIGTERM")
+        .unwrap();
+        assert_eq!(exit, Exit::Signalled(Signal::Terminate));
+        assert!(model.running, "the loop left on the signal, not on a quit");
+        drop(guard);
+
+        let mut said = Vec::new();
+        let again = tokio::time::timeout(
+            REPORTED_WITHIN,
+            flush_unless_signalled(&store, &sync, &mut rx, &mut said),
+        )
+        .await
+        .expect("the flush outran its own budget");
+        assert_eq!(again, None, "no second signal was sent");
+        let said = String::from_utf8(said).unwrap();
+        assert!(said.contains("Sending 1 queued change"), "{said}");
+        // The push answered (with the entry deferred) rather than being cut off.
+        assert!(said.contains("still queued; the next run"), "{said}");
+    }
+
+    /// A second signal while the flush waits on a server means "now": it stops waiting at
+    /// once instead of after the five-second grace, and the change stays queued. The
+    /// server accepts the connection and never answers, so without the signal the flush
+    /// would print its dots for the whole budget.
+    #[tokio::test]
+    async fn a_second_signal_stops_the_flush_waiting() {
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", silent.local_addr().unwrap());
+        let (store, sync) = one_queued_create(&url).await;
+        let (tx, mut rx) = LoopTx::channel();
+
+        let again = tx.signals.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = again.send(Signal::Quit);
+        });
+        let started = std::time::Instant::now();
+        let mut said = Vec::new();
+        let caught = tokio::time::timeout(
+            FLUSH_TICK * 2,
+            flush_unless_signalled(&store, &sync, &mut rx, &mut said),
+        )
+        .await
+        .expect("the flush went on waiting after a second signal");
+        assert_eq!(caught, Some(Signal::Quit));
+        assert!(started.elapsed() < FLUSH_TICK * 2);
+        let said = String::from_utf8(said).unwrap();
+        assert!(said.contains("Sending 1 queued change"), "{said}");
+        assert!(
+            !said.contains("Still queued") && !said.contains("Sent."),
+            "{said}"
+        );
+        assert_eq!(
+            store.pending(None).await.unwrap().len(),
+            1,
+            "it stays queued"
+        );
+        drop(silent);
     }
 
     /// A push that panics unwinds through `Pushing`'s `Drop`, so `is_pushing` reads false
@@ -2407,7 +2620,7 @@ mod tests {
         assert!(panicked.is_err(), "the push was meant to panic");
         assert!(!sync.is_pushing(), "unwinding clears the running flag");
 
-        runtime.block_on(flush_on_exit(&store, &sync));
+        runtime.block_on(flush_on_exit(&store, &sync, &mut io::sink()));
 
         let queued = runtime.block_on(store.pending(None)).unwrap();
         assert_eq!(queued.len(), 1, "the entry stays queued for the next run");

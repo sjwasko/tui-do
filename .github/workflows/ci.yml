@@ -8,6 +8,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # `crates/tui-do/tests/pty.rs` skips without util-linux `script`; here a missing one fails.
+  TUI_DO_REQUIRE_PTY: "1"
 
 jobs:
   # Gating job. Linux is the tier-1 platform through GA.

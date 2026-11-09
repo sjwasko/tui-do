@@ -4,7 +4,9 @@
 //! undoing them — through an error path, a signal, or a panic in a dependency — the
 //! user's shell is left without echo and without a cursor, and their only recourse is
 //! `reset`. So the restore happens in a `Drop` *and* in a panic hook, and both are
-//! idempotent.
+//! idempotent. A signal reaches neither by itself, so whoever holds the terminal also
+//! listens for the ones that end the process and leaves through the `Drop` (BUG-31,
+//! `super::signals`).
 //!
 //! The hook runs on whichever thread panicked, and a panic inside a spawned task does not
 //! end the process: tokio catches it at the task boundary. So the hook can hand the
@@ -55,22 +57,24 @@ impl TerminalGuard {
         enable_raw_mode().context("could not put the terminal into raw mode")?;
         RAW.store(true, Ordering::SeqCst);
         ALTERNATE.store(true, Ordering::SeqCst);
-        let mut out = io::stdout();
-        // A blinking block, not the terminal's default. tui-do shows a cursor only where
-        // text is being typed, and in the edit form the focused field is already
-        // underlined -- an underline caret would be camouflaged by it, and a thin bar was
-        // what the form had in effect before, which is to say nothing findable.
-        execute!(
-            out,
-            EnterAlternateScreen,
-            cursor::Hide,
-            cursor::SetCursorStyle::BlinkingBlock
-        )
-        .context("could not switch to the alternate screen")?;
+        given_back_on_error(|| {
+            let mut out = io::stdout();
+            // A blinking block, not the terminal's default. tui-do shows a cursor only
+            // where text is being typed, and in the edit form the focused field is already
+            // underlined -- an underline caret would be camouflaged by it, and a thin bar
+            // was what the form had in effect before, which is to say nothing findable.
+            execute!(
+                out,
+                EnterAlternateScreen,
+                cursor::Hide,
+                cursor::SetCursorStyle::BlinkingBlock
+            )
+            .context("could not switch to the alternate screen")?;
 
-        let terminal = Terminal::new(CrosstermBackend::new(out))
-            .context("could not initialise the terminal backend")?;
-        Ok(Self { terminal })
+            let terminal = Terminal::new(CrosstermBackend::new(out))
+                .context("could not initialise the terminal backend")?;
+            Ok(Self { terminal })
+        })
     }
 
     /// Take over `height` lines at the bottom of the normal screen, in raw mode.
@@ -86,14 +90,18 @@ impl TerminalGuard {
         install_hook();
         enable_raw_mode().context("could not put the terminal into raw mode")?;
         RAW.store(true, Ordering::SeqCst);
-        let terminal = Terminal::with_options(
-            CrosstermBackend::new(io::stdout()),
-            TerminalOptions {
-                viewport: Viewport::Inline(height),
-            },
-        )
-        .context("could not initialise the terminal backend")?;
-        Ok(Self { terminal })
+        given_back_on_error(|| {
+            // An inline viewport asks the terminal where its cursor is, and one that never
+            // answers -- a pty with no emulator behind it -- fails here after two seconds.
+            let terminal = Terminal::with_options(
+                CrosstermBackend::new(io::stdout()),
+                TerminalOptions {
+                    viewport: Viewport::Inline(height),
+                },
+            )
+            .context("could not initialise the terminal backend")?;
+            Ok(Self { terminal })
+        })
     }
 
     /// The size of the terminal, if it will say.
@@ -145,6 +153,40 @@ impl<B: Backend> TerminalGuard<B> {
     }
 }
 
+/// How long a restore after SIGHUP may hold up the exit. A terminal that is still there
+/// answers in microseconds; one that has gone either fails at once or never answers.
+const HANGUP_RESTORE: std::time::Duration = std::time::Duration::from_millis(250);
+
+impl<B: Backend + Send + 'static> TerminalGuard<B> {
+    /// Give the terminal back, the way the signal that ended the session (if one did)
+    /// allows: after SIGHUP without waiting on it for long, otherwise by an ordinary drop.
+    pub fn release_for(self, signal: Option<super::Signal>) {
+        if signal.is_some_and(super::Signal::hung_up) {
+            self.release_within(HANGUP_RESTORE);
+        } else {
+            drop(self);
+        }
+    }
+
+    /// Give the terminal back without waiting on it for longer than `within`.
+    ///
+    /// For SIGHUP, when the terminal has probably gone (BUG-31). The restore writes
+    /// escape sequences and sets the terminal's modes, and on a terminal that has hung up
+    /// those can fail -- which [`restore`] ignores -- or wait on a peer that will never
+    /// read. So the guard is dropped on a thread of its own, and if that thread is still
+    /// stuck when `within` runs out the caller goes on without it: the process is about
+    /// to end, which takes the thread with it. Writing nothing at all would be wrong, as
+    /// a `kill -HUP` from another pane leaves the terminal very much alive.
+    fn release_within(self, within: std::time::Duration) {
+        let (done, released) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(self);
+            let _ = done.send(());
+        });
+        let _ = released.recv_timeout(within);
+    }
+}
+
 impl<B: Backend> Drop for TerminalGuard<B> {
     fn drop(&mut self) {
         restore();
@@ -166,6 +208,19 @@ fn install_hook() {
             previous(info);
         }));
     });
+}
+
+/// Finish taking the terminal, giving it back if that fails.
+///
+/// Raw mode is already on when `rest` runs, and there is no guard yet whose `Drop` would
+/// turn it off, so an error returned from here used to leave the shell with no echo
+/// under the error message that explained why.
+fn given_back_on_error<T>(rest: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let taken = rest();
+    if taken.is_err() {
+        restore();
+    }
+    taken
 }
 
 /// Whether the terminal is still ours to draw on.
