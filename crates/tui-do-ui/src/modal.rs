@@ -143,6 +143,21 @@ impl TextInput {
         }
     }
 
+    /// Replace the bytes in `range` with `text` and put the cursor after it.
+    ///
+    /// For completion, which rewrites the partial word before the cursor. A `range`
+    /// that does not fall on character boundaries inside the value changes nothing.
+    pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) {
+        if range.start > range.end
+            || !self.value.is_char_boundary(range.start)
+            || !self.value.is_char_boundary(range.end)
+        {
+            return;
+        }
+        self.value.replace_range(range.clone(), text);
+        self.cursor = range.start + text.len();
+    }
+
     /// Insert at the cursor and step past what was inserted.
     ///
     /// A combining mark typed after its base joins that grapheme, and the cursor, now at
