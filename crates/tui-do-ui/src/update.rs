@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use tui_do_core::config::{QuickAction, QuickActionKind};
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
-use tui_do_core::store::{is_provisional_label, Mutation, Subject};
+use tui_do_core::store::{is_provisional_label, Mutation, ProjectCounts, Subject};
 use tui_do_core::sync::{Phase, Stage};
 use tui_do_core::SyncEvent;
 use tui_do_core::ZonedTime;
@@ -362,14 +362,19 @@ fn on_sync(model: &mut Model, event: SyncEvent) -> Vec<Effect> {
             Vec::new()
         }
         SyncEvent::Progress { stage, stored, .. } => {
-            let what = match stage {
-                Stage::Projects => "projects",
-                Stage::Labels => "labels",
-                Stage::Tasks => "tasks",
+            let detail = match stage {
+                Stage::Projects => format!("{stored} projects"),
+                Stage::Labels => format!("{stored} labels"),
+                // A full pull stores done tasks too, so its count runs to every task ever
+                // made -- 3,952 against 178 open in the author's store, 2026-11-09 -- and on its
+                // own reads as a wrong number. The open figure is the store's from before
+                // this pass, which is the one the sidebar is already showing.
+                Stage::Tasks => match open_tasks(&model.data.counts) {
+                    0 => format!("{stored} tasks"),
+                    open => format!("{stored} tasks ({open} open)"),
+                },
             };
-            model.status.sync = SyncStatus::Working {
-                detail: format!("{stored} {what}"),
-            };
+            model.status.sync = SyncStatus::Working { detail };
             Vec::new()
         }
         SyncEvent::Sending { remaining } => {
@@ -1157,6 +1162,11 @@ fn reload_tasks(model: &mut Model) -> Vec<Effect> {
 }
 
 /// Everything the interface reads, for a first paint or after a sync.
+/// Open tasks across every project, as the store last counted them.
+fn open_tasks(counts: &ProjectCounts) -> i64 {
+    counts.by_project.values().map(|count| count.open).sum()
+}
+
 pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     let mut effects = reload_tasks(model);
     effects.push(Effect::LoadProjects);

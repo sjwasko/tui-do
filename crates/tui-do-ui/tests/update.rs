@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_do_core::config::columns::ColumnLayout;
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, Subject, TaskCount, TaskOrder};
-use tui_do_core::sync::{Phase, PullReport, PushReport, SyncReport};
+use tui_do_core::sync::{Phase, PullReport, PushReport, Stage, SyncReport};
 use tui_do_core::{Config, SyncEvent};
 use tui_do_ui::keymap::Key;
 use tui_do_ui::modal::{Candidate, LabelsState, Modal, ModalView, Pick, PickerKind, PickerState};
@@ -1002,6 +1002,65 @@ fn a_push_on_its_own_ends_the_sending_it_started() {
     assert_eq!(
         model.status.last_sync, None,
         "a push fetched nothing, so it cannot claim the list is current"
+    );
+}
+
+#[test]
+fn a_full_pull_counts_its_tasks_beside_the_open_ones() {
+    // `R` stores done tasks too, so its running count reaches every task ever made and
+    // reads as wrong next to a sidebar showing a tenth of that. The open figure says why.
+    let mut model = loaded();
+    let mut by_project = std::collections::HashMap::new();
+    by_project.insert(
+        ProjectId(1),
+        TaskCount {
+            open: 170,
+            done: 3000,
+        },
+    );
+    by_project.insert(ProjectId(2), TaskCount { open: 8, done: 774 });
+    update(
+        &mut model,
+        Msg::CountsLoaded(ProjectCounts {
+            by_project,
+            ..ProjectCounts::default()
+        }),
+    );
+    update(&mut model, Msg::Sync(SyncEvent::Started(Phase::Pull)));
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Progress {
+            stage: Stage::Tasks,
+            stored: 3952,
+            pages: Some(80),
+        }),
+    );
+    assert_eq!(
+        model.status.sync,
+        SyncStatus::Working {
+            detail: "3952 tasks (178 open)".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_first_pull_counts_its_tasks_alone() {
+    // An empty store has no open figure to offer, and "(0 open)" would be a claim.
+    let mut model = loaded();
+    update(&mut model, Msg::CountsLoaded(ProjectCounts::default()));
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Progress {
+            stage: Stage::Tasks,
+            stored: 50,
+            pages: Some(80),
+        }),
+    );
+    assert_eq!(
+        model.status.sync,
+        SyncStatus::Working {
+            detail: "50 tasks".to_string()
+        }
     );
 }
 
