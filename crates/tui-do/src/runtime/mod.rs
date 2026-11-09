@@ -29,10 +29,10 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tui_do_api::Client;
 use tui_do_core::models::ProjectId;
 use tui_do_core::store::{
-    LabelFilter, LabelSort, Mutation, ProjectFilter, ProjectSort, LAST_PROJECT,
+    LabelFilter, LabelSort, Mutation, ProjectFilter, ProjectSort, Subject, LAST_PROJECT,
 };
 use tui_do_core::sync::Reach;
-use tui_do_core::{Config, Store, Sync};
+use tui_do_core::{Config, Store, Sync, SyncEvent};
 use tui_do_ui::model::landing_scope;
 use tui_do_ui::model::UrlAction;
 use tui_do_ui::theme::{ColorDepth, Theme};
@@ -1370,6 +1370,10 @@ pub async fn add(
     if parsed.title.trim().is_empty() {
         anyhow::bail!("nothing to add");
     }
+    // Before either branch, so a dry run refuses what the real add would (BUG-35).
+    if let Some(refusal) = parsed.server_refusal() {
+        anyhow::bail!("not added: {refusal}");
+    }
 
     // Before `Store::open`, which creates and migrates, and before `build_sync`, so a dry
     // run never so much as builds a client.
@@ -1482,7 +1486,53 @@ pub async fn add(
         );
         return Ok(());
     };
-    match sync.push().await {
+    // Listened to for rejections (BUG-35). A refused entry is rolled back and dropped,
+    // not deferred, so `is_complete` holds for a push whose only entry the server turned
+    // down -- and "Sent." for a task that exists nowhere is the worst answer a script
+    // can be given.
+    let (to, mut heard) = mpsc::unbounded_channel();
+    let pushed = (*sync).clone().with_events(to).push().await;
+    let mut refused = Vec::new();
+    while let Ok(event) = heard.try_recv() {
+        if let SyncEvent::Rejected {
+            subject, message, ..
+        } = event
+        {
+            refused.push((subject, message));
+        }
+    }
+    report_push(pushed, &refused, &queued.subjects)
+}
+
+/// What `tui-do add` says once its push has answered, and whether it failed.
+///
+/// `ours` are the subjects this add queued. A refusal of one of them means the task was
+/// not added, and is an error. A refusal of anything else is an older entry from the
+/// queue, sent on this push's way past; it is said, but this add succeeded.
+///
+/// # Errors
+/// The server refused something this add queued.
+fn report_push(
+    pushed: tui_do_core::Result<tui_do_core::sync::PushReport>,
+    refused: &[(Subject, String)],
+    ours: &[Subject],
+) -> anyhow::Result<()> {
+    let (mine, older): (Vec<_>, Vec<_>) = refused
+        .iter()
+        .partition(|(subject, _)| ours.contains(subject));
+    for (_, message) in &older {
+        println!(
+            "An earlier queued change was refused by the server: {}",
+            printable(message)
+        );
+    }
+    if let Some((_, message)) = mine.first() {
+        anyhow::bail!(
+            "the server refused it, so it was not added: {}",
+            printable(message)
+        );
+    }
+    match pushed {
         Ok(report) if report.is_complete() => println!("Sent."),
         // Not an error: the local store has it, the outbox has it, and the next run --
         // interface or `tui-do add` -- sends it. Failing here would throw away a task the
@@ -1842,6 +1892,9 @@ struct Queued {
     /// Labels that were named and do not exist, and were left off because
     /// `--create-labels` was not passed.
     unknown_labels: Vec<String>,
+    /// Everything this add queued, so a refusal of it can be told from a refusal of an
+    /// older entry the same push happened to send.
+    subjects: Vec<Subject>,
 }
 
 /// Queue a task built by quick-add — and, if `create_labels` says to, a label for every
@@ -1868,6 +1921,7 @@ async fn queue_add(
     create_labels: bool,
 ) -> anyhow::Result<Queued> {
     let mut created_labels = Vec::new();
+    let mut subjects = Vec::new();
     if create_labels {
         for title in &built.unknown_labels {
             let entry = store
@@ -1879,6 +1933,7 @@ async fn queue_add(
                 })
                 .await
                 .context("could not queue the label")?;
+            subjects.push(entry.mutation.subject());
             let tui_do_core::store::Mutation::CreateLabel { label } = entry.mutation else {
                 anyhow::bail!("queuing a label returned a {} entry", entry.mutation.kind());
             };
@@ -1895,12 +1950,13 @@ async fn queue_add(
     // already gone by is allowed, never confirmed quietly.
     let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), now());
 
-    store
+    let entry = store
         .queue(tui_do_core::store::Mutation::CreateTask {
             task: Box::new(built.task),
         })
         .await
         .context("could not queue the task")?;
+    subjects.push(entry.mutation.subject());
 
     Ok(Queued {
         title,
@@ -1908,6 +1964,7 @@ async fn queue_add(
         backdated,
         created_labels,
         unknown_labels,
+        subjects,
     })
 }
 

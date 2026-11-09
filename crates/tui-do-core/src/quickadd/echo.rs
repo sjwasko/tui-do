@@ -68,7 +68,7 @@ impl DateField {
 
 impl Repeat {
     /// `every week`, `every 2 weeks` -- the phrase the parser reads it back from.
-    fn phrase(self) -> String {
+    pub(super) fn phrase(self) -> String {
         let unit = match self.unit {
             Unit::Hour => "hour",
             Unit::Day => "day",

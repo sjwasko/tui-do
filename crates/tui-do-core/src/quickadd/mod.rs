@@ -127,7 +127,46 @@ pub struct Parsed {
     pub tokens: Vec<Token>,
 }
 
+/// The longest title Vikunja accepts, in characters (Unicode scalar values, not bytes).
+///
+/// Measured on dev 2026-11-09: 1,000 `a`s and 1,000 `日`s are taken, 1,001 `a`s answer
+/// `412`, code `2002`, "The task title may be at most 1000 characters long."
+pub const TITLE_MAX_CHARS: usize = 1_000;
+
+/// The longest repeat interval Vikunja accepts, in seconds: ten years of 365 days.
+///
+/// Measured on dev 2026-11-09: 315,360,000 is taken, 315,360,001 answers `400`, code
+/// `4029`, "The task repeat interval must be between 0 and 315360000 seconds (10 years)."
+pub const REPEAT_MAX_SECONDS: i64 = 315_360_000;
+
 impl Parsed {
+    /// Why the server would refuse this task, if it is known to: a title or a repeat over
+    /// Vikunja's limits.
+    ///
+    /// Checked before anything is queued (BUG-35). A refused create is rolled back, so a
+    /// line that breaks a limit would otherwise be accepted locally, sent, and lost, and
+    /// `--dry-run` would have promised it.
+    #[must_use]
+    pub fn server_refusal(&self) -> Option<String> {
+        let length = self.title.chars().count();
+        if length > TITLE_MAX_CHARS {
+            return Some(format!(
+                "the title is {length} characters long, and Vikunja takes at most \
+                 {TITLE_MAX_CHARS}"
+            ));
+        }
+        if let Some(repeat) = self.repeat {
+            if repeat.seconds() > REPEAT_MAX_SECONDS {
+                return Some(format!(
+                    "`{}` repeats less often than once in 10 years, the longest interval \
+                     Vikunja takes",
+                    repeat.phrase()
+                ));
+            }
+        }
+        None
+    }
+
     /// Whether anything at all was recognised beyond a plain title.
     #[must_use]
     pub fn has_magic(&self) -> bool {
@@ -416,6 +455,29 @@ mod tests {
         assert_eq!(parsed.labels, vec!["urgent", "backend"]);
         assert_eq!(parsed.assignees, vec!["alice", "bob"]);
         assert_eq!(parsed.title, "Review PR");
+    }
+
+    #[test]
+    fn a_line_within_the_servers_limits_is_not_refused() {
+        // At each limit exactly, which the server takes (BUG-35).
+        assert_eq!(p(&"a".repeat(1_000)).server_refusal(), None);
+        assert_eq!(p(&"日".repeat(1_000)).server_refusal(), None);
+        assert_eq!(p("water the cactus every 10 years").server_refusal(), None);
+        assert_eq!(p("buy milk every 2 weeks").server_refusal(), None);
+    }
+
+    #[test]
+    fn a_line_past_the_servers_limits_is_refused() {
+        let long = p(&"a".repeat(1_001)).server_refusal().unwrap();
+        assert!(long.contains("1001 characters"), "{long}");
+        // Counted in characters, as the server counts them, not in bytes.
+        let wide = p(&"日".repeat(1_001)).server_refusal().unwrap();
+        assert!(wide.contains("1001 characters"), "{wide}");
+        let rare = p("smoke every 1000 years").server_refusal().unwrap();
+        assert!(rare.contains("every 1000 years"), "{rare}");
+        assert!(p("x every 11 years").server_refusal().is_some());
+        assert!(p("x every 122 months").server_refusal().is_some());
+        assert_eq!(p("x every 121 months").server_refusal(), None);
     }
 
     #[test]

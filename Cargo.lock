@@ -3266,6 +3266,7 @@ dependencies = [
  "tui-do-core",
  "tui-do-ui",
  "url",
+ "wiremock",
 ]
 
 [[package]]

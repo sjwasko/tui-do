@@ -48,7 +48,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
 | ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
 | BUG-34 | `quick_add` of `x @alice` with alice known builds a task assigned to user 3; unknown, it builds none and reports it | yes |
-| BUG-35 | wiremock `PUT` answering `412`/`2002`: `add` exits non-zero, prints the message, never `Sent.` | yes |
+| ~~BUG-35~~ | FIXED — the binary against wiremock: a `412` exits 1 with the message and no `Sent.`, a `201` still says `Sent.`, and both limits refuse a dry run and a real add with no request made | yes |
 | BUG-33 | abort a push once a held mock has received the create, then push again: one `PUT` must reach the server, or the second must adopt | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
@@ -76,7 +76,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
-| **Found by the `tui-do add` smoke test** | **BUG-34** — open, Important: `@user` is parsed and never assigned. **BUG-35** — open, Important: a create the server rejects prints `Sent.` and exits 0. Six minor findings under Minor |
+| **Found by the `tui-do add` smoke test** | **BUG-34** — open, Important: `@user` is parsed and never assigned. ~~BUG-35~~ — FIXED 2026-11-09: a create the server rejects exits 1 with its reason, and the title and repeat limits are checked before queuing. Six minor findings under Minor |
 | **Found fixing BUG-31** | **BUG-33** — open, Important: a create whose request reached the server before the process ended is sent again on the next launch, and makes a second task. The read-before-retry BUG-19 added only runs for an entry with a recorded failure, and a killed process records nothing |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
@@ -2320,10 +2320,19 @@ as user 3, must build a task whose `assignees` is `[User { id: 3, .. }]`; with n
 known, it must build none and report the name. A live test: create with one assignee, read
 it back.
 
-### BUG-35 — a create the server rejects is reported as `Sent.`, exit 0
+### ~~BUG-35~~ — FIXED 2026-11-09 — a create the server rejects is reported as `Sent.`, exit 0
 
 `crates/tui-do/src/runtime/mod.rs`: `add` (~1486), `PushReport::is_complete` in
-`tui-do-core/src/sync/mod.rs` (~147). Found by the same smoke test; diagnosis only.
+`tui-do-core/src/sync/mod.rs` (~147). Found by the same smoke test.
+
+**Fixed** both ways the entry proposed. `add` listens to the push's `SyncEvent::Rejected`
+and, when the subject is one this add queued, exits 1 with the server's message
+("the server refused it, so it was not added: …") instead of `Sent.`; a refusal of an older
+queued entry is said and does not fail this add. And `Parsed::server_refusal` turns down a
+title over `TITLE_MAX_CHARS` (1,000 characters, counted as the server counts them) or a
+repeat over `REPEAT_MAX_SECONDS` before anything is queued, so `--dry-run` refuses it too.
+`tests/add_rejected.rs` runs the binary against wiremock; two of its three tests fail on the
+old code.
 
 `is_complete` is `deferred == 0`. A rejected entry is not deferred: it is rolled back and
 dropped, so a push whose only entry was refused reports complete and `tui-do add` prints

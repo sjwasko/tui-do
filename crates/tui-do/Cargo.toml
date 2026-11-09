@@ -43,6 +43,8 @@ dirs.workspace = true
 chrono-tz.workspace = true
 # To set a scratch store's schema version back, for the dry run's no-migration test.
 rusqlite.workspace = true
+# A server that refuses, for `tui-do add`'s report of a rejected create (BUG-35).
+wiremock.workspace = true
 
 [lints]
 workspace = true
