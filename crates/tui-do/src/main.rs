@@ -101,6 +101,21 @@ enum Command {
     ///   tui-do add 'Renew the domain *urgent !3 +Admin tomorrow'
     ///   tui-do add 'File the quarterly return +[Life Admin] 27aug26'
     ///   tui-do add 'Water the plants every 3 days'
+    ///
+    /// WITH NO TEXT
+    ///
+    /// Run `tui-do add` alone at a terminal and it asks for the task on a few lines,
+    /// showing what the line will create as you type:
+    ///
+    ///   Tab        completes +project, *label, @user, and a date after due or start;
+    ///              a second Tab lists the matches
+    ///   ?          straight after + * @ !, after `due ` or `start `, or on an empty
+    ///              line, lists what can come next; anywhere else it is a question mark
+    ///   F1         every token
+    ///   Enter      adds it, exactly as `tui-do add '<the line>'` would
+    ///   Esc        cancels, adding nothing
+    ///
+    /// The prompt is for people. From a script, pass the text.
     // Verbatim, because the syntax above is a table and clap reflows a doc comment into
     // one paragraph by default -- which turns the whole of it into an unreadable run-on.
     #[command(verbatim_doc_comment)]
@@ -190,8 +205,10 @@ struct AddArgs {
     // `Other` rather than the default, which lets a shell fall back to filenames: the
     // argument is a sentence, and offering the contents of the working directory to
     // someone typing a task title is worse than offering nothing at all.
+    //
+    // Not `required`: with no text and a terminal at both ends, `tui-do add` asks for the
+    // task instead. Without a terminal, `missing_text` gives clap's own error back.
     #[arg(
-        required = true,
         num_args = 1..,
         value_name = "TEXT",
         value_hint = clap::ValueHint::Other
@@ -425,26 +442,68 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
     }
 }
 
-/// Add a task from the command line.
+/// Add a task from the command line, or, given no text at a terminal, ask for one.
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
+    // Before the config, as clap's own refusal was: a script that forgot the text is told
+    // so whatever state its config is in.
+    if args.text.is_empty()
+        && interactive(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        )
+        .is_err()
+    {
+        missing_text();
+    }
     let path = Config::resolve_path(config_override)?;
     let config = Config::load(&path).with_context(|| config_problem(&path))?;
     report_exposed_credentials(&config, &path, &mut std::io::stderr());
 
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("could not start the async runtime")?
-        .block_on(runtime::add(
-            &config,
-            &path,
-            &args.text.join(" "),
-            runtime::AddMode {
-                offline: args.offline,
-                create_labels: args.create_labels,
-                dry_run: args.dry_run,
-            },
-        ))
+        .context("could not start the async runtime")?;
+    let text = if args.text.is_empty() {
+        let vocabulary = runtime.block_on(runtime::vocabulary())?;
+        match runtime::ask_for_task(vocabulary)? {
+            Some(text) => text,
+            None => bail!("cancelled; nothing was added"),
+        }
+    } else {
+        args.text.join(" ")
+    };
+    // One call for both forms, so a typed task goes exactly where `add 'text'` would.
+    runtime.block_on(runtime::add(
+        &config,
+        &path,
+        &text,
+        runtime::AddMode {
+            offline: args.offline,
+            create_labels: args.create_labels,
+            dry_run: args.dry_run,
+        },
+    ))
+}
+
+/// Exit with clap's error for a missing `TEXT`, exactly as when it was required.
+///
+/// The argument is optional so a terminal can be asked instead, which leaves clap with
+/// nothing to say when there is no terminal. So this re-parses the real command line
+/// with the argument required again, and lets clap say what it always said, with its
+/// usage line and its exit code of 2.
+fn missing_text() -> ! {
+    let refused = Cli::command()
+        .mut_subcommand("add", |add| add.mut_arg("text", |text| text.required(true)))
+        .try_get_matches_from(std::env::args_os());
+    match refused {
+        Err(error) => error.exit(),
+        // Unreachable while `run_add` only calls this with no text; say so rather than
+        // carry on with nothing to add.
+        Ok(_) => {
+            eprintln!("error: tui-do add needs the task's text");
+            std::process::exit(2)
+        }
+    }
 }
 
 /// Translate a cria config and write it as tui-do's.

@@ -10,6 +10,7 @@
 //! a message back. The render loop's only await is on the message channel.
 
 mod coalesce;
+mod prompt;
 mod terminal;
 
 use std::future::Future;
@@ -1072,6 +1073,56 @@ fn describe(projects: &[tui_do_core::models::Project]) -> String {
         "no projects at all; run tui-do once to sync, or check the server is reachable".to_string()
     } else {
         format!("{real} projects; run tui-do to refresh the list")
+    }
+}
+
+/// What `tui-do add`'s prompt completes from: the projects, labels and users in the
+/// local store. Read here, by the runtime, because nothing in `tui-do-ui` may (Rule 1).
+///
+/// # Errors
+/// A store that cannot be opened. An unreadable list is only an empty one: the prompt
+/// still works without completion.
+pub async fn vocabulary() -> anyhow::Result<tui_do_ui::assist::Vocabulary> {
+    let store_path = Store::default_path().context("could not decide where to keep the store")?;
+    let store = Store::open(&store_path)
+        .await
+        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+    let projects = store
+        .projects(ProjectFilter::default(), ProjectSort::default())
+        .await
+        .unwrap_or_default();
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap_or_default();
+    let users = store.usernames().await.unwrap_or_default();
+    Ok(tui_do_ui::assist::Vocabulary::new(
+        &projects, &labels, users,
+    ))
+}
+
+/// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run
+/// with no text. `None` when the user cancelled.
+///
+/// Synchronous, and called outside the async runtime: there is nothing to await while a
+/// person types. The terminal goes back through `TerminalGuard`'s `Drop` and panic hook,
+/// the same ones the interface uses, on every way out.
+///
+/// # Errors
+/// A terminal that refuses raw mode or cannot be drawn on.
+pub fn ask_for_task(vocabulary: tui_do_ui::assist::Vocabulary) -> anyhow::Result<Option<String>> {
+    let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()));
+    let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
+    let answer = prompt::ask(guard.terminal(), &mut prompt, next_event);
+    drop(guard);
+    match answer? {
+        prompt::Answer::Add(text) => {
+            // Left in the scrollback where the prompt was, so the line that was added
+            // sits above what `add` says about it.
+            println!("add› {}", printable(&text));
+            Ok(Some(text))
+        }
+        prompt::Answer::Cancelled => Ok(None),
     }
 }
 
