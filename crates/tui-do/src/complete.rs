@@ -32,20 +32,49 @@ const CONTEXT: usize = 6;
 ///
 /// Called first in `main`, before anything else can write to stdout.
 pub fn handle(command: impl Fn() -> clap::Command) {
-    CompleteEnv::with_factory(|| with_completer(command(), previous_words()))
+    // Read before `CompleteEnv` runs: it removes the variable before building the command.
+    let bash = std::env::var_os(VAR).is_some_and(|shell| shell == "bash");
+    CompleteEnv::with_factory(|| with_completer(command(), previous_words(), bash))
         .var(VAR)
         .complete();
 }
 
 /// `command` with `tui-do add`'s text completing names from the local store.
-fn with_completer(command: clap::Command, previous: Vec<String>) -> clap::Command {
+fn with_completer(command: clap::Command, previous: Vec<String>, bash: bool) -> clap::Command {
     command.mut_subcommand("add", |add| {
         add.mut_arg("text", |text| {
             text.add(ArgValueCompleter::new(move |current: &OsStr| {
-                store_names(&previous, current)
+                store_names(&previous, current, bash)
             }))
         })
     })
+}
+
+/// `word` escaped for bash, which inserts a candidate into the line exactly as given.
+///
+/// zsh and fish quote a candidate themselves; bash does not, so `+[A  B]` went in as two
+/// words, and `add`, joining its words with one space, filed the task in `A B` -- a
+/// project that does not exist. Measured in bash 5.3 under a pty: the escaped form arrives
+/// as the single argument `+[A  B]`.
+///
+/// What the user already typed is left as typed, because bash replaces the word with the
+/// longest prefix the candidates share: escaping `*ur` to `\*ur…` turned `*ur` Tab into
+/// `\*u`, losing the `r`. Everything after it that a shell would read specially is
+/// backslashed.
+fn for_bash(current: &str, word: &str) -> String {
+    let typed = current
+        .char_indices()
+        .zip(word.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or_else(|| current.len().min(word.len()), |((at, _), _)| at);
+    let mut out = word[..typed].to_string();
+    for c in word[typed..].chars() {
+        if !(c.is_alphanumeric() || "+-_.,/@%^:=".contains(c)) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The words of the line before the one being completed, as the shell handed them over.
@@ -79,7 +108,7 @@ fn words_before(args: &[OsString], index: Option<usize>) -> Vec<String> {
 }
 
 /// The candidates for `current` from the store `TUI_DO_DB` names, or the default one.
-fn store_names(previous: &[String], current: &OsStr) -> Vec<CompletionCandidate> {
+fn store_names(previous: &[String], current: &OsStr, bash: bool) -> Vec<CompletionCandidate> {
     let Some(current) = current.to_str() else {
         return Vec::new();
     };
@@ -88,7 +117,7 @@ fn store_names(previous: &[String], current: &OsStr) -> Vec<CompletionCandidate>
     };
     names_at(&path, previous, current)
         .into_iter()
-        .map(CompletionCandidate::new)
+        .map(|word| CompletionCandidate::new(if bash { for_bash(current, &word) } else { word }))
         .collect()
 }
 
@@ -215,6 +244,19 @@ mod tests {
             words(&previous("add Book +[Dinner"), "Pl", &vocabulary()),
             ["Places]"]
         );
+    }
+
+    #[test]
+    fn bash_gets_a_spaced_name_as_one_escaped_word() {
+        assert_eq!(for_bash("+A", "+[A  B]"), r"+\[A\ \ B\]");
+        assert_eq!(for_bash("+Li", "+[Life Admin]"), r"+\[Life\ Admin\]");
+        assert_eq!(for_bash("tom", "tomorrow"), "tomorrow");
+        assert_eq!(for_bash("ne", "next week"), r"next\ week");
+        // What was typed stays as typed, or bash's shared prefix would cut it short.
+        assert_eq!(for_bash("*ur", "*urgent"), "*urgent");
+        assert_eq!(for_bash("", "*urgent"), r"\*urgent");
+        assert_eq!(for_bash("Pl", "Places]"), r"Places\]");
+        assert_eq!(for_bash("+O", "+[O'Neil & Co]"), r"+\[O\'Neil\ \&\ Co\]");
     }
 
     #[test]

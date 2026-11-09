@@ -530,9 +530,9 @@ script and the binary speak a protocol that may change between versions.
 
 It completes unquoted words. Inside a quoted `'…'` argument, what happens differs from shell
 to shell, and often nothing does. `?` is not offered in a shell at all: only the `tui-do add`
-prompt has it. bash puts a bracketed name in unescaped, as two words, which is fine because
-`tui-do add` joins its words with a space. An unquoted `!3` is still bash history expansion,
-as above.
+prompt has it. In bash a bracketed name goes in backslash-escaped, `+\[Life\ Admin\]`, so it reaches
+tui-do as one word with its spacing intact; zsh and fish quote it themselves. An unquoted
+`!3` is still bash history expansion, as above.
 
 Name completion is the `dynamic-completion` cargo feature, on by default and in the release
 binaries. A build with `--no-default-features` ignores `TUI_DO_COMPLETE`; use the static

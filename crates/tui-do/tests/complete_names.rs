@@ -41,6 +41,11 @@ async fn seeded(name: &str) -> PathBuf {
                 title: "Life Admin".to_string(),
                 ..Project::default()
             },
+            Project {
+                id: ProjectId(3),
+                title: "Two  Spaces".to_string(),
+                ..Project::default()
+            },
         ])
         .await
         .unwrap();
@@ -106,13 +111,39 @@ async fn a_project_completes_from_the_store_in_each_shell() {
             "{shell}"
         );
     }
-    // A name with a space is offered in the bracket form, which the parser reads whole
-    // even after a shell has split it into two arguments.
+    // A name with a space is offered in the bracket form. zsh and fish quote what they
+    // are handed; bash inserts it as given, so for bash it comes escaped.
     let line = ["tui-do", "add", "x", "+Lif"];
+    for shell in ["zsh", "fish"] {
+        let found = candidates(&complete(&dir, shell, &line));
+        assert_eq!(found, ["+[Life Admin]"], "{shell}");
+    }
     assert_eq!(
-        candidates(&complete(&dir, "fish", &line)),
-        ["+[Life Admin]"]
+        candidates(&complete(&dir, "bash", &line)),
+        [r"+\[Life\ Admin\]"]
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two spaces in a row survive only as one word: `add` joins its words with one space, so
+/// a name split across two would be filed under `Two Spaces`, which does not exist.
+#[tokio::test]
+async fn bash_passes_a_two_space_name_as_one_argument() {
+    let dir = seeded("complete-two-spaces").await;
+    let line = ["tui-do", "add", "x", "+Tw"];
+    let found = candidates(&complete(&dir, "bash", &line));
+    assert_eq!(found, [r"+\[Two\ \ Spaces\]"]);
+    // What bash makes of that word once it is on the command line.
+    let argv = Command::new("bash")
+        .args(["--norc", "-c"])
+        .arg(format!("printf '<%s>\\n' {}", found[0]))
+        .output()
+        .expect("bash runs");
+    assert_eq!(String::from_utf8_lossy(&argv.stdout), "<+[Two  Spaces]>\n");
+    for shell in ["zsh", "fish"] {
+        let found = candidates(&complete(&dir, shell, &line));
+        assert_eq!(found, ["+[Two  Spaces]"], "{shell}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -129,7 +160,7 @@ async fn completion_leaves_the_store_as_it_was() {
     };
     let before = std::fs::read(dir.join("tui-do.db")).unwrap();
     let files = listing(&dir);
-    let output = complete(&dir, "bash", &["tui-do", "add", "+L"]);
+    let output = complete(&dir, "zsh", &["tui-do", "add", "+L"]);
     assert_eq!(candidates(&output), ["+Legal", "+[Life Admin]"]);
     assert_eq!(std::fs::read(dir.join("tui-do.db")).unwrap(), before);
     assert_eq!(listing(&dir), files);
