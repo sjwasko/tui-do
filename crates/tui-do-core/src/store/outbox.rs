@@ -293,6 +293,29 @@ impl Mutation {
         }
     }
 
+    /// Take a label off every task this entry carries.
+    ///
+    /// For a label that will never exist: a provisional one whose create the server
+    /// refused. A task-carrying entry is still the user's change to everything else, so
+    /// it loses the label rather than being dropped -- and the label has to go, because
+    /// `decompose` turns a `CreateTask`'s labels into one `AttachLabel` each, which would
+    /// send the id no server issued. The variants that [`Self::wire_label`] answers for
+    /// are left alone; an entry that *is* about the label has nothing to strip it from.
+    pub fn strip_label(&mut self, label: LabelId) {
+        match self {
+            Self::CreateTask { task } => task.drop_label(label),
+            Self::UpdateTask { before, after } => {
+                before.drop_label(label);
+                after.drop_label(label);
+            }
+            Self::DeleteTask { before } => before.drop_label(label),
+            Self::AttachLabel { .. }
+            | Self::DetachLabel { .. }
+            | Self::CreateLabel { .. }
+            | Self::UpdateLabel { .. } => {}
+        }
+    }
+
     /// What undoing this would be, when it can be undone.
     ///
     /// Undo queues the inverse as an ordinary mutation, so it is optimistic, rolls back
