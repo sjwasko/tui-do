@@ -192,6 +192,15 @@ struct AddArgs {
     /// so it takes an instruction instead.
     #[arg(long)]
     create_labels: bool,
+
+    /// Say what would be added, and the best way to write it, without adding it.
+    ///
+    /// Parses the line and resolves its project and labels against the local store
+    /// exactly as a real add does, so a line that would fail fails the same way. Then
+    /// prints what it would create and the line rewritten in its best form, and queues
+    /// nothing, writes nothing and contacts no server.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// Options for `tui-do completions`.
@@ -411,8 +420,11 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
             &config,
             &path,
             &args.text.join(" "),
-            args.offline,
-            args.create_labels,
+            runtime::AddMode {
+                offline: args.offline,
+                create_labels: args.create_labels,
+                dry_run: args.dry_run,
+            },
         ))
 }
 

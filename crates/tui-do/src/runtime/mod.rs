@@ -1088,19 +1088,34 @@ pub async fn add(
     config: &Config,
     config_path: &std::path::Path,
     text: &str,
-    offline: bool,
-    create_labels: bool,
+    mode: AddMode,
 ) -> anyhow::Result<()> {
-    let store_path = Store::default_path().context("could not decide where to keep the store")?;
-    let store = Store::open(&store_path)
-        .await
-        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
-
     let clock = now();
     let parsed = tui_do_core::quickadd::parse(text, &clock);
     if parsed.title.trim().is_empty() {
         anyhow::bail!("nothing to add");
     }
+
+    let store_path = Store::default_path().context("could not decide where to keep the store")?;
+    // Before `Store::open`, which creates and migrates, and before `build_sync`, so a dry
+    // run never so much as builds a client.
+    if mode.dry_run {
+        let store = match Store::open_existing_read_only(&store_path).await {
+            Ok(store) => store,
+            // Already a whole sentence that says what to run.
+            Err(error @ tui_do_core::CoreError::NotReady(_)) => return Err(error.into()),
+            Err(error) => {
+                return Err(anyhow::Error::new(error).context(format!(
+                    "could not open the store at {}",
+                    store_path.display()
+                )))
+            }
+        };
+        return rehearse(config, &store, &parsed, &clock, mode.create_labels).await;
+    }
+    let store = Store::open(&store_path)
+        .await
+        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
 
     let (sync, problem) = build_sync(config, config_path, &store);
 
@@ -1124,7 +1139,7 @@ pub async fn add(
     // A name that matches nothing may mean the cache is empty or simply older than the
     // project it names. Both are worth one cheap request each to settle — this is the one
     // case where reading from the local store alone is worse than asking the server.
-    if built.is_none() && !offline {
+    if built.is_none() && !mode.offline {
         if let Some(sync) = &sync {
             if sync.pull_lists().await.is_ok() {
                 projects = store
@@ -1146,72 +1161,29 @@ pub async fn add(
         }
     }
 
-    let built = built.ok_or_else(|| match parsed.project.as_deref() {
-        Some(name) => match longer_project(&projects, name) {
-            // The commonest way to get here by far: `+Dinner Places` names the project
-            // `Dinner` and leaves `Places` in the title, because a token ends at the
-            // first space. Saying so here is the moment the bracket form is worth
-            // learning -- the alternative is an error that looks like the project is
-            // missing when it is only mis-typed.
-            Some(full) => anyhow::anyhow!(
-                "no project called \"{name}\" — did you mean +[{full}]? \
-                 A name with a space in it has to be bracketed or quoted, \
-                 or only its first word is read. See `tui-do add --help`."
-            ),
-            None => anyhow::anyhow!(
-                "no project called \"{name}\" — tui-do knows of {}",
-                describe(&projects)
-            ),
-        },
-        None => anyhow::anyhow!(
-            "no project to add to — tui-do knows of {}",
-            describe(&projects)
-        ),
-    })?;
+    let built = built.ok_or_else(|| no_project(&parsed, &projects))?;
 
     let project_id = built.task.project_id;
     let project = project_label(&projects, project_id);
-    let queued = queue_add(&store, built, create_labels).await?;
+    let queued = queue_add(&store, built, mode.create_labels).await?;
 
-    // In the zone the parser resolved them in, so a date across a daylight-saving change
-    // is echoed on the day it was typed for (BUG-20).
-    let dates = dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone());
-    // Named with its id when the name is ambiguous, because a task added to the wrong
-    // Inbox is a task the user will not find.
-    if queued.ambiguous_project {
-        println!(
-            "Added \"{}\" to {project} (#{project_id}){dates} — more than one project has that name",
-            queued.title
-        );
-    } else {
-        println!("Added \"{}\" to {project}{dates}", queued.title);
-    }
-    if let Some(note) = queued.backdated {
-        println!("Note: {note}.");
-    }
-    if !queued.created_labels.is_empty() {
-        println!("Created label {}.", queued.created_labels.join(", "));
-    }
-    if !queued.unknown_labels.is_empty() {
-        // Scoped to next time in the *text*, not only in the comment: the natural reading
-        // of a CLI hint is "re-run me with this flag", and the task above is already
-        // queued, so doing that would add a second task rather than fixing this one. The
-        // hint used to say neither, and it said "create it" however many names it had
-        // just listed.
-        let (names, pronoun, object) = if queued.unknown_labels.len() == 1 {
-            ("No label called", "it was", "it")
-        } else {
-            ("No labels called", "they were", "them")
-        };
-        println!(
-            "{names} {} — {pronoun} left off. Pass --create-labels next time to have \
-             tui-do create {object}; this task is already queued, so re-running now would \
-             add a second one.",
-            queued.unknown_labels.join(", ")
-        );
+    let outcome = Outcome {
+        title: &queued.title,
+        project,
+        project_id,
+        ambiguous_project: queued.ambiguous_project,
+        // In the zone the parser resolved them in, so a date across a daylight-saving
+        // change is echoed on the day it was typed for (BUG-20).
+        dates: dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone()),
+        backdated: queued.backdated.as_deref(),
+        created_labels: &queued.created_labels,
+        unknown_labels: &queued.unknown_labels,
+    };
+    for line in outcome.lines(Tense::Did) {
+        println!("{line}");
     }
 
-    if offline {
+    if mode.offline {
         // `--offline` says "do not send it now", not "do not tell me the sending is
         // broken". A config that cannot authenticate -- an unreadable token file, or one
         // that is a directory -- makes "the next run will send it" a false promise, and
@@ -1241,6 +1213,231 @@ pub async fn add(
         Err(error) => println!("Queued — could not reach the server: {error}"),
     }
     Ok(())
+}
+
+/// Why a quick-add found no project to land in, worded the same for a real add and a
+/// dry run.
+fn no_project(
+    parsed: &tui_do_core::quickadd::Parsed,
+    projects: &[tui_do_core::models::Project],
+) -> anyhow::Error {
+    match parsed.project.as_deref() {
+        Some(name) => match longer_project(projects, name) {
+            // The commonest way to get here by far: `+Dinner Places` names the project
+            // `Dinner` and leaves `Places` in the title, because a token ends at the
+            // first space. Saying so here is the moment the bracket form is worth
+            // learning -- the alternative is an error that looks like the project is
+            // missing when it is only mis-typed.
+            Some(full) => anyhow::anyhow!(
+                "no project called \"{name}\" — did you mean +[{full}]? \
+                 A name with a space in it has to be bracketed or quoted, \
+                 or only its first word is read. See `tui-do add --help`."
+            ),
+            None => anyhow::anyhow!(
+                "no project called \"{name}\" — tui-do knows of {}",
+                describe(projects)
+            ),
+        },
+        None => anyhow::anyhow!(
+            "no project to add to — tui-do knows of {}",
+            describe(projects)
+        ),
+    }
+}
+
+/// `tui-do add --dry-run`: everything a real add decides, and none of what it does.
+///
+/// Reads the projects and labels from the local store and resolves them exactly as
+/// [`add`] does, so a line that would fail fails here with the same words. It never
+/// reaches `Store::queue`, builds no `Sync` and so cannot push or pull: a project created
+/// on the server since the last sync is unknown here, where a real add would ask the
+/// server once before giving up.
+///
+/// # Errors
+/// What [`add`] would answer for the same line: no project to land in, or an unreadable
+/// project list.
+async fn rehearse(
+    config: &Config,
+    store: &Store,
+    parsed: &tui_do_core::quickadd::Parsed,
+    clock: &tui_do_core::ZonedTime,
+    create_labels: bool,
+) -> anyhow::Result<()> {
+    let projects = store
+        .projects(ProjectFilter::default(), ProjectSort::default())
+        .await
+        .context("could not read the project list")?;
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap_or_default();
+    let built = tui_do_ui::quickadd_task(
+        parsed,
+        &projects,
+        &labels,
+        None,
+        config.view.default_project.as_deref(),
+    )
+    .ok_or_else(|| no_project(parsed, &projects))?;
+
+    // What `queue_add` would do with the labels, without queuing anything.
+    let (created_labels, unknown_labels) = if create_labels {
+        (built.unknown_labels.clone(), Vec::new())
+    } else {
+        (Vec::new(), built.unknown_labels.clone())
+    };
+    let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), *clock);
+    let outcome = Outcome {
+        title: &built.task.title,
+        project: project_label(&projects, built.task.project_id),
+        project_id: built.task.project_id,
+        ambiguous_project: built.ambiguous_project,
+        dates: dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone()),
+        backdated: backdated.as_deref(),
+        created_labels: &created_labels,
+        unknown_labels: &unknown_labels,
+    };
+    for line in outcome.lines(Tense::Would) {
+        println!("{line}");
+    }
+    println!("Parsed: {}", printable(&parsed.summary(&clock.timezone())));
+    if let Some(best) = checked_canonical(parsed, clock) {
+        println!("as typed best: {best}");
+    }
+    println!("Dry run: nothing was queued or sent.");
+    Ok(())
+}
+
+/// How `tui-do add` was asked to run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AddMode {
+    /// Queue without trying to send.
+    pub offline: bool,
+    /// Create any label the line names that does not exist yet.
+    pub create_labels: bool,
+    /// Say what would be added, and add nothing.
+    pub dry_run: bool,
+}
+
+/// Whether [`Outcome::lines`] reports an add that happened or one that would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tense {
+    /// `tui-do add`: "Added …".
+    Did,
+    /// `tui-do add --dry-run`: "Would add …".
+    Would,
+}
+
+/// What an add did, or would do, for [`Outcome::lines`] to word.
+///
+/// One type for both, so a dry run's messages cannot drift from a real add's.
+struct Outcome<'a> {
+    /// The task's title.
+    title: &'a str,
+    /// The project it lands in, as printed.
+    project: String,
+    /// The same project's id, named when the name is ambiguous.
+    project_id: tui_do_core::models::ProjectId,
+    /// Whether more than one project answers to the name that was used.
+    ambiguous_project: bool,
+    /// `, due …, starts …`, from [`dates_suffix`].
+    dates: String,
+    /// A note if the due date has already passed.
+    backdated: Option<&'a str>,
+    /// Labels created because `--create-labels` said to.
+    created_labels: &'a [String],
+    /// Labels named that do not exist, and are left off.
+    unknown_labels: &'a [String],
+}
+
+impl Outcome<'_> {
+    /// The report, a line at a time. The first line is the one people and the skill doc
+    /// read, `Added "…" to <project>, due …`, and its shape is relied on.
+    fn lines(&self, tense: Tense) -> Vec<String> {
+        let Self {
+            title,
+            project,
+            project_id,
+            ambiguous_project,
+            dates,
+            backdated,
+            created_labels,
+            unknown_labels,
+        } = self;
+        let verb = match tense {
+            Tense::Did => "Added",
+            Tense::Would => "Would add",
+        };
+        let mut lines = Vec::new();
+        // Named with its id when the name is ambiguous, because a task added to the wrong
+        // Inbox is a task the user will not find.
+        if *ambiguous_project {
+            lines.push(format!(
+                "{verb} \"{title}\" to {project} (#{project_id}){dates} — more than one project has that name"
+            ));
+        } else {
+            lines.push(format!("{verb} \"{title}\" to {project}{dates}"));
+        }
+        if let Some(note) = backdated {
+            lines.push(format!("Note: {note}."));
+        }
+        if !created_labels.is_empty() {
+            let verb = match tense {
+                Tense::Did => "Created",
+                Tense::Would => "Would create",
+            };
+            lines.push(format!("{verb} label {}.", created_labels.join(", ")));
+        }
+        if !unknown_labels.is_empty() {
+            let one = unknown_labels.len() == 1;
+            let names = if one {
+                "No label called"
+            } else {
+                "No labels called"
+            };
+            let object = if one { "it" } else { "them" };
+            let listed = unknown_labels.join(", ");
+            lines.push(match tense {
+                // Scoped to next time in the *text*, not only in the comment: the natural
+                // reading of a CLI hint is "re-run me with this flag", and the task above
+                // is already queued, so doing that would add a second task rather than
+                // fixing this one. The hint used to say neither, and it said "create it"
+                // however many names it had just listed.
+                Tense::Did => format!(
+                    "{names} {listed} — {} left off. Pass --create-labels next time to have \
+                     tui-do create {object}; this task is already queued, so re-running now \
+                     would add a second one.",
+                    if one { "it was" } else { "they were" }
+                ),
+                Tense::Would => format!(
+                    "{names} {listed} — {} left off. Pass --create-labels to have tui-do \
+                     create {object}.",
+                    if one { "it would be" } else { "they would be" }
+                ),
+            });
+        }
+        lines
+    }
+}
+
+/// The line in its canonical form, if that parses back to the same task.
+///
+/// `None` otherwise, with a debug line saying so: a recommendation that changes the task
+/// is worse than none, and a suppression nobody can see is hard to debug.
+fn checked_canonical(
+    parsed: &tui_do_core::quickadd::Parsed,
+    clock: &tui_do_core::ZonedTime,
+) -> Option<String> {
+    let best = parsed.canonical(&clock.timezone());
+    if tui_do_core::quickadd::parse(&best, clock).same_fields(parsed) {
+        Some(printable(&best))
+    } else {
+        tracing::debug!(
+            canonical = %best,
+            "the canonical line does not parse back to the same task, so it is not shown"
+        );
+        None
+    }
 }
 
 /// What [`queue_add`] queued, for the caller to report.
@@ -1398,6 +1595,46 @@ mod tests {
         assert_eq!(
             project_label(&projects, tui_do_core::models::ProjectId(9)),
             "9"
+        );
+    }
+
+    /// A dry run and a real add word the same outcome the same way, bar the tense.
+    #[test]
+    fn a_dry_run_reports_in_the_same_words_as_an_add() {
+        let created = vec!["new".to_string()];
+        let unknown = vec!["a".to_string(), "b".to_string()];
+        let outcome = Outcome {
+            title: "call mom",
+            project: "Inbox".to_string(),
+            project_id: tui_do_core::models::ProjectId(7),
+            ambiguous_project: true,
+            dates: ", due Fri 27 Aug 2027".to_string(),
+            backdated: Some("that date has passed"),
+            created_labels: &created,
+            unknown_labels: &unknown,
+        };
+        assert_eq!(
+            outcome.lines(Tense::Did),
+            vec![
+                "Added \"call mom\" to Inbox (#7), due Fri 27 Aug 2027 — more than one project \
+                 has that name",
+                "Note: that date has passed.",
+                "Created label new.",
+                "No labels called a, b — they were left off. Pass --create-labels next time \
+                 to have tui-do create them; this task is already queued, so re-running now \
+                 would add a second one.",
+            ]
+        );
+        assert_eq!(
+            outcome.lines(Tense::Would),
+            vec![
+                "Would add \"call mom\" to Inbox (#7), due Fri 27 Aug 2027 — more than one \
+                 project has that name",
+                "Note: that date has passed.",
+                "Would create label new.",
+                "No labels called a, b — they would be left off. Pass --create-labels to have \
+                 tui-do create them.",
+            ]
         );
     }
 
