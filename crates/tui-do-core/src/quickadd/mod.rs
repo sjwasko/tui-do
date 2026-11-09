@@ -254,6 +254,37 @@ pub fn parse_due<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Option<DateTi
         .map(|found| found.at)
 }
 
+/// A stored due date as the text a field that edits it starts with, which is what
+/// [`parse_due`] reads back: the edit form's Due and the `D` prompt (BUG-30).
+///
+/// In `now`'s zone, because the field is read back in it: formatting the UTC instant
+/// showed the next day for a 23:59 due date anywhere west of UTC. ISO `2027-03-10`,
+/// because a four-digit year parses with or without `due` in front and cannot be read
+/// day-first or month-first. A time other than [`DateField::Due`]'s default is shown as
+/// `2027-03-10 at 14:00`, so retyping only the day keeps the hour.
+///
+/// It round-trips to the minute with one exception: the second reading of a repeated
+/// hour. `2027-11-07 at 01:30` in New York names two instants, and [`parse_due`] takes
+/// the earlier (BUG-20), so a prefill of the EST 01:30 reads back as the EDT one. A field
+/// left untouched is never parsed, so that only matters when it is retyped, and the
+/// parser has no syntax for an offset to disambiguate it with.
+#[must_use]
+pub fn due_text<Tz: TimeZone>(due: Option<DateTime<Utc>>, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    use chrono::Timelike as _;
+    let Some(due) = due else {
+        return String::new();
+    };
+    let local = due.with_timezone(&now.timezone());
+    if (local.hour(), local.minute()) == DateField::Due.default_time() {
+        local.format("%Y-%m-%d").to_string()
+    } else {
+        local.format("%Y-%m-%d at %H:%M").to_string()
+    }
+}
+
 /// Split a `*label`, `@assignee`, `+project` or `!3` into its kind and value.
 ///
 /// Quoted and bracketed forms carry values with spaces. They are recognised here on a
@@ -781,5 +812,43 @@ mod tests {
         assert_eq!(parsed.title, "Réserver le café");
         assert_eq!(parsed.labels, vec!["déjeuner"]);
         assert_eq!(parsed.project.as_deref(), Some("Vacances"));
+    }
+
+    #[test]
+    fn due_text_is_iso_in_the_readers_zone() {
+        // 2027-03-11T04:59Z is 10 March 23:59 at -05:00 (BUG-30).
+        let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+        assert_eq!(due_text(Some(due), &now()), "2027-03-10");
+        let at_two = Utc.with_ymd_and_hms(2027, 3, 10, 19, 0, 0).unwrap();
+        assert_eq!(due_text(Some(at_two), &now()), "2027-03-10 at 14:00");
+        assert_eq!(due_text(None, &now()), "");
+    }
+
+    #[test]
+    fn due_text_reads_back_to_the_same_instant() {
+        for due in [
+            Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap(),
+            Utc.with_ymd_and_hms(2027, 3, 10, 19, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 12, 1, 5, 30, 0).unwrap(),
+        ] {
+            let text = due_text(Some(due), &now());
+            assert_eq!(parse_due(&text, &now()), Some(due), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn due_text_in_a_repeated_hour_reads_back_as_the_earlier_one() {
+        use chrono_tz::America::New_York;
+        // 2027-11-07 01:30 happens twice in New York: 05:30Z at EDT, then 06:30Z at EST.
+        let now = New_York.with_ymd_and_hms(2027, 1, 15, 10, 0, 0).unwrap();
+        let first = Utc.with_ymd_and_hms(2027, 11, 7, 5, 30, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2027, 11, 7, 6, 30, 0).unwrap();
+
+        assert_eq!(due_text(Some(first), &now), "2027-11-07 at 01:30");
+        assert_eq!(due_text(Some(second), &now), "2027-11-07 at 01:30");
+        assert_eq!(parse_due("2027-11-07 at 01:30", &now), Some(first));
+        // The documented exception: retyped, the second reading becomes the first.
+        // Untouched, the form never parses it, so the stored instant stands.
+        assert_ne!(parse_due(&due_text(Some(second), &now), &now), Some(second));
     }
 }

@@ -18,9 +18,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    due_field_text, Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState,
-    LabelEditState, LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState,
-    PriorityState, QuickActionsState, SearchState, Submission, TextInput,
+    Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
+    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled, PriorityState,
+    QuickActionsState, SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -533,7 +533,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::Add(text) => add_task(model, &text, Unknown::Ask),
         Submission::Edited(draft) => apply_edit(model, *draft, Unknown::Ask),
         Submission::Priority(value) => set_priority(model, value),
-        Submission::Due { typed, was } => set_due(model, &typed, &was),
+        Submission::Due(due) => set_due(model, &due),
         Submission::Labels(chosen) => set_labels(model, &chosen),
         Submission::CreateLabel(title) => create_label(model, title),
         Submission::CreateLabels(titles) => create_labels(model, titles),
@@ -735,7 +735,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         },
         Action::SetDue => match model.selected_task() {
             Some(task) => {
-                let current = due_field_text(task.due_date.get(), &model.now);
+                let current = quickadd::due_text(task.due_date.get(), &model.now);
                 model.modals.push(Modal::Due(DueState::new(&current)));
                 Vec::new()
             }
@@ -1295,14 +1295,14 @@ fn move_task(model: &mut Model, project: ProjectId) -> Vec<Effect> {
     )
 }
 
-/// Set the selected task's due date from `text`, which is empty to clear it.
+/// Set the selected task's due date from `due`, which is empty to clear it.
 ///
-/// `was` is what the prompt was prefilled with. Enter on it unchanged keeps the stored
-/// instant: re-reading the prefill gives back a day at 23:59, not the time the task had,
-/// and was how a prefill in the wrong zone moved a date a day per press (BUG-30).
-fn set_due(model: &mut Model, text: &str, was: &str) -> Vec<Effect> {
-    let text = text.trim();
-    if text == was.trim() {
+/// Enter on the unchanged prefill keeps the stored instant: re-reading it gives back a
+/// day at 23:59, not the time the task had, and was how a prefill in the wrong zone
+/// moved a date a day per press (BUG-30).
+fn set_due(model: &mut Model, due: &Prefilled) -> Vec<Effect> {
+    let text = due.text();
+    if due.is_untouched() {
         if model.selected_task().is_none() {
             return nothing_selected(model);
         }
@@ -1831,15 +1831,18 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // the wrong zone moved the date a day as well, whatever field was edited.
     // An empty field clears the date. Anything else goes through the quick-add parser, so
     // the field understands `tomorrow` and `next friday` and not just `24/12/2026`.
-    if draft.due == draft.due_was {
+    if draft.due.is_untouched() {
         // Untouched: `after` already carries `before`'s due date.
-    } else if draft.due.is_empty() {
+    } else if draft.due.text().is_empty() {
         after.due_date = None.into();
     } else {
-        let parsed = quickadd::parse_due(&draft.due, &model.now);
+        let parsed = quickadd::parse_due(draft.due.text(), &model.now);
         match parsed {
             Some(due) => after.due_date = Some(due).into(),
-            None => notes.push(format!("{:?} is not a date tui-do understands", draft.due)),
+            None => notes.push(format!(
+                "{:?} is not a date tui-do understands",
+                draft.due.text()
+            )),
         }
     }
 
@@ -1891,10 +1894,11 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // Read before `after` is moved into the mutation. Only when the form *moved* the
     // date: a task that was already overdue and had some other field edited is not
     // something the user just backdated, and warning on every save would train them to
-    // ignore the warning that matters.
-    // By day, not by instant: the field shows a date and the parser gives it a time, so
-    // retyping the same day moves 09:00 to 23:59 and an instant comparison would call
-    // that a backdate.
+    // ignore the warning that matters. An untouched Due field keeps the instant, so it
+    // can never trip this.
+    // By day, not by instant, for a retyped field: `2027-03-10` typed over
+    // `2027-03-10 at 09:00` moves 09:00 to 23:59 on the same day, which is a change of
+    // time and not a backdate.
     // In the user's zone before asking what day it is, the same as
     // [`crate::rows::relative_date`]. "The day changed" is a claim about the calendar the
     // user is living in: for a reader at UTC+10, moving a due date from the 27th to the
