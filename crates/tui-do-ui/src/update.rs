@@ -533,7 +533,7 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         Submission::Add(text) => add_task(model, &text, Unknown::Ask),
         Submission::Edited(draft) => apply_edit(model, *draft, Unknown::Ask),
         Submission::Priority(value) => set_priority(model, value),
-        Submission::Due(text) => set_due(model, &text),
+        Submission::Due { typed, was } => set_due(model, &typed, &was),
         Submission::Labels(chosen) => set_labels(model, &chosen),
         Submission::CreateLabel(title) => create_label(model, title),
         Submission::CreateLabels(titles) => create_labels(model, titles),
@@ -1300,8 +1300,19 @@ fn move_task(model: &mut Model, project: ProjectId) -> Vec<Effect> {
 }
 
 /// Set the selected task's due date from `text`, which is empty to clear it.
-fn set_due(model: &mut Model, text: &str) -> Vec<Effect> {
+///
+/// `was` is what the prompt was prefilled with. Enter on it unchanged keeps the stored
+/// instant: re-reading the prefill gives back a day at 23:59, not the time the task had,
+/// and was how a prefill in the wrong zone moved a date a day per press (BUG-30).
+fn set_due(model: &mut Model, text: &str, was: &str) -> Vec<Effect> {
     let text = text.trim();
+    if text == was.trim() {
+        if model.selected_task().is_none() {
+            return nothing_selected(model);
+        }
+        model.toast(Toast::info("Nothing changed"));
+        return Vec::new();
+    }
     // Through the quick-add parser, not a date format, so the field understands
     // `tomorrow` and `next friday` -- exactly what the edit form's Due field does.
     let parsed = if text.is_empty() {
@@ -1818,9 +1829,15 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
         },
     }
 
+    // An untouched field keeps the stored instant exactly (BUG-30). Re-reading what the
+    // form showed is not the identity -- the field shows a day and the parser answers
+    // 23:59 on it -- so it reset the time of day on every save, and with a prefill in
+    // the wrong zone moved the date a day as well, whatever field was edited.
     // An empty field clears the date. Anything else goes through the quick-add parser, so
     // the field understands `tomorrow` and `next friday` and not just `24/12/2026`.
-    if draft.due.is_empty() {
+    if draft.due == draft.due_was {
+        // Untouched: `after` already carries `before`'s due date.
+    } else if draft.due.is_empty() {
         after.due_date = None.into();
     } else {
         let parsed = quickadd::parse_due(&draft.due, &model.now);
@@ -1880,8 +1897,8 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // something the user just backdated, and warning on every save would train them to
     // ignore the warning that matters.
     // By day, not by instant: the field shows a date and the parser gives it a time, so
-    // re-saving an untouched form moves 09:00 to 23:59 and an instant comparison would
-    // call that a backdate on every save of anything overdue.
+    // retyping the same day moves 09:00 to 23:59 and an instant comparison would call
+    // that a backdate.
     // In the user's zone before asking what day it is, the same as
     // [`crate::rows::relative_date`]. "The day changed" is a claim about the calendar the
     // user is living in: for a reader at UTC+10, moving a due date from the 27th to the
