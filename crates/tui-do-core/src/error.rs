@@ -42,6 +42,13 @@ pub enum CoreError {
     #[error("not queued: {0}")]
     Refused(String),
 
+    /// A store opened read-only is not ready to be read as it stands: there is no file
+    /// yet, or it is at an older schema that only a writing open would upgrade.
+    ///
+    /// The message is complete on its own and says what to run.
+    #[error("{0}")]
+    NotReady(String),
+
     /// An I/O operation outside the store failed.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

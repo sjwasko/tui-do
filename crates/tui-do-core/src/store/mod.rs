@@ -105,6 +105,75 @@ impl Store {
             .map_err(join_error)?
     }
 
+    /// Open an existing store for reading only: never creating, migrating or
+    /// re-permissioning it.
+    ///
+    /// For `tui-do add --dry-run`, which promises to write nothing. [`Store::open`]
+    /// creates the file and its directory, tightens their modes and runs every pending
+    /// migration, so even a dry run through it could change the disk. This opens with
+    /// `SQLITE_OPEN_READ_ONLY` and `query_only`, so a write through it fails rather than
+    /// landing.
+    ///
+    /// # Errors
+    /// [`CoreError::NotReady`] if there is no file at `path`, or its schema is older than
+    /// this build's (a real run would upgrade it); [`CoreError::Config`] if it is newer;
+    /// [`CoreError::Store`] if SQLite cannot open it.
+    pub async fn open_existing_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || Self::open_read_only_blocking(path))
+            .await
+            .map_err(join_error)?
+    }
+
+    fn open_read_only_blocking(path: PathBuf) -> Result<Self> {
+        if !path.is_file() {
+            return Err(CoreError::NotReady(format!(
+                "no local store yet at {}; run tui-do once to sync",
+                path.display()
+            )));
+        }
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+        // A WAL database read through a plain read-only connection makes SQLite create
+        // `-wal` and `-shm` beside it when they are missing, which is a write. They are
+        // missing only when nothing has the store open and the last writer checkpointed,
+        // so the file alone is the whole store and `immutable` reads it without either.
+        // When they exist another tui-do may be writing, and the WAL has to be read.
+        let connection = if sidecars(&path).iter().any(|sidecar| sidecar.exists()) {
+            Connection::open_with_flags(&path, flags)?
+        } else {
+            Connection::open_with_flags(format!("{}?immutable=1", file_uri(&path)), flags)?
+        };
+        // Not `configure`: setting the journal mode is a write. These two only change
+        // this connection.
+        connection.execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")?;
+        let current: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let target = schema::target_version();
+        if current < target {
+            return Err(CoreError::NotReady(format!(
+                "the local store at {} is at schema version {current}, and this tui-do \
+                 uses {target}; a real run would upgrade it first, which a dry run will \
+                 not do. Run tui-do once, then try again",
+                path.display()
+            )));
+        }
+        if current > target {
+            return Err(CoreError::Config {
+                path: path.display().to_string(),
+                reason: format!(
+                    "this database is at schema version {current}, newer than the {target} \
+                     this build of tui-do understands. Use a newer tui-do."
+                ),
+            });
+        }
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+            path: StorePath::File(path),
+            decodes: Arc::default(),
+        })
+    }
+
     /// Where the database lives when nothing overrides it.
     ///
     /// `$TUI_DO_DB` wins, so a second instance can be pointed at a scratch database
@@ -167,10 +236,7 @@ impl Store {
         // Belt to the directory's braces, and it also tightens a database that an older
         // version created permissive. `configure` has run, so the WAL exists by now.
         crate::config::restrict_to_owner(&path);
-        for suffix in ["-wal", "-shm"] {
-            let mut sidecar = path.clone().into_os_string();
-            sidecar.push(suffix);
-            let sidecar = PathBuf::from(sidecar);
+        for sidecar in sidecars(&path) {
             if sidecar.exists() {
                 crate::config::restrict_to_owner(&sidecar);
             }
@@ -284,6 +350,29 @@ fn configure(connection: &Connection) -> Result<()> {
         ",
     )?;
     Ok(())
+}
+
+/// The `-wal` and `-shm` files SQLite keeps beside a WAL database.
+fn sidecars(path: &Path) -> [PathBuf; 2] {
+    ["-wal", "-shm"].map(|suffix| {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        PathBuf::from(sidecar)
+    })
+}
+
+/// `path` as an SQLite `file:` URI, percent-encoding everything but unreserved characters
+/// and `/`, so a `?` or `#` in a directory name cannot be read as the query.
+fn file_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for byte in path.as_os_str().as_encoded_bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(byte) {
+            uri.push(char::from(*byte));
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
 }
 
 /// Turn a `spawn_blocking` join failure into a store error.
@@ -509,6 +598,96 @@ mod tests {
             "B's write did not land"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read-only open of a path with nothing at it says so, and leaves nothing behind:
+    /// no file, no directory, no WAL. `Store::open` would have made all three.
+    #[tokio::test]
+    async fn a_read_only_open_of_a_missing_store_creates_nothing() {
+        let dir = std::env::temp_dir().join(format!("tui-do-ro-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tui-do.db");
+
+        let error = Store::open_existing_read_only(&path).await.unwrap_err();
+        assert!(matches!(error, CoreError::NotReady(_)), "{error}");
+        assert!(error.to_string().contains("run tui-do once"), "{error}");
+        assert!(!dir.exists(), "the open created {}", dir.display());
+    }
+
+    /// An older store is refused, not upgraded: the file is the same bytes afterwards.
+    #[tokio::test]
+    async fn a_read_only_open_does_not_migrate_an_older_store() {
+        let dir = std::env::temp_dir().join(format!("tui-do-ro-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tui-do.db");
+        drop(Store::open(&path).await.unwrap());
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(&format!(
+                    "PRAGMA user_version = {}",
+                    schema::target_version() - 1
+                ))
+                .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+
+        let error = Store::open_existing_read_only(&path).await.unwrap_err();
+        assert!(matches!(error, CoreError::NotReady(_)), "{error}");
+        assert!(error.to_string().contains("would upgrade it"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the store changed");
+        for sidecar in sidecars(&path) {
+            assert!(!sidecar.exists(), "the open left {}", sidecar.display());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_store_path_is_escaped_into_a_uri() {
+        assert_eq!(
+            file_uri(Path::new("/tmp/a b/why?#%.db")),
+            "file:/tmp/a%20b/why%3F%23%25.db"
+        );
+    }
+
+    /// A current store opens, reads, and refuses a write.
+    #[tokio::test]
+    async fn a_read_only_store_reads_and_will_not_write() {
+        let dir = std::env::temp_dir().join(format!("tui-do-ro-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tui-do.db");
+        drop(Store::open(&path).await.unwrap());
+
+        let store = Store::open_existing_read_only(&path).await.unwrap();
+        assert_eq!(
+            store.schema_version().await.unwrap(),
+            schema::target_version()
+        );
+        assert!(store.set_state("probe", "x").await.is_err());
+        assert_eq!(store.state("probe").await.unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// While another connection has the store open, what it wrote may still be only in
+    /// the WAL, and a read-only open must see it rather than the stale file.
+    #[tokio::test]
+    async fn a_read_only_open_sees_what_a_live_writer_has_not_checkpointed() {
+        let dir = std::env::temp_dir().join(format!("tui-do-ro-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tui-do.db");
+        let writer = Store::open(&path).await.unwrap();
+        writer.set_state("probe", "fresh").await.unwrap();
+
+        let reader = Store::open_existing_read_only(&path).await.unwrap();
+        assert_eq!(
+            reader.state("probe").await.unwrap().as_deref(),
+            Some("fresh")
+        );
+
+        drop(writer);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
