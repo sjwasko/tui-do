@@ -164,7 +164,11 @@ where
             if prompt.line.value().trim().is_empty() {
                 continue;
             }
-            break Answer::Add(prompt.line.value().to_string());
+            // `None` while a bracket is open; the line says why.
+            match prompt.line.submit() {
+                Some(line) => break Answer::Add(line),
+                None => continue,
+            }
         }
         prompt.line.press(key);
     };
@@ -208,7 +212,9 @@ fn render(frame: &mut Frame<'_>, prompt: &Prompt) {
     if area.height < 2 {
         return;
     }
-    let preview = if value.trim().is_empty() {
+    let preview = if let Some(open) = tui_do_ui::assist::unclosed(value) {
+        Span::styled(format!("! {}", open.hint()), theme.warning())
+    } else if value.trim().is_empty() {
         Span::styled(
             "type a task -- Tab completes, ? after + * @ ! or due lists, F1 help, Esc cancels",
             theme.muted(),
@@ -270,7 +276,11 @@ mod tests {
 
     fn vocabulary() -> Vocabulary {
         Vocabulary {
-            projects: vec!["Home Improvement".into(), "Legal".into()],
+            projects: vec![
+                "Home Improvement".into(),
+                "Home Office".into(),
+                "Legal".into(),
+            ],
             labels: vec!["urgent".into()],
             users: vec!["admin".into()],
         }
@@ -337,6 +347,32 @@ mod tests {
         assert_eq!(parsed.project.as_deref(), Some("Legal"));
         assert_eq!(parsed.title, "Call the VA");
         assert!(parsed.due_date.is_some());
+    }
+
+    #[test]
+    fn enter_waits_while_a_bracket_is_open() {
+        // Tab completes as far as the two `Home` projects agree, leaving `+[Home ` open;
+        // an Enter then would have filed it under `[Home` with `Office` in the title.
+        let mut events = typing("Fix the door +Ho");
+        events.push(key(KeyCode::Tab));
+        events.push(key(KeyCode::Enter));
+        let (answer, terminal) = drive(events);
+        assert!(answer.is_err(), "nothing was answered: {answer:?}");
+        let shown = screen(&terminal);
+        assert!(
+            shown.contains("! +[Home is not closed"),
+            "the preview: {shown}"
+        );
+
+        let mut events = typing("Fix the door +Ho");
+        events.push(key(KeyCode::Tab));
+        events.extend(typing("I"));
+        events.push(key(KeyCode::Tab));
+        events.push(key(KeyCode::Enter));
+        assert_eq!(
+            drive(events).0.unwrap(),
+            Answer::Add("Fix the door +[Home Improvement] ".to_string())
+        );
     }
 
     #[test]
@@ -409,6 +445,9 @@ mod tests {
         let shown = screen(&terminal);
         assert!(shown.contains("add› Fix the door +"), "{shown}");
         assert!(!shown.contains("door +?"), "the ? was typed: {shown}");
-        assert!(shown.contains("+[Home Improvement]  +Legal"), "{shown}");
+        assert!(
+            shown.contains("+[Home Improvement]  +[Home Office]  +Legal"),
+            "{shown}"
+        );
     }
 }

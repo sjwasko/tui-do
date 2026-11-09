@@ -270,7 +270,7 @@ fn open_bracket(before: &str) -> Option<Partial> {
         if let (true, Some(slot), Some(&(_, open))) =
             (at_word_start, Slot::from_sigil(c), chars.peek())
         {
-            if matches!(open, '[' | '"' | '\'') && slot != Slot::Priority {
+            if matches!(open, '[' | '(' | '"' | '\'') && slot != Slot::Priority {
                 last = Some((slot, at + c.len_utf8(), open));
             }
         }
@@ -288,8 +288,71 @@ fn open_bracket(before: &str) -> Option<Partial> {
 const fn closer(open: char) -> char {
     match open {
         '[' => ']',
+        '(' => ')',
         other => other,
     }
+}
+
+/// A `+`, `*` or `@` opened with a bracket or quote that nothing closes.
+///
+/// The parser reads `+[Home Improvement]` whole only once it has its `]`. Without one it
+/// falls back to splitting on spaces, so `+[Home` becomes the project and the rest goes
+/// into the title -- which is exactly what a Tab that completed as far as `+[Home ` and
+/// then an Enter would produce. So neither prompt sends a line while this says something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unclosed {
+    /// The token as far as its first word: `+[Home`.
+    pub token: String,
+    /// What would close it.
+    pub close: char,
+}
+
+impl Unclosed {
+    /// One line saying what is wrong and what to do.
+    #[must_use]
+    pub fn hint(&self) -> String {
+        format!(
+            "{} is not closed: finish the name and type {}, or press Tab",
+            self.token, self.close
+        )
+    }
+}
+
+/// The first token in `line` whose bracket or quote is never closed, read the way the
+/// parser splits words: a sigil and an opener at a word start take everything to the
+/// matching close. `!` is left out, because an unclosed `![` is only ever title text.
+#[must_use]
+pub fn unclosed(line: &str) -> Option<Unclosed> {
+    let mut at = 0;
+    while at < line.len() {
+        at += line[at..].find(|c: char| !c.is_whitespace())?;
+        let mut chars = line[at..].chars();
+        let sigil = chars.next().and_then(Slot::from_sigil);
+        let open = chars.next();
+        if let (Some(slot), Some(open @ ('[' | '(' | '"' | '\''))) = (sigil, open) {
+            let inside = at + 1 + open.len_utf8();
+            match line[inside..].find(closer(open)) {
+                Some(offset) => {
+                    at = inside + offset + closer(open).len_utf8();
+                    continue;
+                }
+                None if slot != Slot::Priority => {
+                    let end = line[at..]
+                        .find(char::is_whitespace)
+                        .map_or(line.len(), |offset| at + offset);
+                    return Some(Unclosed {
+                        token: line[at..end].to_string(),
+                        close: closer(open),
+                    });
+                }
+                None => {}
+            }
+        }
+        at = line[at..]
+            .find(char::is_whitespace)
+            .map_or(line.len(), |offset| at + offset);
+    }
+    None
 }
 
 /// Where a date phrase being typed after `due ` or `start ` begins, if one is.
@@ -608,6 +671,22 @@ impl QuickAddInput {
         }
     }
 
+    /// The line to add, or `None` with the reason shown under it.
+    ///
+    /// Refused while a bracket or quote is open (see [`unclosed`]): sending it would put
+    /// half the name in the title.
+    pub fn submit(&mut self) -> Option<String> {
+        if let Some(open) = unclosed(self.input.value()) {
+            self.aside = Some(Aside {
+                heading: open.hint(),
+                items: Vec::new(),
+            });
+            self.tabbed = None;
+            return None;
+        }
+        Some(self.input.value().to_string())
+    }
+
     fn typed(&mut self, key: Key) -> bool {
         self.aside = None;
         self.tabbed = None;
@@ -869,6 +948,53 @@ mod tests {
             let line = typed(text);
             assert_eq!(line.value(), text);
             assert!(line.aside().is_none(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_with_an_open_bracket_is_not_submitted() {
+        // The Tab that completes as far as names agree leaves the bracket open.
+        let mut line = typed("Fix the door +Ho");
+        tab(&mut line);
+        assert_eq!(line.value(), "Fix the door +[Home ");
+        assert_eq!(line.submit(), None, "half a name would go in the title");
+        let hint = &line.aside().expect("the reason is shown").heading;
+        assert!(hint.starts_with("+[Home is not closed"), "{hint}");
+        assert!(hint.contains(']'), "{hint}");
+
+        // Finishing it, by hand or by Tab, lets it through.
+        line.press(Key::char('O'));
+        tab(&mut line);
+        assert_eq!(
+            line.submit().as_deref(),
+            Some("Fix the door +[Home Office] ")
+        );
+    }
+
+    #[test]
+    fn unclosed_reads_the_line_as_the_parser_splits_it() {
+        for (line, token) in [
+            ("+[Home", "+[Home"),
+            ("Ship it *\"needs review", "*\"needs"),
+            ("@(Ada Lovelace", "@(Ada"),
+            ("+[Done] then *[open one", "*[open"),
+        ] {
+            assert_eq!(
+                unclosed(line).map(|open| open.token),
+                Some(token.to_string()),
+                "{line:?}"
+            );
+        }
+        for line in [
+            "",
+            "+[Home Improvement] fix the door",
+            "*\"needs review\" ship it",
+            "don't forget the milk",
+            "a+[b",
+            "![nothing",
+            "costs [a lot",
+        ] {
+            assert_eq!(unclosed(line), None, "{line:?}");
         }
     }
 

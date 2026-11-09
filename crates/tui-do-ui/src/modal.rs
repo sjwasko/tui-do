@@ -1732,7 +1732,11 @@ impl ModalView for crate::assist::QuickAddInput {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,
-            KeyCode::Enter => Outcome::Submit(Submission::Add(self.value().to_string())),
+            // Held while a bracket is open, with the reason shown above the prompt.
+            KeyCode::Enter => match self.submit() {
+                Some(text) => Outcome::Submit(Submission::Add(text)),
+                None => Outcome::Consumed,
+            },
             _ => {
                 self.press(key);
                 Outcome::Consumed

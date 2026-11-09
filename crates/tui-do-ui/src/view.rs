@@ -1401,6 +1401,11 @@ fn add_prompt(model: &Model, state: &QuickAddInput, frame: &mut Frame) {
             "*label  +project  !1-5  @user  a date   Tab  ?:help  Esc:cancel",
             theme.muted(),
         )]
+    } else if let Some(open) = crate::assist::unclosed(input.value()) {
+        vec![
+            Span::styled(open.hint(), theme.warning()),
+            Span::styled("  Esc:cancel", theme.muted()),
+        ]
     } else if summary.is_empty() {
         vec![Span::styled("Enter:add  Esc:cancel", theme.muted())]
     } else {

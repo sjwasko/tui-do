@@ -742,6 +742,22 @@ fn the_add_prompt_completes_a_project_and_lists_on_a_second_tab() {
 }
 
 #[test]
+fn the_add_prompt_will_not_add_a_line_with_an_open_bracket() {
+    let mut model = fixture((110, 40));
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    press_all(&mut model, &chars("aBuy stamps +[Err"));
+    press_all(&mut model, &[enter]);
+    let screen = draw(&model);
+    let status = screen.lines().last().unwrap_or_default();
+    assert!(
+        status.starts_with("+ Buy stamps +[Err"),
+        "the prompt closed: {status}"
+    );
+    assert!(status.contains("+[Err is not closed"), "{status}");
+    assert!(!model.modals.is_empty(), "the add prompt is still open");
+}
+
+#[test]
 fn a_question_mark_after_a_sigil_in_the_add_prompt_is_help() {
     let mut model = fixture((110, 40));
     press_all(&mut model, &chars("aCall +?"));
