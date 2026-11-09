@@ -44,6 +44,14 @@ allow-wildcard-paths = true
 [advisories]
 version = 2
 yanked = "deny"
+# RUSTSEC-2024-0449: unsafe-libyaml is unmaintained -- no vulnerability, no successor.
+# It arrives through serde_yaml_ng, which parses only the user's own config file and the
+# one-time cria config import; nothing from the network reaches it. Accepted 2026-11-09
+# rather than replacing the YAML library, which risks reading existing configs differently.
+# Revisit if an actual vulnerability is filed against it or serde_yaml_ng moves off it.
+ignore = [
+    { id = "RUSTSEC-2024-0449", reason = "unmaintained only; parses local config, see comment" },
+]
 
 [sources]
 unknown-registry = "deny"
