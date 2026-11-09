@@ -7,6 +7,7 @@
 use tui_do_core::models::ProjectId;
 use tui_do_core::store::{Mutation, TaskFilter, TaskSort};
 
+use crate::overlay::WriteSeq;
 use crate::query::QueryId;
 
 /// A side effect requested by `update`.
@@ -53,7 +54,17 @@ pub enum Effect {
     /// halves in a single transaction. The model has *already* applied it to its own
     /// snapshot by the time this runs — a task list that waits for SQLite before showing
     /// a tick is the lag this project exists to remove.
-    Apply(Mutation),
+    ///
+    /// Answered with [`crate::Msg::Written`] or [`crate::Msg::WriteFailed`] naming `write`
+    /// once the store has answered, then [`crate::Msg::Reload`]. Until a load issued after
+    /// that answer comes back, the model lays this edit over whatever loads return: one
+    /// issued earlier may have read the store before it held the write.
+    Apply {
+        /// The model's number for this write, carried back on the answer.
+        write: WriteSeq,
+        /// What to store and queue.
+        mutation: Mutation,
+    },
 
     /// Push, then fetch only what the server says has changed.
     ///

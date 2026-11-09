@@ -24,6 +24,7 @@ use crate::modal::{
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
+use crate::overlay::{land, Landed};
 use crate::query::{Scope, TASK_LIMIT};
 use crate::rows;
 use crate::sidebar::{self, SidebarTarget};
@@ -60,6 +61,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 return Vec::new();
             }
             model.data.truncated = tasks.len() as u32 >= TASK_LIMIT;
+            // Taken as it stands, an answer read a moment before a later write landed puts
+            // that task back as it was -- a row just marked done reappears and a held `d`
+            // presses it again (BUG-22). So what this load cannot be trusted with is laid
+            // back over it first.
+            let mut tasks = tasks;
+            model
+                .writes
+                .replay(id, &mut tasks, model.query.include_done);
             model.data.tasks = tasks;
             model.data.loading = false;
             model.data.error = None;
@@ -88,14 +97,24 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Reload => reload_everything(model),
-        Msg::TaskCreated(id) => {
+        Msg::TaskCreated { write, id } => {
             // Follow the task that was just made, whatever it contained. `apply_locally`
             // selected the placeholder id because that is all it had; this is the store's
             // answer, and it arrives before the reload so `TasksLoaded` finds the row and
-            // leaves the selection alone.
+            // leaves the selection alone. The drawn copy learns it too, so a replay over a
+            // load that already has the row recognises it rather than adding another.
+            model.writes.created(write, id);
             model.list.selected = Some(id);
             model.list.preview_scroll = 0;
             Vec::new()
+        }
+        Msg::Written(write) => {
+            model.writes.stored(write, model.query_id);
+            Vec::new()
+        }
+        Msg::WriteFailed { write, message } => {
+            model.writes.failed(write);
+            update(model, Msg::StoreFailed(message))
         }
         Msg::EffectFailed(message) => {
             model.toast(Toast::error(message));
@@ -2165,6 +2184,7 @@ fn adopt_task(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<E
     if let Some(task) = find(&mut model.data.tasks, provisional) {
         task.id = assigned;
     }
+    model.writes.retarget(provisional, assigned);
     if model.list.selected == Some(provisional) {
         model.list.selected = Some(assigned);
     }
@@ -2213,6 +2233,7 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
     for label in &mut model.data.labels {
         swap(&mut label.id);
     }
+    model.writes.retarget_label(provisional, assigned);
     for task in &mut model.data.tasks {
         for label in &mut task.labels {
             swap(&mut label.id);
@@ -2298,61 +2319,44 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
 /// follows is confirmation, not the mechanism.
 fn apply(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
     apply_locally(model, &mutation);
+    // Kept until a load is known to show it -- see `Overlay`.
+    let write = model.writes.record(mutation.clone());
     // Asked for rather than incremented: `Effect::Apply` is what writes the outbox row,
     // and counting ahead of it would show a number the store does not agree with if the
     // write fails.
-    vec![Effect::Apply(mutation), Effect::LoadPending]
+    vec![Effect::Apply { write, mutation }, Effect::LoadPending]
 }
 
 /// The optimistic edit, against the list the user is looking at.
 fn apply_locally(model: &mut Model, mutation: &Mutation) {
-    let tasks = &mut model.data.tasks;
-    match mutation {
-        Mutation::CreateTask { task } => {
-            // At the top, and selected, so it is visible the instant it exists. The
-            // reload puts it in its sorted place and the selection follows it there,
-            // which is what tracking the selection by id is for.
-            tasks.insert(0, (**task).clone());
-            model.list.selected = Some(task.id);
+    // The rows themselves are `overlay::land`, which a replay over a load shares. What
+    // stays here is what only an edit as it is made does: move the cursor, and reach the
+    // label snapshots a load does not replace.
+    match land(&mut model.data.tasks, mutation, model.query.include_done) {
+        Landed::Inserted => {
+            // Selected, so the next key acts on it. The reload puts it in its sorted
+            // place and the selection follows it there, which is what tracking the
+            // selection by id is for.
+            if let Mutation::CreateTask { task } = mutation {
+                model.list.selected = Some(task.id);
+            }
             model.list.offset = 0;
         }
-        Mutation::UpdateTask { after, .. } => {
-            if let Some(at) = tasks.iter().position(|task| task.id == after.id) {
-                // A task marked done leaves a list that is not showing done tasks, and it
-                // leaves it *here* rather than on the reload that follows. The reload
-                // cannot tell "the selected row left this list" from "this is a different
-                // list", so it falls back to the first row -- which sent the cursor to the
-                // top of the list on every `d`, where `x` holds its place. Removing it
-                // here means the selection moves down one, exactly as a delete does.
-                if after.done && !model.query.include_done {
-                    tasks.remove(at);
-                    let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
-                    model.list.selected = next.map(|task| task.id);
-                } else {
-                    tasks[at] = (**after).clone();
-                }
-            }
+        // A task marked done leaves a list that is not showing done tasks, and it leaves
+        // it *here* rather than on the reload that follows. The reload cannot tell "the
+        // selected row left this list" from "this is a different list", so it falls back
+        // to the first row -- which sent the cursor to the top of the list on every `d`,
+        // where `x` holds its place. Removing it here means the selection moves down
+        // one, exactly as a delete does: to the row that slid up into the gap, or the one
+        // above if it was last.
+        Landed::Removed(at) => {
+            let tasks = &model.data.tasks;
+            let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
+            model.list.selected = next.map(|task| task.id);
         }
-        Mutation::DeleteTask { before } => {
-            if let Some(at) = tasks.iter().position(|task| task.id == before.id) {
-                tasks.remove(at);
-                // The row that slid up into the gap, or the one above if it was last.
-                let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
-                model.list.selected = next.map(|task| task.id);
-            }
-        }
-        Mutation::AttachLabel { task, label } => {
-            if let Some(existing) = find(tasks, *task) {
-                if !existing.labels.iter().any(|held| held.id == label.id) {
-                    existing.labels.push((**label).clone());
-                }
-            }
-        }
-        Mutation::DetachLabel { task, label } => {
-            if let Some(existing) = find(tasks, *task) {
-                existing.labels.retain(|held| held.id != label.id);
-            }
-        }
+        Landed::InPlace => {}
+    }
+    match mutation {
         // A rename or a recolour has to reach *two* snapshots, because the model keeps
         // two copies of every label and neither is a view of the other:
         //
@@ -2368,15 +2372,9 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
         // reload, which for the picker means quick-add still resolving the name the user
         // just renamed away from.
         //
-        // Matched on the id, not the title: the title is the thing that just changed.
+        // Matched on the id, not the title: the title is the thing that just changed. The
+        // chips on the rows are `land`'s; the rest are here.
         Mutation::UpdateLabel { after, .. } => {
-            for task in tasks.iter_mut() {
-                for held in &mut task.labels {
-                    if held.id == after.id {
-                        *held = (**after).clone();
-                    }
-                }
-            }
             for known in &mut model.data.labels {
                 if known.id == after.id {
                     *known = (**after).clone();
@@ -2440,13 +2438,20 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                 }
             }
         }
-        // The one mutation with nothing to rewrite. A label the server has never seen
+        // A label create has nothing to rewrite. A label the server has never seen
         // cannot be on a task in the list, and it is not in `model.data.labels` either --
         // but that is because the create is queued from a screen that reloads, not because
         // anything here reads the store directly. Nothing in this model does; both label
         // snapshots above are written by `Msg::LabelsLoaded`, and rewritten only by the
         // arm above and by `adopt_label`, which renumbers what the server has just named.
-        Mutation::CreateLabel { .. } => {}
+        //
+        // The task mutations touch only rows, and `land` has done them.
+        Mutation::CreateLabel { .. }
+        | Mutation::CreateTask { .. }
+        | Mutation::UpdateTask { .. }
+        | Mutation::DeleteTask { .. }
+        | Mutation::AttachLabel { .. }
+        | Mutation::DetachLabel { .. } => {}
     }
     keep_selection_visible(model);
 }

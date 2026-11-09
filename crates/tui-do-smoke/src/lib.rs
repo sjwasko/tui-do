@@ -51,7 +51,7 @@ use tui_do_core::sync::Sync;
 use tui_do_core::SyncEvent;
 use tui_do_ui::query::Scope;
 use tui_do_ui::update::{reload_everything, update};
-use tui_do_ui::{Effect, Model, Msg};
+use tui_do_ui::{Effect, Model, Msg, WriteSeq};
 
 /// How many messages one keystroke may produce before the harness calls it a loop.
 ///
@@ -226,22 +226,11 @@ impl Harness {
                 let health = self.store.queue_health().await.expect("read the queue");
                 vec![Msg::PendingLoaded(health)]
             }
-            // The runtime queues, says `Reload`, and spawns a push -- in that order, and
-            // the order is the point. The reload is a local read and lands first; the
-            // push is a round trip, and what it learns arrives afterwards. See
-            // `pending_push`.
-            Effect::Apply(mutation) => {
-                let entry = self.store.queue(mutation).await.expect("queue the change");
-                self.pending_push = true;
-                // Faithful to the runtime, and the order matters: the assigned id is sent
-                // *before* the reload, so `TasksLoaded` finds the selected row rather than
-                // falling back to the first one. Sending it after would leave the harness
-                // agreeing with a bug the real program does not have.
-                match &entry.mutation {
-                    Mutation::CreateTask { task } => vec![Msg::TaskCreated(task.id), Msg::Reload],
-                    _ => vec![Msg::Reload],
-                }
-            }
+            // The runtime queues, acknowledges the write by number, says `Reload`, and
+            // spawns a push -- in that order, and the order is the point. The reload is a
+            // local read and lands first; the push is a round trip, and what it learns
+            // arrives afterwards. See `pending_push`.
+            Effect::Apply { write, mutation } => self.store_write(write, mutation).await,
             // Both are a push here. The pull half needs a mounted listing and would make
             // every test mount one; the tests that care about a pull live in
             // `tui-do-core`, which can ask for one directly.
@@ -252,6 +241,24 @@ impl Harness {
             Effect::RememberProject(_) | Effect::Quit => Vec::new(),
             other => panic!("the harness has no arm for {other:?}"),
         }
+    }
+
+    /// Queue one write and answer as the runtime's `Effect::Apply` arm does.
+    ///
+    /// Faithful to the runtime, and the order matters: the assigned id is sent *before*
+    /// the acknowledgement and the reload, so `TasksLoaded` finds the selected row rather
+    /// than falling back to the first one. Sending it after would leave the harness
+    /// agreeing with a bug the real program does not have.
+    async fn store_write(&mut self, write: WriteSeq, mutation: Mutation) -> Vec<Msg> {
+        let entry = self.store.queue(mutation).await.expect("queue the change");
+        self.pending_push = true;
+        let mut msgs = Vec::new();
+        if let Mutation::CreateTask { task } = &entry.mutation {
+            msgs.push(Msg::TaskCreated { write, id: task.id });
+        }
+        msgs.push(Msg::Written(write));
+        msgs.push(Msg::Reload);
+        msgs
     }
 
     /// One push, with its events forwarded the way `spawn_sync` forwards them.

@@ -10,6 +10,7 @@ use tui_do_core::store::{ProjectCounts, QueueHealth};
 use tui_do_core::SyncEvent;
 use tui_do_core::ZonedTime;
 
+use crate::overlay::WriteSeq;
 use crate::query::QueryId;
 
 /// Something that happened.
@@ -64,7 +65,31 @@ pub enum Msg {
     /// told, the optimistic row carries the placeholder `TaskId(0)`, the reload that
     /// follows cannot find it, and the selection falls back to the first row -- so the
     /// next keystroke acts on a task the user never chose.
-    TaskCreated(TaskId),
+    ///
+    /// Sent before [`Self::Written`] for the same `write`.
+    TaskCreated {
+        /// The write that created it.
+        write: WriteSeq,
+        /// The id the store gave it.
+        id: TaskId,
+    },
+
+    /// The store now holds this write.
+    ///
+    /// Not yet proof that the list shows it: a load already in flight may have read the
+    /// store first. The next load issued after this one is.
+    Written(WriteSeq),
+
+    /// The store refused this write, in words for the user.
+    ///
+    /// The model drew it already; it stops drawing it, and the reload that follows shows
+    /// what was actually stored.
+    WriteFailed {
+        /// The write that failed.
+        write: WriteSeq,
+        /// What went wrong.
+        message: String,
+    },
 
     /// An effect the runtime performed could not be done, in words for the user.
     ///
