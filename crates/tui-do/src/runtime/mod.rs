@@ -9,6 +9,7 @@
 //! keypress and a frame: every effect is spawned onto its own task and answers by sending
 //! a message back. The render loop's only await is on the message channel.
 
+mod coalesce;
 mod terminal;
 
 use std::future::Future;
@@ -350,57 +351,77 @@ async fn event_loop<B: ratatui::backend::Backend>(
 /// function is called from the loop that also draws.
 fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx) {
     match effect {
+        // The five reads `Msg::Reload` asks for go through `coalesce`: one of each in
+        // flight and the newest request waiting behind it (BUG-23). A load that is
+        // already running answers under its own id; only the one that starts later
+        // carries a newer one.
         Effect::LoadTasks { id, filter, sort } => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store.tasks(filter, sort).await {
-                    Ok(tasks) => Msg::TasksLoaded { id, tasks },
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&coalesce::TASKS, tx, (id, filter, sort), move |request| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let (id, filter, sort) = request;
+                    let msg = match store.tasks(filter, sort).await {
+                        Ok(tasks) => Msg::TasksLoaded { id, tasks },
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadProjects => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store
-                    .projects(ProjectFilter::default(), ProjectSort::default())
-                    .await
-                {
-                    Ok(projects) => Msg::ProjectsLoaded(projects),
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&coalesce::PROJECTS, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store
+                        .projects(ProjectFilter::default(), ProjectSort::default())
+                        .await
+                    {
+                        Ok(projects) => Msg::ProjectsLoaded(projects),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadLabels => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store
-                    .labels(LabelFilter::default(), LabelSort::default())
-                    .await
-                {
-                    Ok(labels) => Msg::LabelsLoaded(labels),
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&coalesce::LABELS, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store
+                        .labels(LabelFilter::default(), LabelSort::default())
+                        .await
+                    {
+                        Ok(labels) => Msg::LabelsLoaded(labels),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadCounts => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store.project_task_counts().await {
-                    Ok(counts) => Msg::CountsLoaded(counts),
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&coalesce::COUNTS, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store.project_task_counts().await {
+                        Ok(counts) => Msg::CountsLoaded(counts),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadPending => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                if let Ok(health) = store.queue_health().await {
-                    let _ = tx.send(Msg::PendingLoaded(health));
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&coalesce::PENDING, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    if let Ok(health) = store.queue_health().await {
+                        let _ = tx.send(Msg::PendingLoaded(health));
+                    }
                 }
             });
         }
