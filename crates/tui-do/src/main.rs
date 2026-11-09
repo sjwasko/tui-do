@@ -119,6 +119,12 @@ enum Command {
     /// at most 64 KiB. The confirmation line counts it rather than printing it:
     /// `with a description (3 paragraphs, 1,240 characters)`.
     ///
+    /// With --edit, the file ends in a `# ---- >8 ----` scissors line and help, as
+    /// `git commit -v` does. Everything from that line down is ignored. Above it,
+    /// blank lines at the start and just above the line are dropped, and the rest is
+    /// kept exactly, `# Heading` lines included. Delete the scissors line and the whole
+    /// file is kept, with a warning. The size limit counts only what is kept.
+    ///
     /// EXAMPLES
     ///
     ///   tui-do add 'Renew the domain *urgent !3 +Admin tomorrow'

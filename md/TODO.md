@@ -516,9 +516,13 @@ hand, seconds apart" to "four that launch when you open the laptop."
   '$EDITOR "$@"'` exactly as git does, on a `0600` temporary file that is removed on every
   path out. `--edit` needs a terminal at both ends (the same predicate as BUG-25's), refuses
   `--dry-run` (a description written to be thrown away is lost work), and a non-zero exit
-  (`:cq`) queues nothing, not even a `--create-labels` label. Its header names the task and
-  project; only those exact lines are removed on save, not every `#` line, because
-  `# Heading` is Markdown. `--description-file -` with no task text is refused in words,
+  (`:cq`) queues nothing, not even a `--create-labels` label. The template is git's: an
+  empty line to type on, then a `>8` scissors line, then help naming the task and project.
+  Everything from the scissors down is dropped, whatever was done to it; above it only
+  leading blank lines and blank lines just above the scissors go, so `# Heading` survives.
+  A deleted scissors line keeps the whole file and warns. The 64 KiB cap counts the kept
+  body, not the help. The title is made printable first, so a newline in it cannot forge a
+  scissors line. `--description-file -` with no task text is refused in words,
   since stdin cannot be both the description and step 2's prompt.
 - **Stored as given.** No Markdown conversion and no guessing: CRLF becomes LF, one trailing
   newline is dropped, and that is all. Invalid UTF-8, a NUL (PostgreSQL rejects one in text)

@@ -493,8 +493,10 @@ HTML), with no tokens read out of it. Pick one of three ways:
   ```
 
 - **`--edit`** (`-e`) opens `$VISUAL`, else `$EDITOR`, else `vi`, the way `git commit` does.
-  Save an empty file for no description, or quit with an error (`:cq` in vim) to add nothing.
-  It needs a terminal.
+  Everything from the `# ---- >8 ----` scissors line down is ignored, as in `git commit -v`.
+  Above it, blank lines at the start and just above the scissors are dropped and the rest is
+  kept exactly, `# Heading`s included. Leave it empty for no description, or quit with an
+  error (`:cq` in vim) to add nothing. It needs a terminal.
 
 It must be UTF-8 and at most 64 KiB, and one trailing newline is dropped. The confirmation
 line counts it rather than printing it:

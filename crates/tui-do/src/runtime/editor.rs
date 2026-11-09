@@ -77,52 +77,76 @@ impl Editor for ShellEditor {
     }
 }
 
-/// The lines `--edit` puts under an empty first line, and removes again.
+/// git's scissors line. Everything from it down belongs to the template, whatever the
+/// person did to it, and everything above it is theirs.
 ///
-/// Only these exact lines are removed, not every line starting with `#`: a description
-/// is often Markdown, and `# Heading` is the first thing many people would type.
-fn header(title: &str, project: &str) -> Vec<String> {
-    vec![
-        format!("# Description for \"{title}\" in {project}."),
-        "# These # lines are removed; Markdown headings you write are kept.".to_string(),
-        "# Save an empty file to add no description. Exit the editor with an error".to_string(),
-        "# (:cq in vim) to add nothing at all.".to_string(),
-    ]
+/// A line rather than a marker on each help line, so a description can hold anything --
+/// `# Heading` included, which is the first thing many people type in Markdown -- and an
+/// edited help line cannot leak into it.
+pub(crate) const SCISSORS: &str = "# ------------------------ >8 ------------------------";
+
+/// What the editor's template says about the task.
+pub(crate) struct Header {
+    title: String,
+    project: String,
 }
 
-/// The file `--edit` opens: an empty line to type on, then the header.
-fn template(title: &str, project: &str) -> String {
-    let mut text = String::from("\n");
-    for line in header(title, project) {
-        text.push_str(&line);
-        text.push('\n');
+impl Header {
+    /// Made printable here, so no caller can forget: a title carrying a newline would
+    /// otherwise end its line early, and could forge a scissors line of its own.
+    pub(crate) fn new(title: &str, project: &str) -> Self {
+        Self {
+            title: super::printable(title),
+            project: super::printable(project),
+        }
     }
-    text
+
+    /// The file `--edit` opens: an empty line to type on, then the scissors and the help.
+    fn template(&self) -> String {
+        format!(
+            "\n{SCISSORS}\n\
+             # Do not modify or remove the line above.\n\
+             # Everything below it will be ignored.\n\
+             #\n\
+             # Description for \"{}\" in {}.\n\
+             # Leave it empty to add no description. Exit the editor with an error\n\
+             # (:cq in vim) to add nothing at all.\n",
+            self.title, self.project
+        )
+    }
 }
 
-/// What the person wrote, with the header taken back out.
+/// What `--edit` got back.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Composed {
+    /// The description, checked like any other.
+    pub(crate) text: String,
+    /// The scissors line was gone, so the whole file was kept, help lines and all. The
+    /// caller says so: keeping it is the safe direction, since cutting at a guess could
+    /// throw away what the person wrote.
+    pub(crate) scissors_missing: bool,
+}
+
+/// Everything above the scissors line, or the whole file if there is none.
 ///
-/// Leading and trailing blank lines go too, as `git commit` drops them: they are the
-/// template's, not the person's -- the empty first line, and the gap left where the
-/// header was. Everything between is kept exactly. CRLF and invalid UTF-8 are left to
-/// `description::normalise`, which every way in shares.
-fn strip_header(written: &str, title: &str, project: &str) -> String {
-    let header = header(title, project);
-    let lines: Vec<&str> = written
-        .split('\n')
-        .filter(|line| {
-            !header
-                .iter()
-                .any(|ours| ours == line.trim_end_matches('\r'))
-        })
-        .collect();
+/// Above it, blank lines at the start and blank lines just above the scissors go, as
+/// `git commit` drops them: they are the template's empty first line and the gap a
+/// person leaves before the help. Everything between is kept exactly. Without the
+/// scissors nothing is trimmed, because there is no telling what is the template's.
+fn cut(written: &str) -> (String, bool) {
+    let lines: Vec<&str> = written.split('\n').collect();
+    let Some(at) = lines.iter().position(|line| line.trim_end() == SCISSORS) else {
+        return (written.to_string(), false);
+    };
+    let above = &lines[..at];
     let blank = |line: &&str| line.trim().is_empty();
-    let start = lines.iter().position(|line| !blank(line));
-    let end = lines.iter().rposition(|line| !blank(line));
-    match (start, end) {
-        (Some(start), Some(end)) => lines[start..=end].join("\n"),
+    let start = above.iter().position(|line| !blank(line));
+    let end = above.iter().rposition(|line| !blank(line));
+    let text = match (start, end) {
+        (Some(start), Some(end)) => above[start..=end].join("\n"),
         _ => String::new(),
-    }
+    };
+    (text, true)
 }
 
 /// A file only its owner can read, removed when this is dropped -- on success, on an
@@ -173,15 +197,22 @@ impl Drop for Scratch {
 /// # Errors
 /// The temporary file could not be made or read, the editor failed or exited non-zero,
 /// or what was written is not a description `description::normalise` accepts.
-pub(crate) fn compose(editor: &dyn Editor, title: &str, project: &str) -> anyhow::Result<String> {
-    let scratch = Scratch::create(&template(title, project))?;
+pub(crate) fn compose(editor: &dyn Editor, header: &Header) -> anyhow::Result<Composed> {
+    use tui_do_core::description::{normalise, DescriptionError};
+    let scratch = Scratch::create(&header.template())?;
     editor.edit(&scratch.path)?;
     let written = std::fs::read(&scratch.path)
         .with_context(|| format!("could not read {}", scratch.path.display()))?;
-    // Checked before the header comes out, so a cap or a bad byte is reported against
-    // what the person actually wrote.
-    let written = tui_do_core::description::normalise(written)?;
-    Ok(strip_header(&written, title, project))
+    let written = String::from_utf8(written)
+        .map_err(|error| DescriptionError::NotUtf8(error.utf8_error().valid_up_to()))?
+        .replace("\r\n", "\n");
+    let (body, found) = cut(&written);
+    // The body, not the file, goes through the checks: the help below the scissors is
+    // the template's, and must not count towards the cap.
+    Ok(Composed {
+        text: normalise(body.into_bytes())?,
+        scissors_missing: !found,
+    })
 }
 
 #[cfg(test)]
@@ -245,40 +276,110 @@ pub(crate) mod tests {
         assert_eq!(editor_command(None, None), "vi");
     }
 
+    fn header() -> Header {
+        Header::new("Write the plan", "Work")
+    }
+
     #[test]
-    fn the_header_comes_out_and_markdown_headings_stay() {
-        let title = "Write the plan";
-        let project = "Work";
-        let mut written = String::from("# Goal\n\nShip it.\n\n## Steps\n- one\n");
-        written.push_str(&template(title, project));
+    fn the_scissors_cut_and_markdown_headings_stay() {
+        let template = header().template();
+        let written = format!("# Goal\n\nShip it.\n\n\n## Steps\n- one\n  \n{template}");
         assert_eq!(
-            strip_header(&written, title, project),
-            "# Goal\n\nShip it.\n\n## Steps\n- one"
+            cut(&written),
+            ("# Goal\n\nShip it.\n\n\n## Steps\n- one".to_string(), true)
         );
 
         // Typed on the empty first line, as the cursor invites.
-        let typed = template(title, project).replacen('\n', "Just this.\n", 1);
-        assert_eq!(strip_header(&typed, title, project), "Just this.");
+        let typed = template.replacen('\n', "Just this.\n", 1);
+        assert_eq!(cut(&typed), ("Just this.".to_string(), true));
 
-        // Untouched, or emptied: no description.
-        assert_eq!(strip_header(&template(title, project), title, project), "");
-        assert_eq!(strip_header("", title, project), "");
+        // Leading blank lines go; leading spaces on a line with text stay.
+        let indented = format!("\n \n\n    code\n{template}");
+        assert_eq!(cut(&indented), ("    code".to_string(), true));
 
-        // A `#` line the person wrote that only looks like ours is theirs.
-        let lookalike = "# Description for something else.\nbody";
-        assert_eq!(strip_header(lookalike, title, project), lookalike);
+        // Untouched: no description.
+        assert_eq!(cut(&template), (String::new(), true));
+    }
+
+    #[test]
+    fn an_edited_header_below_the_scissors_does_not_leak() {
+        let written = format!(
+            "Body.\n{SCISSORS}\n# Description for \"something I changed\"\nI typed here too\n\n# more\n"
+        );
+        assert_eq!(cut(&written), ("Body.".to_string(), true));
+        // Trailing spaces on the scissors line itself still count as the line.
+        let spaced = format!("Body.\n{SCISSORS}   \nnot this");
+        assert_eq!(cut(&spaced), ("Body.".to_string(), true));
+    }
+
+    #[test]
+    fn a_deleted_scissors_line_keeps_the_whole_file() {
+        let editor = FakeEditor::writing(
+            "\nBody.\n# Do not modify or remove the line above.\n# Everything below it will be ignored.\n",
+        );
+        let got = compose(&editor, &header()).unwrap();
+        assert_eq!(
+            got,
+            Composed {
+                text: "\nBody.\n# Do not modify or remove the line above.\n# Everything below it will be ignored.".to_string(),
+                scissors_missing: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_title_with_a_newline_cannot_break_the_template() {
+        let forged = Header::new(&format!("evil\n{SCISSORS}\nmore"), "Work\nX");
+        let template = forged.template();
+        assert_eq!(
+            template.lines().filter(|line| *line == SCISSORS).count(),
+            1,
+            "{template}"
+        );
+        assert!(
+            template.contains(&format!(
+                "\"evil\u{fffd}{SCISSORS}\u{fffd}more\" in Work\u{fffd}X."
+            )),
+            "{template}"
+        );
+        // Left untouched it is still no description, and nothing of the title leaks.
+        let untouched = FakeEditor {
+            writes: None,
+            fails: false,
+            saw: RefCell::new(None),
+        };
+        assert_eq!(compose(&untouched, &forged).unwrap().text, "");
+    }
+
+    #[test]
+    fn the_cap_applies_to_the_body_not_the_help() {
+        let max = tui_do_core::description::MAX_BYTES;
+        let template = header().template();
+        let at_cap = FakeEditor::writing(&format!("{}{template}", "a".repeat(max)));
+        assert_eq!(compose(&at_cap, &header()).unwrap().text.len(), max);
+        let over = FakeEditor::writing(&format!("{}{template}", "a".repeat(max + 1)));
+        let error = compose(&over, &header()).unwrap_err();
+        assert!(error.to_string().contains("64 KiB"), "{error}");
     }
 
     #[test]
     fn the_header_names_the_task_and_explains_itself() {
-        let text = template("Call the VA", "Legal");
+        let text = Header::new("Call the VA", "Legal").template();
         assert!(
-            text.starts_with('\n'),
-            "the cursor's line comes first: {text:?}"
+            text.starts_with(&format!("\n{SCISSORS}\n")),
+            "the cursor's line comes first, then the scissors: {text:?}"
+        );
+        assert!(
+            text.contains("Do not modify or remove the line above."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Everything below it will be ignored."),
+            "{text}"
         );
         assert!(text.contains("\"Call the VA\" in Legal"), "{text}");
         assert!(
-            text.contains("Save an empty file to add no description"),
+            text.contains("Leave it empty to add no description"),
             "{text}"
         );
         assert!(text.contains(":cq"), "{text}");
@@ -286,13 +387,23 @@ pub(crate) mod tests {
 
     #[test]
     fn compose_returns_what_the_editor_wrote_and_removes_the_file() {
-        let editor =
-            FakeEditor::writing("Para one.\r\n\r\nPara two.\n\n# Description for \"t\" in P.\n");
-        let got = compose(&editor, "t", "P").unwrap();
-        assert_eq!(got, "Para one.\n\nPara two.");
+        let editor = FakeEditor::writing(&format!(
+            "Para one.\r\n\r\nPara two.\r\n\r\n{SCISSORS}\r\n# junk\r\n"
+        ));
+        let got = compose(&editor, &header()).unwrap();
+        assert_eq!(
+            got,
+            Composed {
+                text: "Para one.\n\nPara two.".to_string(),
+                scissors_missing: false,
+            }
+        );
 
         let (path, template) = editor.saw.borrow().clone().unwrap();
-        assert!(template.contains("\"t\" in P"), "{template}");
+        assert!(
+            template.contains("\"Write the plan\" in Work"),
+            "{template}"
+        );
         assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
         assert!(!path.exists(), "the temporary file was left behind");
     }
@@ -309,14 +420,14 @@ pub(crate) mod tests {
             }
         }
         let editor = Mode(RefCell::new(0));
-        compose(&editor, "t", "P").unwrap();
+        compose(&editor, &header()).unwrap();
         assert_eq!(*editor.0.borrow() & 0o777, 0o600);
     }
 
     #[test]
     fn a_failed_editor_is_an_error_and_still_removes_the_file() {
         let editor = FakeEditor::failing();
-        let error = compose(&editor, "t", "P").unwrap_err();
+        let error = compose(&editor, &header()).unwrap_err();
         assert!(error.to_string().contains("nothing was added"), "{error}");
         let (path, _) = editor.saw.borrow().clone().unwrap();
         assert!(!path.exists(), "the temporary file was left behind");
@@ -330,7 +441,7 @@ pub(crate) mod tests {
             saw: RefCell::new(None),
         };
         // Left as the template: no description, not an error.
-        assert_eq!(compose(&editor, "t", "P").unwrap(), "");
+        assert_eq!(compose(&editor, &header()).unwrap().text, "");
 
         struct Bytes;
         impl Editor for Bytes {
@@ -339,7 +450,7 @@ pub(crate) mod tests {
                 Ok(())
             }
         }
-        let error = compose(&Bytes, "t", "P").unwrap_err();
+        let error = compose(&Bytes, &header()).unwrap_err();
         assert!(error.to_string().contains("not UTF-8"), "{error}");
     }
 
@@ -363,12 +474,19 @@ pub(crate) mod tests {
         let editor = ShellEditor {
             command: format!("'{}' --wait", script.display()),
         };
-        assert_eq!(compose(&editor, "t", "P").unwrap(), "flag=--wait");
+        // The script replaced the whole file, scissors and all, so all of it is kept.
+        assert_eq!(
+            compose(&editor, &header()).unwrap(),
+            Composed {
+                text: "flag=--wait".to_string(),
+                scissors_missing: true,
+            }
+        );
 
         let failing = ShellEditor {
             command: "false".to_string(),
         };
-        let error = compose(&failing, "t", "P").unwrap_err();
+        let error = compose(&failing, &header()).unwrap_err();
         assert!(
             error.to_string().contains("exited with status 1"),
             "{error}"

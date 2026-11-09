@@ -1483,7 +1483,15 @@ async fn describe_and_queue(
         // Blocking, on purpose: nothing else is running yet, and the editor owns the
         // terminal until it exits.
         DescriptionSource::Edit => {
-            editor::compose(editor, &printable(&built.task.title), &printable(project))?
+            let composed =
+                editor::compose(editor, &editor::Header::new(&built.task.title, project))?;
+            if composed.scissors_missing {
+                eprintln!(
+                    "warning: the editor's \">8\" scissors line was removed, so the whole \
+                     file was kept as the description, help lines included."
+                );
+            }
+            composed.text
         }
     };
     built.task.description.clone_from(&description);
@@ -1869,7 +1877,10 @@ mod tests {
         assert_eq!(store.pending_count().await.unwrap(), 0);
 
         // And one that writes queues the task with exactly that description.
-        let editor = editor::tests::FakeEditor::writing("Line one.\n\nLine two.\n");
+        let editor = editor::tests::FakeEditor::writing(&format!(
+            "Line one.\n\nLine two.\n\n{}\n# help\n",
+            editor::SCISSORS
+        ));
         let (_, description) = describe_and_queue(&store, built, &mode, &editor, "Work")
             .await
             .unwrap();

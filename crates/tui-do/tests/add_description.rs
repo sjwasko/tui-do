@@ -455,5 +455,27 @@ async fn a_real_editor_writes_the_description() {
         "{cancelled:?}"
     );
     assert_eq!(queued(&dir).await.len(), 1, "the cancelled add was queued");
+
+    // An editor that overwrites the whole file, scissors line and all: everything it
+    // wrote is kept, and stderr says so. `sh` runs `$EDITOR "$@"`, so this is
+    // `printf … > <file>`.
+    let Some(whole) = under_a_pty(
+        &dir,
+        &["add", "--offline", "Kept whole +Personal", "--edit"],
+        r"printf 'whole\n# help I left\n' >",
+    ) else {
+        return;
+    };
+    // Under `script`, stderr arrives on the same terminal as stdout.
+    let said = stdout(&whole);
+    assert!(whole.status.success(), "{whole:?}");
+    assert!(said.contains("warning:"), "{said}");
+    assert!(said.contains("scissors line was removed"), "{said}");
+    let tasks = queued(&dir).await;
+    let kept = tasks
+        .iter()
+        .find(|task| task.title == "Kept whole")
+        .expect("queued");
+    assert_eq!(kept.description, "whole\n# help I left");
     let _ = std::fs::remove_dir_all(&dir);
 }
