@@ -43,6 +43,8 @@
 //! risks a duplicate. A duplicate task is an annoyance and a lost one is a bug report, so
 //! the entry stays.
 
+mod queue;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,9 +54,9 @@ use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
 use crate::store::{
-    Mutation, OutboxEntry, Queued, Store, Subject, CURRENT_USER, LAST_PULL, LAST_RECONCILE,
-    PAGE_CAP,
+    Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
 };
+use queue::DrainQueue;
 
 /// How far back an incremental pull reaches beyond the watermark.
 ///
@@ -548,35 +550,12 @@ impl Sync {
         // interval -- the one-entry push after an edit -- reports nothing extra.
         let mut reported = Instant::now();
 
-        // BUG-23: this loop used to re-read the whole queue with `Store::pending` before
-        // every entry, parsing every payload each time -- 1,586,871 parses to drain 1,781
-        // entries, and 16.7 s of the store's one lock. Now it keeps the queue's shape
-        // (`Queued`: id, subject, backoff, no payload) and asks only for what can have
-        // changed: rows queued since the last look, by id. A payload is parsed when its
-        // entry is about to be sent, or when a blocked label means the scan has to ask
-        // `references` -- once per entry per pass either way.
-        //
-        // Only this loop rewrites or deletes a queued row, so what it holds goes stale in
-        // exactly the places it can see: a settle rewrites later payloads and subjects
-        // (`retarget`, `retarget_label`), and a rejection discards a set. Either sets
-        // `stale`, and the next look reads the whole shape again and forgets every payload
-        // it had parsed.
-        let mut queue: Vec<Queued> = Vec::new();
-        let mut seen = 0_i64;
-        let mut stale = true;
-        // Parsed payloads, for the `references` check against `blocked_labels`.
-        let mut carried: std::collections::HashMap<i64, Mutation> =
-            std::collections::HashMap::new();
+        // The queue's shape, refreshed by id rather than re-read whole (BUG-23). See
+        // `queue.rs` for why only this loop can make it stale.
+        let mut queue = DrainQueue::new();
 
         loop {
-            if stale {
-                queue = self.store.queued_after(0).await?;
-                carried.clear();
-                stale = false;
-            } else {
-                queue.extend(self.store.queued_after(seen).await?);
-            }
-            seen = queue.last().map_or(seen, |last| last.id.max(seen));
+            queue.refresh(&self.store).await?;
             if reported.elapsed() >= self.progress_every {
                 reported = Instant::now();
                 self.emit(SyncEvent::Sending {
@@ -584,31 +563,23 @@ impl Sync {
                 });
             }
             if !blocked_labels.is_empty() {
-                let unread: Vec<i64> = queue
-                    .iter()
-                    .filter(|queued| {
-                        !carried.contains_key(&queued.id)
-                            && !attempted.contains(&queued.id)
-                            && !blocked.contains(&queued.subject)
+                queue
+                    .carry(&self.store, |queued| {
+                        !attempted.contains(&queued.id) && !blocked.contains(&queued.subject)
                     })
-                    .map(|queued| queued.id)
-                    .collect();
-                if !unread.is_empty() {
-                    carried.extend(self.store.mutations(unread).await?);
-                }
+                    .await?;
             }
-            let mut candidate = None;
-            for queued in &queue {
+            let candidate = queue.next_candidate(|queued, mutation| {
                 let subject = queued.subject;
                 if attempted.contains(&queued.id)
                     || blocked.contains(&subject)
-                    || carried.get(&queued.id).is_some_and(|mutation| {
+                    || mutation.is_some_and(|mutation| {
                         blocked_labels
                             .iter()
                             .any(|label| references(mutation, *label))
                     })
                 {
-                    continue;
+                    return false;
                 }
                 if backoff == Backoff::Respect && !queued.is_due(now) {
                     // Not attempted on this pass, and just as much in the way as one that
@@ -622,26 +593,26 @@ impl Sync {
                     if let Subject::Label(id) = subject {
                         blocked_labels.insert(id);
                     }
-                    continue;
+                    return false;
                 }
-                candidate = Some(queued.id);
-                break;
-            }
+                true
+            });
             let Some(id) = candidate else {
                 break;
             };
             // Read now, after whatever settled earlier in this pass has rewritten it.
             let Some(entry) = self.store.entry(id).await? else {
-                queue.retain(|queued| queued.id != id);
+                tracing::warn!(id, "a queued entry vanished before it was sent");
+                queue.forget(id);
                 continue;
             };
-            // A label blocked during this scan was not in `carried`'s reckoning yet, so
-            // the payload in hand is the first chance to see that this entry sends it.
+            // A label blocked during this scan was not in the queue's parsed payloads
+            // yet, so the one in hand is the first chance to see that this entry sends it.
             if blocked_labels
                 .iter()
                 .any(|label| references(&entry.mutation, *label))
             {
-                carried.insert(entry.id, entry.mutation);
+                queue.keep(entry.id, entry.mutation);
                 continue;
             }
             attempted.insert(entry.id);
@@ -649,13 +620,13 @@ impl Sync {
             match self.deliver(&entry).await? {
                 Ok(()) => {
                     report.sent += 1;
-                    queue.retain(|queued| queued.id != entry.id);
+                    queue.forget(entry.id);
                     // A settle rewrites what was queued behind a create.
                     if matches!(
                         entry.mutation,
                         Mutation::CreateTask { .. } | Mutation::CreateLabel { .. }
                     ) {
-                        stale = true;
+                        queue.mark_stale();
                     }
                 }
                 Err(error) if is_already_done(&entry.mutation, &error) => {
@@ -665,7 +636,7 @@ impl Sync {
                     tracing::debug!(kind = entry.mutation.kind(), "already in that state");
                     self.store.complete(entry.id).await?;
                     report.sent += 1;
-                    queue.retain(|queued| queued.id != entry.id);
+                    queue.forget(entry.id);
                 }
                 Err(error) if is_permanent(&error) => {
                     let subject = entry.mutation.subject();
@@ -681,7 +652,7 @@ impl Sync {
                     //
                     // The whole queue is read here, payloads and all, because the
                     // rollback needs every doomed entry's mutation. A rejection is rare,
-                    // and `seen` keeps the set to what this pass had already looked at,
+                    // and `seen()` keeps the set to what this pass had already looked at,
                     // as the snapshot it used to take before every entry did.
                     let doomed: Vec<OutboxEntry> = self
                         .store
@@ -689,14 +660,14 @@ impl Sync {
                         .await?
                         .into_iter()
                         .filter(|queued| {
-                            queued.id <= seen
+                            queued.id <= queue.seen()
                                 && (queued.mutation.subject() == subject
                                     || matches!(subject, Subject::Label(id) if references(&queued.mutation, id)))
                         })
                         .collect();
                     report.rejected += doomed.len();
                     self.store.discard_all(doomed).await?;
-                    stale = true;
+                    queue.mark_stale();
                     tracing::warn!(%subject, error = %message, "the server refused a queued change");
                     self.emit(SyncEvent::Rejected {
                         subject,

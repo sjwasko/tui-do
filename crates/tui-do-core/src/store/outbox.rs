@@ -871,6 +871,24 @@ impl Store {
         .await
     }
 
+    /// How many entries are queued with an id of `id` or below.
+    ///
+    /// What the drain checks its own picture of the queue against: rows it has already
+    /// seen change only through it, while anything new lands above `id`.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn pending_through(&self, id: i64) -> Result<i64> {
+        self.read(move |connection| {
+            Ok(connection.query_row(
+                "SELECT count(*) FROM outbox WHERE id <= ?1",
+                params![id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+    }
+
     /// Whether this task has unsent local changes.
     ///
     /// A pull must not overwrite one: the server's copy is older than what the user is
