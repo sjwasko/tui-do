@@ -2,6 +2,13 @@
 
 **Written 2026-09-08. Not built — status corrected 2026-09-13.**
 
+> **Superseded 2026-11-09: this will not be built.** Vikunja has released an official MCP
+> server upstream, in the main Vikunja codebase, so a tui-do MCP server would duplicate it.
+> There will be no `tui-do mcp` subcommand and no `crates/tui-do-mcp`. This note is kept as
+> the record of what was designed and why. Its CLI half, `tui-do list`/`show --json`
+> (`md/TODO.md` item 3a), is the only part that may still be built, and it no longer has a
+> second consumer to stay compatible with.
+
 This note said it was "being built on branch `feature/mcp-server`", and that nothing was on
 `main` except the note. Both halves were wrong. The note *is* on `main`, along with every
 commit that branch has: `feature/mcp-server` is an **ancestor** of `main` — no commits of its

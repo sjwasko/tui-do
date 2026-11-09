@@ -388,6 +388,11 @@ and in `md/2026-09-08-mcp-server-design.md`, which states it as something a test
 one claim this entry retires is the one about no reachable trigger: it stands for the TUI,
 and it will stop standing the day `tui-do mcp` exists without that constraint honoured.
 
+**2026-11-09: `tui-do mcp` will not exist.** Vikunja ships an official MCP server, and the
+tui-do one was dropped. The machine-speed caller this section worried about is not coming,
+so the acceptance rests on the human floor again. The constraint above still applies to
+anything else that ever writes in a loop through `Store::queue`.
+
 ### ~~BUG-3~~ — FIXED — quitting mid-request can duplicate a task or label
 
 `crates/tui-do/src/runtime/mod.rs:507` with `crates/tui-do-core/src/sync/mod.rs:646`.

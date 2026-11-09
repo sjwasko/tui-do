@@ -317,7 +317,7 @@ impl Store {
             // `Store::queue` is exactly that shape: `next_local_id` reads `sync_state`
             // and then writes it, inside the caller's transaction. Invisible while one
             // process holds the only connection; reachable the moment two do
-            // (`tui-do add` beside a running interface, and later an MCP server).
+            // (`tui-do add` beside a running interface).
             //
             // The cost is a marginally longer lock hold, taken from the first statement
             // rather than the first write.

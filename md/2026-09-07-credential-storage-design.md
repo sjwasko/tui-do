@@ -234,6 +234,11 @@ Two consequences, neither of which changes the keychain-first decision:
 Written down here because it only appears where the two efforts meet, and the session
 building the MCP server will reach the credential path before this one does.
 
+*(2026-11-09: the MCP server was dropped because Vikunja ships an official one. The
+"no prompt on the startup path" constraint still stands for people. An agent running
+`tui-do add` from a session with no GUI meets the same locked-keychain case. On macOS the
+keychain lookup only happens once the environment variable has been checked.)*
+
 ---
 
 ## What it costs, honestly

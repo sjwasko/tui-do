@@ -11,7 +11,17 @@ note nobody re-reads.
 Keep it honest. An item moves to **Done** when it ships, and a decision moves to a design
 note in `md/` when it is taken. Items carry the date they were raised.
 
-Last touched 2026-11-08.
+Last touched 2026-11-09.
+
+> **Decided 2026-11-09: tui-do will not build an MCP server.** Vikunja has released an
+> official MCP server upstream, in the main Vikunja codebase. That makes item 3b redundant:
+> an agent that wants Vikunja through MCP should use the server's own. Item 3b, the
+> `tui-do mcp` subcommand and the planned `crates/tui-do-mcp` crate are dropped, not
+> deferred. Much of this file was written assuming they would exist: the road map, items
+> 3–6 and 10, the five tiers, and the launch plan. Each of those now has a dated note saying
+> what still holds. Where a paragraph still argues from "when the MCP server ships", treat it
+> as history. `md/2026-09-08-mcp-server-design.md` is kept as a record and marked
+> superseded.
 
 ## The road map, as of 2026-09-13
 
@@ -23,6 +33,10 @@ than in a chat log. Read in this order, because each one assumes the last:
 | **1. Auth** — what are we actually building, and why | item 9, then "The macOS auth goal" |
 | **2. The lease** — concurrent agents, identity, scaling | "How this scales — the five tiers" |
 | **3. MCP** — how it authenticates, and what breaks at two processes | item 10, with its test design |
+
+**Superseded 2026-11-09: there is no MCP server, so the critical path below no longer
+exists.** Question 3 is moot except where item 10 still applies to `tui-do add` running
+beside the interface. The paragraph is kept as it was written.
 
 **The critical path is item 3 (the MCP server), and item 10 gates its first write.**
 Everything in the launch section is held for item 3 shipping. Items 4–6 follow it. Items
@@ -50,9 +64,10 @@ notes cite them — so this says *what order*, not *what number*.
            everything agentic needs
 
   NEXT     3a         tui_do_core::agent + list/show --json
-           3b         the MCP server, rendering from that same module
+           3b         DROPPED 2026-11-09 -- Vikunja ships its own MCP server
 
   DECIDE   BUG-20 before November. The --json contract before 3a ships.
+           Whether 3a is still wanted without 3b (see item 3).
            BUG-9 needs a decision, not work. BUG-7 is fixed.
 
   DEFER    4 (Kanban), standalone mode, comments, subtasks
@@ -87,6 +102,10 @@ done without ceremony if launch timing starts to matter more than the macOS expe
 reason it is written this way round is that a project built in evenings is better served by
 what can be *finished* than by what is theoretically highest-value.
 
+**The split below is how 3a survived 3b being dropped on 2026-11-09.** 3a never depended
+on 3b. 3b is gone, so the two-doors argument no longer applies: `tui-do list --json` is the
+only consumer of the contract.
+
 **Split item 3, which its own design note does not.** §8 is right that the MCP tool result
 and `tui-do list --json` are one contract through two doors — but one contract does not mean
 one shipment. **3a** is `tui_do_core::agent` plus the CLI read verbs: no rmcp, no new crate,
@@ -96,14 +115,17 @@ cannot" gap on its own. **3b** is the MCP server rendering from that same module
 with one consumer, then two. This halves the risk of the largest item on the list.
 
 **Note item 3 starts from nothing.** The branch is an ancestor of `main` and the worktree is
-stale — rebase it or cut a fresh one before writing in it.
+stale — rebase it or cut a fresh one before writing in it. *(2026-11-09: the `../tui-do-mcp`
+worktree is gone. `origin/feature/mcp-server` still exists on the remotes and carries
+nothing, so it can be deleted whenever convenient. 3a should start from a fresh branch.)*
 
 ### Why the deferrals, said out loud
 
 - **Kanban (item 4).** Agent-state-as-labels is fine at n=1; build buckets when the global
   label pool actually chafes, which is Tier 4. It is also the question `README.md` asked the
   public, and merging MCP with a label scheme closes it quietly. Ship 3a/3b, see whether
-  anyone engages, then decide.
+  anyone engages, then decide. *(2026-11-09: there is no 3b, so the MCP half of this no
+  longer applies. Kanban stands or falls as an interface feature.)*
 - **Standalone mode.** The largest owed item, wants a design note before code, and has one
   unanswered question that determines all the others ("does the outbox stay armed?"). No
   demand signal.
@@ -166,8 +188,17 @@ both cite items by number, and shifting them would break those references silent
 This is where the 2026-09-08 competitive analysis (`md/2026-09-08-veans-competitive-analysis.md`)
 lands, and the order matters.
 
-**3. An MCP server, and read verbs with `--json`. One piece of work, not two.**
+**3. ~~An MCP server, and read verbs with `--json`. One piece of work, not two.~~**
 *(raised 2026-09-08; designed, **not started**)*
+
+**The MCP half was dropped on 2026-11-09.** Vikunja now ships an official MCP server
+upstream, so a second one in tui-do would duplicate it. There will be no `tui-do mcp`, no
+`crates/tui-do-mcp` and no `rmcp` dependency. **What is left is 3a:** `tui-do list` and
+`tui-do show` with `--json`, read from the local store. The "veans can read and tui-do
+cannot" argument below never depended on MCP and still holds. Nobody has decided yet whether
+it is still worth building now that agents have a first-party route into Vikunja; it is on
+the DECIDE line. The rest of this entry is as written. Read "one contract through two
+doors" as one door now.
 Design taken in `md/2026-09-08-mcp-server-design.md`. `tui-do list` and `tui-do show` are
 still the item — today `add` is the entire agent surface, and the real gap against veans is
 not quick-add versus flags but that veans can read and tui-do cannot. Answering **from the
@@ -209,9 +240,13 @@ Second, **a bucket belongs to a view, not to a project**, and the CLI shape has 
 unmissable or someone moves a card on a board nobody is looking at. The MCP server therefore
 carries a view in its binding from its first commit even though nothing reads it yet, so the
 label-to-bucket swap cannot change a launch contract agents have already been configured
-with.
+with. *(2026-11-09: there is no MCP server, so this binding concern no longer applies. The
+point that a bucket belongs to a view still holds for the CLI verb.)*
 
 **5. A review queue.** *(raised 2026-09-08; unblocked early by item 3)*
+*(2026-11-09: the `agent:*` status labels came from the MCP design, which is dropped. A
+review queue is still a filter over whatever labels agents set, including agents using
+Vikunja's own MCP server, but no tui-do work will create those labels any more.)*
 A view filtered to work an agent has finished and parked for a human. Item 3's status labels
 (`agent:in-review`) give this a filter to read **before** buckets exist, so it no longer
 waits on item 4. veans's one good rule
@@ -226,6 +261,11 @@ up by the agent. Needs nothing new on the wire — a saved filter plus a convent
 
 **10. Two processes on one store file — what MCP makes ordinary.**
 *(raised 2026-09-13; gates the first MCP write, not the MCP design)*
+
+**Re-scoped 2026-11-09: there will be no MCP processes.** The case that remains is the one
+this item already called real today: `tui-do add`, including several agents each calling
+it, running beside an open interface. (a) and (b) are done. (c) and (f) still apply to that
+case. (e) existed only because of MCP and is retired.
 
 Item 3 puts N `tui-do mcp` processes on one SQLite file. Several assumptions in the
 codebase hold for one process and stop holding at two. None of this changes the MCP
@@ -344,6 +384,9 @@ gap contains a round trip.
 pages every five minutes and three quarters of that is redundant, because they share the
 store they are all filling. The measured numbers are under "The lease is a cost argument
 before it is a correctness argument" below.
+
+**(e) Retired 2026-11-09, along with the MCP server it was about.** `tui-do add` exits in
+seconds and the interface is long-lived, so neither produces the churn described below.
 
 **(e) Lease churn, which argues the daemon is nearer than it looks.** An MCP stdio server
 lives and dies with its client session. Three clients opening and closing all day means the
@@ -675,6 +718,8 @@ on: whether macOS re-prompts for Keychain access after a rebuild.
 **The Linux arm is deliberately not a gap.** 53 net-new crates and a second async runtime,
 for a Secret Service that is absent on every headless box in the fleet and locked on most of
 the rest. Leaving it `Unavailable` permanently would be a fine outcome.
+**Decided 2026-11-09: it stays `Unavailable` permanently.** Linux keeps `token_file` at
+`0600`, written by `tui-do login`. Item 8 is now macOS-only.
 
 The original entry follows, because its measurements are what the above rests on.
 
@@ -807,6 +852,13 @@ above mix them together and that is most of the confusion:
 ## How this scales — the five tiers
 
 *(worked out 2026-09-13; the frame items 3–6 and 10 sit inside, not a task of its own)*
+
+**Written for the MCP server, which was dropped on 2026-11-09.** Tier 2's "four agent
+processes on one store" was four `tui-do mcp` connectors. Without them, the shared-store
+case is `tui-do add` plus the interface, which is short-lived and nowhere near the 312
+requests per 5 minutes below. The lease drops from "the only new work" to "not needed
+unless something long-lived joins the interface". **The pull-cost leads further down are
+independent of MCP and still stand.**
 
 The process model is in **`md/2026-09-08-mcp-process-model.png`**, tracked beside this file.
 Read it first — everything below is that diagram extended outwards.
@@ -1063,6 +1115,11 @@ client" is a crowded story, made worse by the `gouveags/tui-do` name collision. 
 files its own tasks into a self-hosted server and the terminal client picks them up" is a
 different story, and it needs item 3 shipped. So the one-shot channels are held.
 
+**Needs a new decision, 2026-11-09.** The plan below held every one-shot channel for an
+MCP launch that will not happen, and Vikunja's own MCP server now tells the "agent files
+into self-hosted Vikunja" story better than tui-do could. The channels are still unspent.
+What they are being held *for* is undecided.
+
 **Held for the MCP launch (item 3):** Show HN, `r/selfhosted`, a `community.vikunja.io`
 follow-up, `r/rust`. Spend them together, frame on the agent rather than the TUI, and
 pre-empt the name collision in one line — the analysis is in `CLAUDE.md` and it costs a
@@ -1119,7 +1176,7 @@ they are commitments rather than ideas.
 | | status |
 |---|---|
 | macOS port | **done** — `v1.0.1`, plus a Homebrew tap. Item 2 is the remaining honesty gap |
-| Agentic AI | items 3–6 |
+| Agentic AI | `tui-do add` with `--dry-run`/`--tokens` and `skills/tui-do/SKILL.md` today; 3a if built. **No MCP server** (decided 2026-11-09) — Vikunja's official one covers that, and a follow-up on the forum should say so |
 | Comments | not started |
 | Subtasks | not started |
 | WSL support | not started; Windows is currently answered with "use WSL" |
@@ -1150,14 +1207,20 @@ not be fixed. None are Critical.
 ## Documentation debt
 
 - The three structural troubleshooting surfaces in `bugs.md` (`sync::push_with`,
-  `runtime::add`, `update::apply_edit`) are still the worst places to debug. **`runtime::add`
+  `runtime::add`, `update::apply_edit`) are still the worst places to debug. ~~**`runtime::add`
   is scheduled**: item 3's branch splits it into `resolve_or_explain` and `report` exactly as
   `bugs.md` §2 prescribes, because an MCP server cannot call a function that writes to the
-  stdout it speaks JSON-RPC over. The other two are untouched.
+  stdout it speaks JSON-RPC over.~~ **Unscheduled again 2026-11-09:** the MCP server was what
+  forced the split. `bugs.md` §2's case for it stands on its own. The other two are untouched.
 
 ---
 
 ## Done
+
+- **2026-11-09** — **Decided: no MCP server in tui-do.** Vikunja released an official MCP
+  server upstream, which makes item 3b redundant. 3b, `tui-do mcp` and `crates/tui-do-mcp`
+  are dropped. 3a (`list`/`show --json`) is kept, pending a decision. Item 10(e) is retired.
+  The design note is marked superseded.
 
 - **2026-09-14** — **Item 8's seam, and the token-source order.** `config::keychain` is the
   platform seam with its four outcomes implemented, and `Config::resolve_token` is the
