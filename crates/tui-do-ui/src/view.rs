@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::assist::{Aside, QuickAddInput};
 use crate::geometry;
 use crate::keymap::{help_rows, HelpRow};
 use crate::markdown;
@@ -633,8 +634,8 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         search_prompt(model, state, frame);
         return;
     }
-    if let Modal::Add(input) = modal {
-        add_prompt(model, input, frame);
+    if let Modal::Add(state) = modal {
+        add_prompt(model, state, frame);
         return;
     }
     if let Modal::Due(state) = modal {
@@ -1363,11 +1364,15 @@ fn value_style(theme: Theme, focused: bool) -> Style {
 /// The syntax is only worth having if it is visible before the task exists. Typing
 /// `*urgent !3 +Legal tomorrow` and finding out afterwards what it meant is how magic
 /// syntax gets a bad name.
-fn add_prompt(model: &Model, input: &TextInput, frame: &mut Frame) {
+fn add_prompt(model: &Model, state: &QuickAddInput, frame: &mut Frame) {
     let theme = model.theme;
     let area = model.frames().status;
     if area.height == 0 {
         return;
+    }
+    let input = &state.input;
+    if let Some(aside) = state.aside() {
+        add_aside(aside, area, frame, theme);
     }
 
     let parsed = tui_do_core::quickadd::parse(input.value(), &model.now);
@@ -1393,9 +1398,14 @@ fn add_prompt(model: &Model, input: &TextInput, frame: &mut Frame) {
         // order to remember -- the parser takes these anywhere in the line -- so the
         // legend is the whole of what there is to learn.
         vec![Span::styled(
-            "*label  +project  !1-5  @user  a date   Esc:cancel",
+            "*label  +project  !1-5  @user  a date   Tab  ?:help  Esc:cancel",
             theme.muted(),
         )]
+    } else if let Some(open) = crate::assist::unclosed(input.value()) {
+        vec![
+            Span::styled(open.hint(), theme.warning()),
+            Span::styled("  Esc:cancel", theme.muted()),
+        ]
     } else if summary.is_empty() {
         vec![Span::styled("Enter:add  Esc:cancel", theme.muted())]
     } else {
@@ -1419,6 +1429,39 @@ fn add_prompt(model: &Model, input: &TextInput, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
     place_cursor(frame, area, input, 2);
 }
+
+/// What Tab listed or `?` explained, in the rows just above the add prompt.
+///
+/// Over the list rather than in a box, because it belongs to the line being typed and
+/// goes away on the next key.
+fn add_aside(aside: &Aside, prompt: Rect, frame: &mut Frame, theme: Theme) {
+    let rows = usize::from(prompt.y.min(ADD_ASIDE_ROWS));
+    let lines = aside.lines(prompt.width, rows);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(prompt.y);
+    let area = Rect {
+        x: prompt.x,
+        y: prompt.y - height,
+        width: prompt.width,
+        height,
+    };
+    let lines: Vec<Line> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let style = if row == 0 {
+                theme.accent()
+            } else {
+                theme.text()
+            };
+            Line::from(Span::styled(line, style))
+        })
+        .collect();
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// How many rows the add prompt's matches or help may take above it.
+const ADD_ASIDE_ROWS: u16 = 8;
 
 /// The search prompt, along the status line, with a live count of what matches.
 fn search_prompt(model: &Model, state: &SearchState, frame: &mut Frame) {

@@ -16,8 +16,9 @@ const EXITS_WITHIN: Duration = Duration::from_secs(20);
 /// A scratch directory holding a config that loads and a path for a store, so the run
 /// can touch neither the real config nor the real store. Both are set, never one: a
 /// scratch config alone still writes to the real store.
-fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("tui-do-no-terminal-{}", std::process::id()));
+fn scratch(name: &str) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("tui-do-no-terminal-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // A loopback port nothing listens on: if the interface ever did start, it could not
@@ -33,7 +34,7 @@ fn scratch() -> PathBuf {
 
 #[test]
 fn starting_with_no_terminal_refuses_promptly() {
-    let dir = scratch();
+    let dir = scratch("interface");
     let mut child = Command::new(env!("CARGO_BIN_EXE_tui-do"))
         .env("TUI_DO_CONFIG", dir.join("config.yaml"))
         .env("TUI_DO_DB", dir.join("tui-do.db"))
@@ -75,5 +76,45 @@ fn starting_with_no_terminal_refuses_promptly() {
         !dir.join("tui-do.db").exists(),
         "the refusal comes before the store is opened"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `tui-do add` with no text asks for a task only at a terminal. Anywhere else it is a
+/// script that forgot its argument, and gets clap's error exactly as before item 12: no
+/// prompt drawn on a stdout nobody is watching, and no wait for keys that cannot come.
+#[test]
+fn add_with_no_text_and_no_terminal_is_still_a_usage_error() {
+    let dir = scratch("add");
+    // `--dry-run` alone asks too, at a terminal; without one it is the same refusal.
+    for args in [&["add"][..], &["add", "--dry-run"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tui-do"))
+            .args(args)
+            .env("TUI_DO_CONFIG", dir.join("config.yaml"))
+            .env("TUI_DO_DB", dir.join("tui-do.db"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "clap's usage exit code: {stderr}"
+        );
+        assert!(
+            stderr.contains("the following required arguments were not provided"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("<TEXT>..."), "{stderr}");
+        assert!(stderr.contains("Usage: tui-do add"), "{stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "a prompt was drawn: {:?}",
+            output.stdout
+        );
+        assert!(!dir.join("tui-do.db").exists(), "the store was opened");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -80,6 +80,11 @@ agents run non-interactively, where this is off, but single quotes are correct e
 **Names with spaces go in brackets:** `tui-do add '+[Dinner Places] Book a table'`.
 Brackets beat quotes from a shell, because the shell strips quotes before tui-do sees them.
 
+**Always pass the text.** `tui-do add` with no text opens an interactive prompt with Tab
+completion and `?` help, but only at a terminal, and it is for people. An agent passes the
+line as an argument, and checks one it is unsure of with `--dry-run` first. Run with no
+text and no terminal, `tui-do add` is a usage error, exit code 2.
+
 ## Flags that matter when nobody is watching
 
 | flag | when to use it |

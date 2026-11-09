@@ -10,6 +10,7 @@
 //! a message back. The render loop's only await is on the message channel.
 
 mod coalesce;
+mod prompt;
 mod terminal;
 
 use std::future::Future;
@@ -81,10 +82,7 @@ const FLUSH_DOTS: u32 = 5;
 /// config that names a server it cannot parse. Once the loop is running, failures become
 /// messages rather than errors — that is the point of the split.
 pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Result<()> {
-    let store_path = Store::default_path().context("could not decide where to keep the store")?;
-    let store = Store::open(&store_path)
-        .await
-        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+    let store = open_store().await?;
 
     let (tx, rx) = LoopTx::channel();
 
@@ -402,6 +400,19 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
                         .await
                     {
                         Ok(labels) => Msg::LabelsLoaded(labels),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
+            });
+        }
+        Effect::LoadUsers => {
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.users, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store.usernames().await {
+                        Ok(users) => Msg::UsersLoaded(users),
                         Err(error) => Msg::StoreFailed(error.to_string()),
                     };
                     let _ = tx.send(msg);
@@ -1075,6 +1086,101 @@ fn describe(projects: &[tui_do_core::models::Project]) -> String {
     }
 }
 
+/// Open the store where it lives: `TUI_DO_DB`, or the platform's data directory.
+///
+/// # Errors
+/// No data directory to put it in, or a store that cannot be opened or migrated.
+pub async fn open_store() -> anyhow::Result<Store> {
+    let store_path = store_path()?;
+    Store::open(&store_path)
+        .await
+        .with_context(|| format!("could not open the store at {}", store_path.display()))
+}
+
+/// Open the store read-only, without creating or migrating it: for a dry run, and for the
+/// names the prompt completes from, neither of which may leave a store behind.
+///
+/// # Errors
+/// [`tui_do_core::CoreError::NotReady`] as it stands, since it already says what to run;
+/// anything else with the path it was opening.
+pub async fn open_existing_store() -> anyhow::Result<Store> {
+    open_existing_at(&store_path()?).await
+}
+
+/// [`open_existing_store`], at `store_path`.
+async fn open_existing_at(store_path: &std::path::Path) -> anyhow::Result<Store> {
+    match Store::open_existing_read_only(store_path).await {
+        Ok(store) => Ok(store),
+        Err(error @ tui_do_core::CoreError::NotReady(_)) => Err(error.into()),
+        Err(error) => Err(anyhow::Error::new(error).context(format!(
+            "could not open the store at {}",
+            store_path.display()
+        ))),
+    }
+}
+
+fn store_path() -> anyhow::Result<std::path::PathBuf> {
+    Store::default_path().context("could not decide where to keep the store")
+}
+
+/// What `tui-do add`'s prompt completes from: the projects, labels and users in the
+/// local store. Read here, by the runtime, because nothing in `tui-do-ui` may (Rule 1).
+///
+/// Opened read-only, so a prompt that is cancelled, or ends in a dry run, leaves no
+/// store behind where there was none. No store, or an unreadable list, is only an empty
+/// vocabulary: the prompt still works, without completion and with the static example.
+pub async fn vocabulary() -> tui_do_ui::assist::Vocabulary {
+    match store_path() {
+        Ok(path) => vocabulary_at(&path).await,
+        Err(_) => tui_do_ui::assist::Vocabulary::default(),
+    }
+}
+
+/// [`vocabulary`], from the store at `store_path`.
+async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocabulary {
+    let Ok(store) = open_existing_at(store_path).await else {
+        return tui_do_ui::assist::Vocabulary::default();
+    };
+    let projects = store
+        .projects(ProjectFilter::default(), ProjectSort::default())
+        .await
+        .unwrap_or_default();
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap_or_default();
+    let users = store.usernames().await.unwrap_or_default();
+    tui_do_ui::assist::Vocabulary::new(&projects, &labels, users)
+}
+
+/// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run
+/// with no text. `None` when the user cancelled.
+///
+/// Synchronous, and called outside the async runtime: there is nothing to await while a
+/// person types. The terminal goes back through `TerminalGuard`'s `Drop` and panic hook,
+/// the same ones the interface uses, on every way out.
+///
+/// # Errors
+/// A terminal that refuses raw mode or cannot be drawn on.
+pub fn ask_for_task(
+    vocabulary: tui_do_ui::assist::Vocabulary,
+    dry_run: bool,
+) -> anyhow::Result<Option<String>> {
+    let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
+    let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
+    let answer = prompt::ask(guard.terminal(), &mut prompt, next_event);
+    drop(guard);
+    match answer? {
+        prompt::Answer::Add(text) => {
+            // Left in the scrollback where the prompt was, so the line that was added
+            // sits above what `add` says about it.
+            println!("{}{}", prompt.prefix(), printable(&text));
+            Ok(Some(text))
+        }
+        prompt::Answer::Cancelled => Ok(None),
+    }
+}
+
 /// Add a task from the command line.
 ///
 /// Shares everything that matters with the interface: the same parser, the same
@@ -1096,26 +1202,13 @@ pub async fn add(
         anyhow::bail!("nothing to add");
     }
 
-    let store_path = Store::default_path().context("could not decide where to keep the store")?;
     // Before `Store::open`, which creates and migrates, and before `build_sync`, so a dry
     // run never so much as builds a client.
     if mode.dry_run {
-        let store = match Store::open_existing_read_only(&store_path).await {
-            Ok(store) => store,
-            // Already a whole sentence that says what to run.
-            Err(error @ tui_do_core::CoreError::NotReady(_)) => return Err(error.into()),
-            Err(error) => {
-                return Err(anyhow::Error::new(error).context(format!(
-                    "could not open the store at {}",
-                    store_path.display()
-                )))
-            }
-        };
+        let store = open_existing_store().await?;
         return rehearse(config, &store, &parsed, &clock, mode.create_labels).await;
     }
-    let store = Store::open(&store_path)
-        .await
-        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+    let store = open_store().await?;
 
     let (sync, problem) = build_sync(config, config_path, &store);
 
@@ -1553,6 +1646,31 @@ mod tests {
     use tui_do_core::SyncEvent;
 
     use super::*;
+
+    /// The prompt's names come from a read-only open, so asking for a task -- and then
+    /// cancelling it, or dry-running it -- never creates a store that was not there.
+    #[tokio::test]
+    async fn the_prompts_names_never_create_a_store() {
+        let dir = std::env::temp_dir().join(format!("tui-do-vocabulary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tui-do.db");
+
+        assert_eq!(
+            vocabulary_at(&path).await,
+            tui_do_ui::assist::Vocabulary::default()
+        );
+        assert!(!path.exists(), "reading the names created a store");
+
+        let store = Store::open(&path).await.unwrap();
+        store
+            .upsert_projects(vec![a_project(4, "Legal")])
+            .await
+            .unwrap();
+        drop(store);
+        assert_eq!(vocabulary_at(&path).await.projects, vec!["Legal"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn a_project(id: i64, title: &str) -> tui_do_core::models::Project {
         tui_do_core::models::Project {

@@ -37,6 +37,7 @@
 //! never a row index, so a reload that reorders or drops rows cannot silently move the
 //! cursor onto a different task.
 
+pub mod assist;
 pub mod effect;
 pub mod geometry;
 pub mod keymap;

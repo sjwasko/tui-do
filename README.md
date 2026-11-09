@@ -431,6 +431,23 @@ tui-do add 'File the quarterly return +[Life Admin] 27aug26'
 tui-do add 'Water the plants every 3 days'
 ```
 
+**Run `tui-do add` with no text to be asked.** At a terminal it opens a prompt a few lines
+tall at the bottom of the screen, not the full interface, so your scrollback stays put. An
+example in your own project and label names shows the recommended shape until the first
+key, and a line under the input shows what will be created, re-read on every key:
+
+| key | |
+|---|---|
+| Tab | Complete a `+project`, `*label` or `@user` from the local store, or a date word after `due ` or `start `. A name with a space completes in brackets, `+[Home Improvement]`. A second Tab lists the matches |
+| `?` | Straight after `+` `*` `@` `!`, after `due ` or `start `, or on an empty line: list what can come next, without typing the `?`. Anywhere else it is a question mark, because titles have them |
+| F1 | Every token |
+| Enter | Add it, exactly as `tui-do add '<the line>'` would |
+| Esc, Ctrl-C | Cancel, adding nothing |
+
+The interface's `a` prompt completes and answers `?` the same way. Without a terminal,
+`tui-do add` with no text is the usage error it always was. The flags apply to the line it
+asks for, so `tui-do add --dry-run` alone asks, then checks what was typed and adds nothing.
+
 **Use single quotes, not double.** At an interactive `bash` prompt, `!3` is history
 expansion: the shell replaces it with an earlier command *before* tui-do sees the line,
 inside double quotes as readily as outside them. The task is then created with no priority

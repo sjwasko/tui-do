@@ -43,6 +43,9 @@ pub enum Msg {
     /// The store answered with the label list.
     LabelsLoaded(Vec<Label>),
 
+    /// The store answered with the usernames it has seen.
+    UsersLoaded(Vec<String>),
+
     /// The store answered with per-project task counts.
     CountsLoaded(ProjectCounts),
 

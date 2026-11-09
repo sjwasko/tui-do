@@ -20,7 +20,7 @@ use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
     Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
     LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled, PriorityState,
-    QuickActionsState, SearchState, Submission, TextInput,
+    QuickActionsState, SearchState, Submission,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -84,6 +84,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             effects
         }
         Msg::LabelsLoaded(labels) => absorb_labels(model, labels),
+        Msg::UsersLoaded(users) => {
+            model.data.users = users;
+            Vec::new()
+        }
         Msg::CountsLoaded(counts) => {
             model.data.counts = counts;
             Vec::new()
@@ -664,7 +668,16 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::AddTask => {
-            model.modals.push(Modal::Add(TextInput::default()));
+            // What `a` can complete, from what the interface already holds: the same
+            // three lists `tui-do add`'s prompt reads from the store.
+            let vocabulary = crate::assist::Vocabulary::new(
+                &model.data.projects,
+                &model.data.labels,
+                model.data.users.iter().cloned(),
+            );
+            model
+                .modals
+                .push(Modal::Add(crate::assist::QuickAddInput::new(vocabulary)));
             Vec::new()
         }
         Action::DeleteTask => match model.selected_task() {
@@ -1148,6 +1161,7 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     let mut effects = reload_tasks(model);
     effects.push(Effect::LoadProjects);
     effects.push(Effect::LoadLabels);
+    effects.push(Effect::LoadUsers);
     effects.push(Effect::LoadCounts);
     effects.push(Effect::LoadPending);
     effects

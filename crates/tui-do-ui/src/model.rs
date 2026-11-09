@@ -215,6 +215,9 @@ pub struct Snapshot {
     pub projects: Vec<Project>,
     /// Every label, for the picker and for colouring.
     pub labels: Vec<Label>,
+    /// Every username the store has seen, which is what `@` completes from: the same
+    /// list `tui-do add`'s prompt reads, so both offer the same names.
+    pub users: Vec<String>,
     /// Per-project counts for the sidebar.
     pub counts: ProjectCounts,
     /// Whether a task query is in flight. Distinguishes "no tasks" from "not yet".

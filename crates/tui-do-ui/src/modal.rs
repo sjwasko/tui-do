@@ -143,6 +143,21 @@ impl TextInput {
         }
     }
 
+    /// Replace the bytes in `range` with `text` and put the cursor after it.
+    ///
+    /// For completion, which rewrites the partial word before the cursor. A `range`
+    /// that does not fall on character boundaries inside the value changes nothing.
+    pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) {
+        if range.start > range.end
+            || !self.value.is_char_boundary(range.start)
+            || !self.value.is_char_boundary(range.end)
+        {
+            return;
+        }
+        self.value.replace_range(range.clone(), text);
+        self.cursor = range.start + text.len();
+    }
+
     /// Insert at the cursor and step past what was inserted.
     ///
     /// A combining mark typed after its base joins that grapheme, and the cursor, now at
@@ -406,8 +421,8 @@ pub enum Modal {
     Help(HelpState),
     /// Searching the current list, incrementally.
     Search(SearchState),
-    /// Typing a new task in quick-add syntax.
-    Add(TextInput),
+    /// Typing a new task in quick-add syntax, with Tab completion and `?` help.
+    Add(crate::assist::QuickAddInput),
     /// Choosing a project or a label.
     Picker(PickerState),
     /// Editing every field of one task.
@@ -1713,11 +1728,15 @@ impl ModalView for HelpState {
     }
 }
 
-impl ModalView for TextInput {
+impl ModalView for crate::assist::QuickAddInput {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,
-            KeyCode::Enter => Outcome::Submit(Submission::Add(self.value().to_string())),
+            // Held while a bracket is open, with the reason shown above the prompt.
+            KeyCode::Enter => match self.submit() {
+                Some(text) => Outcome::Submit(Submission::Add(text)),
+                None => Outcome::Consumed,
+            },
             _ => {
                 self.press(key);
                 Outcome::Consumed
