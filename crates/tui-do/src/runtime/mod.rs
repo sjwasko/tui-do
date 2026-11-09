@@ -1104,8 +1104,12 @@ pub async fn open_store() -> anyhow::Result<Store> {
 /// [`tui_do_core::CoreError::NotReady`] as it stands, since it already says what to run;
 /// anything else with the path it was opening.
 pub async fn open_existing_store() -> anyhow::Result<Store> {
-    let store_path = store_path()?;
-    match Store::open_existing_read_only(&store_path).await {
+    open_existing_at(&store_path()?).await
+}
+
+/// [`open_existing_store`], at `store_path`.
+async fn open_existing_at(store_path: &std::path::Path) -> anyhow::Result<Store> {
+    match Store::open_existing_read_only(store_path).await {
         Ok(store) => Ok(store),
         Err(error @ tui_do_core::CoreError::NotReady(_)) => Err(error.into()),
         Err(error) => Err(anyhow::Error::new(error).context(format!(
@@ -1126,7 +1130,15 @@ fn store_path() -> anyhow::Result<std::path::PathBuf> {
 /// store behind where there was none. No store, or an unreadable list, is only an empty
 /// vocabulary: the prompt still works, without completion and with the static example.
 pub async fn vocabulary() -> tui_do_ui::assist::Vocabulary {
-    let Ok(store) = open_existing_store().await else {
+    match store_path() {
+        Ok(path) => vocabulary_at(&path).await,
+        Err(_) => tui_do_ui::assist::Vocabulary::default(),
+    }
+}
+
+/// [`vocabulary`], from the store at `store_path`.
+async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocabulary {
+    let Ok(store) = open_existing_at(store_path).await else {
         return tui_do_ui::assist::Vocabulary::default();
     };
     let projects = store
@@ -1150,8 +1162,11 @@ pub async fn vocabulary() -> tui_do_ui::assist::Vocabulary {
 ///
 /// # Errors
 /// A terminal that refuses raw mode or cannot be drawn on.
-pub fn ask_for_task(vocabulary: tui_do_ui::assist::Vocabulary) -> anyhow::Result<Option<String>> {
-    let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()));
+pub fn ask_for_task(
+    vocabulary: tui_do_ui::assist::Vocabulary,
+    dry_run: bool,
+) -> anyhow::Result<Option<String>> {
+    let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
     let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
     let answer = prompt::ask(guard.terminal(), &mut prompt, next_event);
     drop(guard);
@@ -1159,7 +1174,7 @@ pub fn ask_for_task(vocabulary: tui_do_ui::assist::Vocabulary) -> anyhow::Result
         prompt::Answer::Add(text) => {
             // Left in the scrollback where the prompt was, so the line that was added
             // sits above what `add` says about it.
-            println!("add› {}", printable(&text));
+            println!("{}{}", prompt.prefix(), printable(&text));
             Ok(Some(text))
         }
         prompt::Answer::Cancelled => Ok(None),
@@ -1631,6 +1646,31 @@ mod tests {
     use tui_do_core::SyncEvent;
 
     use super::*;
+
+    /// The prompt's names come from a read-only open, so asking for a task -- and then
+    /// cancelling it, or dry-running it -- never creates a store that was not there.
+    #[tokio::test]
+    async fn the_prompts_names_never_create_a_store() {
+        let dir = std::env::temp_dir().join(format!("tui-do-vocabulary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tui-do.db");
+
+        assert_eq!(
+            vocabulary_at(&path).await,
+            tui_do_ui::assist::Vocabulary::default()
+        );
+        assert!(!path.exists(), "reading the names created a store");
+
+        let store = Store::open(&path).await.unwrap();
+        store
+            .upsert_projects(vec![a_project(4, "Legal")])
+            .await
+            .unwrap();
+        drop(store);
+        assert_eq!(vocabulary_at(&path).await.projects, vec!["Legal"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn a_project(id: i64, title: &str) -> tui_do_core::models::Project {
         tui_do_core::models::Project {

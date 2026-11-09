@@ -85,33 +85,36 @@ fn starting_with_no_terminal_refuses_promptly() {
 #[test]
 fn add_with_no_text_and_no_terminal_is_still_a_usage_error() {
     let dir = scratch("add");
-    let output = Command::new(env!("CARGO_BIN_EXE_tui-do"))
-        .arg("add")
-        .env("TUI_DO_CONFIG", dir.join("config.yaml"))
-        .env("TUI_DO_DB", dir.join("tui-do.db"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("the binary runs");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // `--dry-run` alone asks too, at a terminal; without one it is the same refusal.
+    for args in [&["add"][..], &["add", "--dry-run"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tui-do"))
+            .args(args)
+            .env("TUI_DO_CONFIG", dir.join("config.yaml"))
+            .env("TUI_DO_DB", dir.join("tui-do.db"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "clap's usage exit code: {stderr}"
-    );
-    assert!(
-        stderr.contains("the following required arguments were not provided"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("<TEXT>..."), "{stderr}");
-    assert!(stderr.contains("Usage: tui-do add"), "{stderr}");
-    assert!(
-        output.stdout.is_empty(),
-        "a prompt was drawn: {:?}",
-        output.stdout
-    );
-    assert!(!dir.join("tui-do.db").exists(), "the store was opened");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "clap's usage exit code: {stderr}"
+        );
+        assert!(
+            stderr.contains("the following required arguments were not provided"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("<TEXT>..."), "{stderr}");
+        assert!(stderr.contains("Usage: tui-do add"), "{stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "a prompt was drawn: {:?}",
+            output.stdout
+        );
+        assert!(!dir.join("tui-do.db").exists(), "the store was opened");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -34,6 +34,9 @@ pub(super) const HEIGHT: u16 = 2 + ASIDE_ROWS;
 /// What goes in front of what is typed.
 const PROMPT: &str = "add› ";
 
+/// The same, for `tui-do add --dry-run` with no text: the line will be checked, not added.
+const DRY_RUN_PROMPT: &str = "dry run› ";
+
 /// How the prompt ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Answer {
@@ -50,16 +53,27 @@ pub(super) struct Prompt {
     placeholder: Option<String>,
     now: ZonedTime,
     theme: Theme,
+    dry_run: bool,
 }
 
 impl Prompt {
     /// A prompt that completes from `vocabulary`, its example built from the same names.
-    pub(super) fn new(vocabulary: Vocabulary, now: ZonedTime, theme: Theme) -> Self {
+    pub(super) fn new(vocabulary: Vocabulary, now: ZonedTime, theme: Theme, dry_run: bool) -> Self {
         Self {
             placeholder: Some(placeholder(&vocabulary, &now)),
             line: QuickAddInput::new(vocabulary),
             now,
             theme,
+            dry_run,
+        }
+    }
+
+    /// What goes in front of the line, saying whether Enter adds it or only checks it.
+    pub(super) const fn prefix(&self) -> &'static str {
+        if self.dry_run {
+            DRY_RUN_PROMPT
+        } else {
+            PROMPT
         }
     }
 }
@@ -166,12 +180,12 @@ fn render(frame: &mut Frame<'_>, prompt: &Prompt) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(PROMPT, theme.accent()),
+            Span::styled(prompt.prefix(), theme.accent()),
             shown,
         ])),
         row(0),
     );
-    let prefix = tui_do_ui::rows::display_width(PROMPT);
+    let prefix = tui_do_ui::rows::display_width(prompt.prefix());
     let x = area.x + prefix + prompt.line.input.caret_column();
     if x < area.right() {
         frame.set_cursor_position((x, area.y));
@@ -281,7 +295,7 @@ mod tests {
     /// keys run out -- the prompt never sees the end, it sees an error.
     fn drive(events: Vec<Event>) -> (anyhow::Result<Answer>, Terminal<TestBackend>) {
         let mut terminal = terminal();
-        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None));
+        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None), false);
         let answer = resume(&mut terminal, &mut prompt, events);
         (answer, terminal)
     }
@@ -444,7 +458,7 @@ mod tests {
     #[test]
     fn a_resize_redraws_in_place_and_leaves_nothing_behind() {
         let mut terminal = terminal();
-        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None));
+        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None), false);
         let line = "Pay rent +Legal !3 due tomorrow";
         let mut events = typing(line);
         events.push(key(KeyCode::F(1)));
@@ -474,5 +488,17 @@ mod tests {
         let answer = resume(&mut terminal, &mut prompt, vec![key(KeyCode::Enter)]);
         assert_eq!(answer.unwrap(), Answer::Add(line.to_string()));
         assert_eq!(prompts_on(&terminal), 0, "{}", screen(&terminal));
+    }
+
+    #[test]
+    fn a_dry_run_prompt_says_so_and_answers_the_line_all_the_same() {
+        let mut terminal = terminal();
+        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None), true);
+        assert!(resume(&mut terminal, &mut prompt, typing("Pay rent")).is_err());
+        let shown = screen(&terminal);
+        assert!(shown.contains("dry run› Pay rent"), "{shown}");
+        assert!(!shown.contains("add›"), "{shown}");
+        let answer = resume(&mut terminal, &mut prompt, vec![key(KeyCode::Enter)]);
+        assert_eq!(answer.unwrap(), Answer::Add("Pay rent".to_string()));
     }
 }

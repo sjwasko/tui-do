@@ -445,7 +445,8 @@ key, and a line under the input shows what will be created, re-read on every key
 | Esc, Ctrl-C | Cancel, adding nothing |
 
 The interface's `a` prompt completes and answers `?` the same way. Without a terminal,
-`tui-do add` with no text is the usage error it always was.
+`tui-do add` with no text is the usage error it always was. The flags apply to the line it
+asks for, so `tui-do add --dry-run` alone asks, then checks what was typed and adds nothing.
 
 **Use single quotes, not double.** At an interactive `bash` prompt, `!3` is history
 expansion: the shell replaces it with an earlier command *before* tui-do sees the line,

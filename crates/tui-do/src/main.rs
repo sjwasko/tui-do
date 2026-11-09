@@ -115,6 +115,9 @@ enum Command {
     ///   Enter      adds it, exactly as `tui-do add '<the line>'` would
     ///   Esc        cancels, adding nothing
     ///
+    /// The flags apply to the line it asks for: `tui-do add --dry-run` alone asks, then
+    /// checks what was typed and adds nothing.
+    ///
     /// The prompt is for people. From a script, pass the text.
     // Verbatim, because the syntax above is a table and clap reflows a doc comment into
     // one paragraph by default -- which turns the whole of it into an unreadable run-on.
@@ -463,9 +466,11 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
         .enable_all()
         .build()
         .context("could not start the async runtime")?;
+    let mode = add_mode(args);
     let text = if args.text.is_empty() {
         let vocabulary = runtime.block_on(runtime::vocabulary());
-        match runtime::ask_for_task(vocabulary)? {
+        // `--dry-run` with no text asks, then checks what was typed instead of adding it.
+        match runtime::ask_for_task(vocabulary, mode.dry_run)? {
             Some(text) => text,
             None => bail!("cancelled; nothing was added"),
         }
@@ -473,16 +478,17 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
         args.text.join(" ")
     };
     // One call for both forms, so a typed task goes exactly where `add 'text'` would.
-    runtime.block_on(runtime::add(
-        &config,
-        &path,
-        &text,
-        runtime::AddMode {
-            offline: args.offline,
-            create_labels: args.create_labels,
-            dry_run: args.dry_run,
-        },
-    ))
+    runtime.block_on(runtime::add(&config, &path, &text, mode))
+}
+
+/// How `tui-do add` was asked to run: one value for the typed line and the given one, so
+/// a prompt cannot add where `add 'text'` with the same flags would only have checked.
+const fn add_mode(args: &AddArgs) -> runtime::AddMode {
+    runtime::AddMode {
+        offline: args.offline,
+        create_labels: args.create_labels,
+        dry_run: args.dry_run,
+    }
 }
 
 /// Exit with clap's error for a missing `TEXT`, exactly as when it was required.
@@ -635,6 +641,17 @@ mod tests {
         // `--config` legitimately takes a path; nothing else in the arm may.
         let paths = arm.matches("compgen -f").count();
         assert_eq!(paths, 1, "only --config completes a path:\n{arm}");
+    }
+
+    #[test]
+    fn add_with_no_text_keeps_its_flags_for_the_line_it_asks_for() {
+        let cli = Cli::try_parse_from(["tui-do", "add", "--dry-run", "--create-labels"]).unwrap();
+        let Some(Command::Add(args)) = cli.command else {
+            panic!("expected add");
+        };
+        assert!(args.text.is_empty(), "no text is allowed, to ask for one");
+        let mode = add_mode(&args);
+        assert!(mode.dry_run && mode.create_labels && !mode.offline);
     }
 
     #[test]
