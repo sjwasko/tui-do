@@ -1493,58 +1493,93 @@ pub async fn add(
     // Listened to for rejections (BUG-35). A refused entry is rolled back and dropped,
     // not deferred, so `is_complete` holds for a push whose only entry the server turned
     // down -- and "Sent." for a task that exists nowhere is the worst answer a script
-    // can be given.
-    let (to, mut heard) = mpsc::unbounded_channel();
-    let pushed = (*sync).clone().with_events(to).push().await;
-    let mut refused = Vec::new();
-    while let Ok(event) = heard.try_recv() {
-        if let SyncEvent::Rejected {
-            subject, message, ..
-        } = event
-        {
-            refused.push((subject, message));
-        }
+    // can be given. Adoptions too, because an `AttachLabel` queued behind this add's
+    // create is retargeted to the server's id before it is sent.
+    let (events_tx, mut events) = mpsc::unbounded_channel();
+    let pushed = (*sync).clone().with_events(events_tx).push().await;
+    let mut heard = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        heard.push(event);
     }
-    report_push(pushed, &refused, &queued.subjects)
+    let said = push_report(pushed, &heard, &queued.subjects);
+    for line in &said.lines {
+        println!("{line}");
+    }
+    match said.refused {
+        Some(message) => anyhow::bail!("the server refused it, so it was not added: {message}"),
+        None => Ok(()),
+    }
 }
 
-/// What `tui-do add` says once its push has answered, and whether it failed.
+/// What `tui-do add` says once its push has answered.
+struct PushSaid {
+    /// Printed in order.
+    lines: Vec<String>,
+    /// The server's reason, when it refused this add's task itself, which makes the add
+    /// an error: nothing was added.
+    refused: Option<String>,
+}
+
+/// Word a push for `tui-do add`, from its report and the events it emitted in order.
 ///
-/// `ours` are the subjects this add queued. A refusal of one of them means the task was
-/// not added, and is an error. A refusal of anything else is an older entry from the
-/// queue, sent on this push's way past; it is said, but this add succeeded.
-///
-/// # Errors
-/// The server refused something this add queued.
-fn report_push(
+/// `ours` are the subjects this add queued: its task and any labels `--create-labels`
+/// queued with it. An adoption of one of them makes the server's id ours too, so an
+/// `AttachLabel` retargeted to the created task is still recognised as this add's. A
+/// refusal of the task's create means nothing was added. A refusal of anything else of
+/// ours -- a label, or attaching it -- leaves the task created without it, which is said
+/// but is not an error: a script that retried on it would add the task twice. A refusal
+/// of anything else is an older queued entry this push sent on its way past.
+fn push_report(
     pushed: tui_do_core::Result<tui_do_core::sync::PushReport>,
-    refused: &[(Subject, String)],
+    events: &[SyncEvent],
     ours: &[Subject],
-) -> anyhow::Result<()> {
-    let (mine, older): (Vec<_>, Vec<_>) = refused
-        .iter()
-        .partition(|(subject, _)| ours.contains(subject));
-    for (_, message) in &older {
-        println!(
-            "An earlier queued change was refused by the server: {}",
-            printable(message)
-        );
+) -> PushSaid {
+    let mut mine = ours.to_vec();
+    let mut lines = Vec::new();
+    let mut refused = None;
+    for event in events {
+        match event {
+            SyncEvent::Adopted {
+                provisional,
+                assigned,
+            } if mine.contains(provisional) => mine.push(*assigned),
+            SyncEvent::Rejected {
+                subject,
+                kind,
+                message,
+            } => {
+                let message = printable(message);
+                if !mine.contains(subject) {
+                    lines.push(format!(
+                        "An earlier queued change was refused by the server: {message}"
+                    ));
+                } else if kind == "create_task" {
+                    refused = Some(message);
+                } else {
+                    let what = match kind.as_str() {
+                        "create_label" => "creating its label",
+                        "attach_label" => "attaching its label",
+                        _ => "part of it",
+                    };
+                    lines.push(format!(
+                        "The task was added, but the server refused {what}: {message}"
+                    ));
+                }
+            }
+            _ => {}
+        }
     }
-    if let Some((_, message)) = mine.first() {
-        anyhow::bail!(
-            "the server refused it, so it was not added: {}",
-            printable(message)
-        );
+    if refused.is_none() {
+        lines.push(match pushed {
+            Ok(report) if report.is_complete() => "Sent.".to_string(),
+            // Not an error: the local store has it, the outbox has it, and the next run --
+            // interface or `tui-do add` -- sends it. Failing here would throw away a task
+            // the user has already been told was added.
+            Ok(report) => format!("Queued — {} still waiting to be sent.", report.deferred),
+            Err(error) => format!("Queued — could not reach the server: {error}"),
+        });
     }
-    match pushed {
-        Ok(report) if report.is_complete() => println!("Sent."),
-        // Not an error: the local store has it, the outbox has it, and the next run --
-        // interface or `tui-do add` -- sends it. Failing here would throw away a task the
-        // user has already been told was added.
-        Ok(report) => println!("Queued — {} still waiting to be sent.", report.deferred),
-        Err(error) => println!("Queued — could not reach the server: {error}"),
-    }
-    Ok(())
+    PushSaid { lines, refused }
 }
 
 /// Why a quick-add found no project to land in, worded the same for a real add and a
@@ -2006,6 +2041,89 @@ mod tests {
     use tui_do_core::SyncEvent;
 
     use super::*;
+
+    fn refused(subject: Subject, kind: &str, message: &str) -> SyncEvent {
+        SyncEvent::Rejected {
+            subject,
+            kind: kind.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    fn sent() -> tui_do_core::Result<PushReport> {
+        Ok(PushReport {
+            sent: 1,
+            rejected: 1,
+            deferred: 0,
+        })
+    }
+
+    #[test]
+    fn a_refused_create_is_not_added() {
+        let task = Subject::Task(tui_do_core::models::TaskId(-1));
+        let said = push_report(sent(), &[refused(task, "create_task", "too long")], &[task]);
+        assert_eq!(said.refused.as_deref(), Some("too long"));
+        assert!(
+            said.lines.is_empty(),
+            "no Sent. under a refusal: {:?}",
+            said.lines
+        );
+    }
+
+    #[test]
+    fn a_refused_label_leaves_the_task_added() {
+        // The label's entry is ours, but the task went through: an error here would have
+        // a script retry and add the task twice.
+        let task = Subject::Task(tui_do_core::models::TaskId(-1));
+        let label = Subject::Label(tui_do_core::models::LabelId(-1));
+        let said = push_report(
+            sent(),
+            &[refused(label, "create_label", "bad title")],
+            &[label, task],
+        );
+        assert_eq!(said.refused, None);
+        assert_eq!(
+            said.lines,
+            [
+                "The task was added, but the server refused creating its label: bad title",
+                "Sent."
+            ]
+        );
+    }
+
+    #[test]
+    fn an_attach_retargeted_by_adoption_is_still_ours() {
+        let provisional = Subject::Task(tui_do_core::models::TaskId(-1));
+        let assigned = Subject::Task(tui_do_core::models::TaskId(41));
+        let events = [
+            SyncEvent::Adopted {
+                provisional,
+                assigned,
+            },
+            refused(assigned, "attach_label", "forbidden"),
+        ];
+        let said = push_report(sent(), &events, &[provisional]);
+        assert_eq!(said.refused, None);
+        assert_eq!(
+            said.lines[0],
+            "The task was added, but the server refused attaching its label: forbidden"
+        );
+    }
+
+    #[test]
+    fn an_older_entry_refused_on_the_way_past_is_said_and_not_ours() {
+        let ours = Subject::Task(tui_do_core::models::TaskId(-2));
+        let older = Subject::Task(tui_do_core::models::TaskId(-1));
+        let said = push_report(sent(), &[refused(older, "create_task", "gone")], &[ours]);
+        assert_eq!(said.refused, None);
+        assert_eq!(
+            said.lines,
+            [
+                "An earlier queued change was refused by the server: gone",
+                "Sent."
+            ]
+        );
+    }
 
     /// The prompt's names come from a read-only open, so asking for a task -- and then
     /// cancelling it, or dry-running it -- never creates a store that was not there.

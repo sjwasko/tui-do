@@ -2335,14 +2335,18 @@ it back.
 `crates/tui-do/src/runtime/mod.rs`: `add` (~1486), `PushReport::is_complete` in
 `tui-do-core/src/sync/mod.rs` (~147). Found by the same smoke test.
 
-**Fixed** both ways the entry proposed. `add` listens to the push's `SyncEvent::Rejected`
-and, when the subject is one this add queued, exits 1 with the server's message
-("the server refused it, so it was not added: …") instead of `Sent.`; a refusal of an older
-queued entry is said and does not fail this add. And `Parsed::server_refusal` turns down a
-title over `TITLE_MAX_CHARS` (1,000 characters, counted as the server counts them) or a
-repeat over `REPEAT_MAX_SECONDS` before anything is queued, so `--dry-run` refuses it too.
-`tests/add_rejected.rs` runs the binary against wiremock; two of its three tests fail on the
-old code.
+**Fixed** both ways the entry proposed. `add` listens to the push's events, and
+`push_report` follows this add's own entries through adoption, so an `AttachLabel`
+retargeted to the created task's real id is still recognised as this add's. A refused
+`CreateTask` of its own exits 1 with the server's message ("the server refused it, so it was
+not added: …") instead of `Sent.`. A refused label or attach of its own leaves the task
+created and is said, exit 0, because a script that retried on an error would add the task
+twice. A refusal of an older queued entry is said and does not fail this add. And
+`Parsed::server_refusal` turns down a title over `TITLE_MAX_CHARS` (1,000 characters,
+counted as the server counts them) or a repeat over `REPEAT_MAX_SECONDS` before anything is
+queued, in `tui-do add`, its `--dry-run` and the interface's `a` alike.
+`crates/tui-do/tests/add_server.rs` runs the binary against wiremock, and two of its tests
+fail on the old code; `push_report` has a unit test for each of the four cases.
 
 `is_complete` is `deferred == 0`. A rejected entry is not deferred: it is rolled back and
 dropped, so a push whose only entry was refused reports complete and `tui-do add` prints
