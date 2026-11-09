@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use tui_do_api::models::{ProjectId, Task, TaskId, TaskReminder, User};
 
 use super::labels::{attach_label, labels_for_tasks};
-use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
+use super::sql::{escape_like, group_by_task, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
 use crate::error::Result;
 
@@ -616,12 +616,7 @@ fn reminders_for_tasks(
             },
         ))
     })?;
-    let mut reminders: HashMap<i64, Vec<TaskReminder>> = HashMap::new();
-    for row in rows {
-        let (task, reminder) = row?;
-        reminders.entry(task).or_default().push(reminder);
-    }
-    Ok(reminders)
+    group_by_task(rows)
 }
 
 /// The users assigned to each of `tasks` (a JSON array of ids), keyed by task id, each
@@ -645,12 +640,7 @@ fn assignees_for_tasks(connection: &Connection, tasks: &str) -> Result<HashMap<i
             },
         ))
     })?;
-    let mut users: HashMap<i64, Vec<User>> = HashMap::new();
-    for row in rows {
-        let (task, user) = row?;
-        users.entry(task).or_default().push(user);
-    }
-    Ok(users)
+    group_by_task(rows)
 }
 
 /// Build a task from a row of the `tasks` table. Labels and assignees are filled after.

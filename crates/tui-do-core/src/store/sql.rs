@@ -4,11 +4,30 @@
 //! alike. They live here rather than in whichever module happened to need them first, so
 //! that "unset is `NULL`, not year one" is one function and not three.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Row, Transaction};
 
 use crate::error::Result;
 use tui_do_api::models::{User, UserId};
+
+/// Hand out `rows`, each a task id and one of that task's children, to their tasks,
+/// keeping each task's children in the order the rows came.
+///
+/// The second half of every batched child read (BUG-28): one statement reads a child
+/// table for many tasks, ordered by task and then by the child's own order, and this
+/// splits the answer back up.
+pub(super) fn group_by_task<T>(
+    rows: impl Iterator<Item = rusqlite::Result<(i64, T)>>,
+) -> Result<HashMap<i64, Vec<T>>> {
+    let mut grouped: HashMap<i64, Vec<T>> = HashMap::new();
+    for row in rows {
+        let (task, child) = row?;
+        grouped.entry(task).or_default().push(child);
+    }
+    Ok(grouped)
+}
 
 /// Read a nullable timestamp column.
 pub(super) fn instant(row: &Row<'_>, column: &str) -> rusqlite::Result<Option<DateTime<Utc>>> {

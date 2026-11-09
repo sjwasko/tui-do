@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use tui_do_api::models::{Label, LabelId, TaskId};
 
-use super::sql::{escape_like, instant, joined_user, keep_ids, stamp, upsert_user};
+use super::sql::{escape_like, group_by_task, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
 use crate::error::Result;
 
@@ -318,12 +318,7 @@ pub(super) fn labels_for_tasks(
     let rows = statement.query_map(params![tasks], |row| {
         Ok((row.get::<_, i64>("for_task")?, row_to_label(row)?))
     })?;
-    let mut labels: HashMap<i64, Vec<Label>> = HashMap::new();
-    for row in rows {
-        let (task, label) = row?;
-        labels.entry(task).or_default().push(label);
-    }
-    Ok(labels)
+    group_by_task(rows)
 }
 
 /// Build a label from a row produced by [`SELECT`].
