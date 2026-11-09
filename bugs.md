@@ -61,8 +61,8 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
 | ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
 | ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
-| BUG-23 | PARTLY FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset | yes |
-| BUG-28 | hold a store read on a barrier while a loop of presses runs; assert the push still sends | yes |
+| ~~BUG-23~~ | FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset; the held-key half by BUG-28 | yes |
+| ~~BUG-28~~ | FIXED — the batched children compared against the per-task reads over a varied store, and a traced statement count that stays at 4 for 3 tasks and for 400 | yes |
 | ~~BUG-29~~ | FIXED — the user's sentence plus mid-sentence, end-of-line and two-date tables, title and dates both asserted | yes |
 
 ## What is left, at a glance
@@ -73,7 +73,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
-| **Found by the drain torture test** | ~~BUG-21~~ and ~~BUG-22~~ are fixed. BUG-23 is partly fixed — the drain, the backlog at key-up and the quit wording — and what it leaves is filed as **BUG-28**: while a key is held the push still gets ~1.4 sends/s, because a task-list read is always running |
+| **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read, and the push drains everything queued while the key is down |
 | **Found in real use** | ~~BUG-29~~ — FIXED 2026-11-08: a quick-add date leaves the title only from the end of the line; mid-sentence it is still set and stays as typed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
@@ -1518,7 +1518,7 @@ and counts one `POST` per task; with the replay off it fails with
 
 ---
 
-### ~~BUG-23~~ — PARTLY FIXED — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
+### ~~BUG-23~~ — FIXED — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
 
 `crates/tui-do-core/src/store/mod.rs` (the `Arc<Mutex<Connection>>`),
 `crates/tui-do-core/src/sync/mod.rs:459` (the drain loop's `pending()` re-read), and
@@ -1615,9 +1615,11 @@ key is *held*, which is filed as **BUG-28** below. Three changes:
 - **Quitting says which it gave up on**: "Still sending" when a request is on the wire,
   "Waiting to send" when the push is between requests.
 
-**What is not fixed** is the starvation the title names, while the key is held: one
-coalesced task-list read is always running, and the push still gets about 1.4 sends a
-second. That is BUG-28.
+**What this left** was the starvation the title names, while the key is held: one
+coalesced task-list read is always running, and the push still got about 1.4 sends a
+second. That was filed as BUG-28 and is **fixed there, 2026-11-08**: the read is now four
+statements rather than ~5,800 and holds the lock for 25 ms rather than 141 ms, and with a
+key held the push drains everything queued, as it does with no reloads at all.
 
 Tests: `a_drain_parses_each_payload_once_however_deep_the_queue` asserts 60 parses for 60
 entries (the old drain made 1,830); `an_entry_queued_mid_drain_goes_out_in_the_same_pass`
@@ -1889,12 +1891,12 @@ engine does, not by subject alone, but that is a decision for whoever takes it.
 
 ---
 
-### BUG-28 — while a key is held, a task-list read is always running and the push gets ~1.4 sends a second
+### ~~BUG-28~~ — FIXED — while a key is held, a task-list read is always running and the push gets ~1.4 sends a second
 
 `crates/tui-do-core/src/store/tasks.rs` (`Store::tasks`) and
 `crates/tui-do/src/runtime/coalesce.rs`. What BUG-23 left behind, filed 2026-11-08.
 
-**Diagnosed, not fixed.** BUG-23 coalesced the reloads, so at most one task-list read runs
+**Fixed 2026-11-08 by the first candidate below; see the end of this entry.** BUG-23 coalesced the reloads, so at most one task-list read runs
 and at most one waits behind it. Under a held key that is still a read running back to
 back for as long as the key is down: every press asks for one, and the one waiting starts
 the instant the last one lands. The store is one connection behind a mutex, so the push
@@ -1940,6 +1942,53 @@ push sends its entry while a reload is still waiting — today it can only get t
 between two reads. For the first fix the store-level version is enough: count the
 statements one `Store::tasks` call prepares (a hook like `payload_decodes`, behind
 `test-hooks`) and assert it does not grow with the number of tasks.
+
+**Fixed 2026-11-08: the read is cheap now, and that was enough.** `Store::tasks` and
+`Store::task` both fill a task's children through `fill_children` in
+`crates/tui-do-core/src/store/tasks.rs`. It reads each child table once for every task
+just read, `WHERE task_id IN (SELECT value FROM json_each(?1))` with the ids as one JSON
+array, so there is one parameter at any count and SQLite's variable limit never comes into
+it, then hands the rows out to their tasks in memory. A task-list read is **four
+statements**, whatever the number of tasks. Each task's children keep the order the
+per-task reads gave: labels by title ignoring case, assignees by username ignoring case,
+reminders by instant then period. Titles and usernames that are equal ignoring case now
+fall back to the id. The old reads put them in that order too, but only because of how
+SQLite happened to plan those queries. The mutex and the single connection are unchanged.
+
+**Measured 2026-11-08** with a throwaway probe built the way BUG-23's was: a file-backed
+store of 3,877 tasks with up to three labels (of 40), two assignees (of 10) and two
+reminders each, 1,939 of them open, and 353 deletes queued against an instant mock. Old and
+new were built in release and run in turns, three rounds, on one box, load average 6-14
+from other builds:
+
+| | before | after |
+|---|---|---|
+| statements per open-list read | 5,818 (1 + 3 × 1,939) | **4** |
+| `Store::tasks(done = false, limit 10,000)`, median of 10 | 141-156 ms | **25-26 ms** |
+| task-list reads completed in the 5 s hold | 32-36 | 121-122 (one per press, near enough) |
+| push with 24 presses a second, each with a coalesced reload, 5 s | 12.5-15.1 sends/s (63-77 sent) | **94.9 sends/s — all 475 queued sent** |
+| push with no reloads, same load | 94.9 sends/s — all 475 sent | 94.9 sends/s — all 475 sent |
+
+With 353 queued the new code runs out of entries, so 94.9 is a floor, the same floor
+the no-reload run hits. With 3,000 queued, so nothing runs out, the new code sent
+**97-182 a second with the key held**, against 624 with no reloads at all. The "before"
+column is 9-11× better than the 1.4 sends/s this entry was filed with, from a box under
+less load. Both columns were measured under the same load, so compare them with each other.
+
+**The second candidate, a minimum interval between task-list reloads, was not built.**
+It was to go in only if the push still got under ~30 sends a second with the key held,
+and it gets roughly 100-180. Leaving it out keeps the coalesce gate as BUG-23 wrote it,
+and the list keeps up with the keyboard.
+
+Tests, in `store::tasks::tests::batched`:
+`a_batched_read_assembles_every_task_as_the_per_task_reads_did` keeps the old per-task
+reads as a reference and checks every task, through 18 filter-and-sort pairs and through
+`Store::task`, over a store with none, one and many children per task, three labels whose
+titles differ only in case, two usernames that differ only in case, and two reminders at one
+instant. Giving the label tie-break the opposite direction makes it fail.
+`a_task_list_read_runs_one_statement_per_table_however_many_tasks` counts statements with
+rusqlite's `trace_v2`, enabled through a `trace` feature on the dev-dependency only, and
+expects 4 for 3 tasks and for 400. Put back the per-task loop and it reads 10.
 
 ### ~~BUG-29~~ — FIXED — a date mid-sentence is cut out of the title, leaving it unreadable
 
