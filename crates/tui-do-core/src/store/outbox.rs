@@ -805,7 +805,17 @@ impl Store {
                     // Every insert writes both columns, so this row came from somewhere
                     // else. The payload knows what it acts on.
                     (_, _, Some(payload)) => decode(&decodes, &payload)?.subject(),
-                    (_, _, None) => continue,
+                    // Unreachable while `payload` is `NOT NULL`. Refused rather than
+                    // skipped: a row the drain cannot see is a change it never sends, and
+                    // the count on the status line would still include it.
+                    (kind, subject, None) => {
+                        return Err(crate::CoreError::Config {
+                            path: "<outbox>".to_string(),
+                            reason: format!(
+                                "entry {id} has subject {kind}/{subject:?} and no payload"
+                            ),
+                        })
+                    }
                 };
                 queued.push(Queued {
                     id,
