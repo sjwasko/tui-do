@@ -31,7 +31,9 @@
 //! Effects are executed to completion in the order they were returned rather than
 //! spawned, which makes the tests deterministic and is the one deliberate difference from
 //! the runtime. The races it therefore cannot reproduce are covered where they belong, in
-//! `tui-do-core`'s own tests.
+//! `tui-do-core`'s own tests -- with one exception, because it is a race between the two
+//! layers: [`Harness::hold_writes`] keeps writes back from the store so a test can let a
+//! reload overtake one, which is BUG-22's interleaving.
 
 // This crate is test scaffolding: `publish = false`, no binary, nothing ships from it.
 // A harness reports a broken invariant the only way a test can, by panicking, and it does
@@ -80,6 +82,9 @@ pub struct Harness {
     /// The test still passed with the event deleted, which is the precise failure it was
     /// written to catch.
     pending_push: bool,
+    /// Writes a test is holding back from the store, oldest first, or `None` when each is
+    /// stored as it is made. See [`Self::hold_writes`].
+    held: Option<VecDeque<(WriteSeq, Mutation)>>,
     /// Every sync event the pushes have emitted, in order, for assertions about what the
     /// interface was told.
     pub events: Vec<SyncEvent>,
@@ -106,6 +111,7 @@ impl Harness {
             store: Store::in_memory()?,
             client,
             pending_push: false,
+            held: None,
             events: Vec::new(),
         })
     }
@@ -230,7 +236,13 @@ impl Harness {
             // spawns a push -- in that order, and the order is the point. The reload is a
             // local read and lands first; the push is a round trip, and what it learns
             // arrives afterwards. See `pending_push`.
-            Effect::Apply { write, mutation } => self.store_write(write, mutation).await,
+            Effect::Apply { write, mutation } => match &mut self.held {
+                Some(held) => {
+                    held.push_back((write, mutation));
+                    Vec::new()
+                }
+                None => self.store_write(write, mutation).await,
+            },
             // Both are a push here. The pull half needs a mounted listing and would make
             // every test mount one; the tests that care about a pull live in
             // `tui-do-core`, which can ask for one directly.
@@ -259,6 +271,38 @@ impl Harness {
         msgs.push(Msg::Written(write));
         msgs.push(Msg::Reload);
         msgs
+    }
+
+    /// Hold every write from here on until [`Self::release_write`] lets it go.
+    ///
+    /// The runtime stores each write on a task of its own, so a reload one write asks for
+    /// can read the store before a later write has landed. Executing effects in order
+    /// never produces that, so a test that needs it holds the writes and lets them land
+    /// one at a time.
+    pub fn hold_writes(&mut self) {
+        self.held.get_or_insert_with(VecDeque::new);
+    }
+
+    /// How many held writes have not yet reached the store.
+    #[must_use]
+    pub fn held_writes(&self) -> usize {
+        self.held.as_ref().map_or(0, VecDeque::len)
+    }
+
+    /// Let the oldest held write reach the store, and run what its answer causes --
+    /// including the reload, which reads a store still missing every write held behind it.
+    ///
+    /// # Panics
+    ///
+    /// If no write is held.
+    pub async fn release_write(&mut self) {
+        let (write, mutation) = self
+            .held
+            .as_mut()
+            .and_then(VecDeque::pop_front)
+            .expect("a held write to release");
+        let replies = self.store_write(write, mutation).await;
+        self.settle(replies.into(), Vec::new()).await;
     }
 
     /// One push, with its events forwarded the way `spawn_sync` forwards them.
