@@ -60,6 +60,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
 | ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
 | ~~BUG-23~~ | FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test | yes |
+| BUG-28 | hold a store read on a barrier while a loop of presses runs; assert the push still sends | yes |
 
 ## What is left, at a glance
 
@@ -86,11 +87,11 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | Sync engine | 0 | 5 → 4 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
-| Runtime and CLI | 0 | 4 → 2 | 3 |
+| Runtime and CLI | 0 | 5 → 3 | 3 |
 | API client | 0 | 1 → 0 | 1 |
-| **found** | **1** | **17** | **15** |
+| **found** | **1** | **18** | **15** |
 | **fixed** | **1** | **10** | **2** |
-| **open** | **0** | **7** | **13** |
+| **open** | **0** | **8** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -1533,15 +1534,9 @@ Three changes, each its own commit:
 - **Quitting says which it gave up on**: "Still sending" when a request is on the wire,
   "Waiting to send" when the push is between requests.
 
-**What is not fixed, measured with the same probe:** while a key is *held*, coalescing
-caps the backlog but cannot free the lock, because one coalesced task-list read is always
-running. Entries sent per second over the 5 s hold, 353 queued at the start: 1.6 with a
-reload per press and the old drain, 4.0 with coalescing and the old drain, 1.4 with
-coalescing and the new drain — all inside the noise of a load average above 30, against
-95 with no reloads at all. The cost is `Store::tasks` itself, which reads labels,
-assignees and reminders with three queries per task, about 5,800 for the open list. That,
-or capping how much of each second the reloads may hold, is the next lever; neither was in
-this change.
+**What is not fixed** is the starvation the title names, while the key is held: one
+coalesced task-list read is always running, and the push still gets about 1.4 sends a
+second. That is BUG-28.
 
 Tests: `a_drain_parses_each_payload_once_however_deep_the_queue` asserts 60 parses for 60
 entries (the old drain made 1,830); `an_entry_queued_mid_drain_goes_out_in_the_same_pass`
@@ -1809,6 +1804,60 @@ plus `AttachLabel`, then a `SyncEvent::Rejected` for `Subject::Label(-1)`, then 
 `Action::Redo`. Assert that no effect queues a mutation naming a negative label id whose
 create is no longer on the stack. A fix is probably to prune by `references` as the sync
 engine does, not by subject alone, but that is a decision for whoever takes it.
+
+---
+
+### BUG-28 — while a key is held, a task-list read is always running and the push gets ~1.4 sends a second
+
+`crates/tui-do-core/src/store/tasks.rs` (`Store::tasks`) and
+`crates/tui-do/src/runtime/coalesce.rs`. What BUG-23 left behind, filed 2026-11-08.
+
+**Diagnosed, not fixed.** BUG-23 coalesced the reloads, so at most one task-list read runs
+and at most one waits behind it. Under a held key that is still a read running back to
+back for as long as the key is down: every press asks for one, and the one waiting starts
+the instant the last one lands. The store is one connection behind a mutex, so the push
+gets a turn only between them.
+
+**What one read costs.** `Store::tasks` reads the rows in one query and then, for each
+task, its labels, assignees and reminders in three more (`labels_for`, `assignees_for`,
+`reminders_for`). The open list is about 1,935 of the 3,877 tasks on dev, so one read is
+**about 5,800 queries**, measured at 120-530 ms on a loaded box.
+
+**Measured, 2026-11-08,** with a probe on a file-backed store: 3,877 tasks, 353 entries
+queued, 24 presses a second for 5 s, against an instant mock, load average above 30.
+
+| reloads | push, entries sent per second |
+|---|---|
+| none | **95** |
+| one per press, uncoalesced, old drain | 1.6 |
+| coalesced, old drain | 4.0 |
+| coalesced, new drain (what ships) | **1.4** |
+
+The last three are within that box's noise of each other. Coalescing fixed the backlog —
+182 reloads queued at key-up became 3 — and did nothing for the rate while the key is down.
+
+**No data is at risk.** Everything queued drains within seconds of the key coming up, at
+the full rate. What is lost is the queue draining *while* someone works through a long run
+of edits, and the status line counting up rather than down.
+
+**Two candidate fixes, not yet chosen:**
+
+- **Make the read cheap.** Batch the three child reads into one `IN (...)` query each over
+  the ids just read, so a task-list read is four queries rather than ~5,800. This shortens
+  every read the interface makes, not just these.
+- **Ask for fewer reads under sustained input.** Hold a waiting reload until the push has
+  had a turn, or until some minimum time has passed since the last one landed, so reloads
+  hold at most a fraction of each second. Cheaper to write, and the list lags the keyboard
+  by that much.
+
+**Suggested test, deterministic.** Do not time it. Give the coalescer a read that waits on a
+barrier, so a task-list read is "always running" by construction, and keep a request
+waiting behind it as a held key does. Queue one outbox entry against a mock that counts
+requests, start a push, then release the barrier exactly once per push request. Assert the
+push sends its entry while a reload is still waiting — today it can only get the lock
+between two reads. For the first fix the store-level version is enough: count the
+statements one `Store::tasks` call prepares (a hook like `payload_decodes`, behind
+`test-hooks`) and assert it does not grow with the number of tasks.
 
 ## Minor
 
