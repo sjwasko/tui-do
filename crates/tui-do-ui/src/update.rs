@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use tui_do_core::config::{QuickAction, QuickActionKind};
 use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
-use tui_do_core::store::{Mutation, Subject};
+use tui_do_core::store::{is_provisional_label, Mutation, Subject};
 use tui_do_core::sync::{Phase, Stage};
 use tui_do_core::SyncEvent;
 use tui_do_core::ZonedTime;
@@ -148,6 +148,11 @@ fn on_rejected(model: &mut Model, subject: Subject, kind: &str, message: &str) -
     // both stacks and leave the rest of the session's history intact.
     model.undo.retain(|mutation| mutation.subject() != subject);
     model.redo.retain(|mutation| mutation.subject() != subject);
+    if let Subject::Label(label) = subject {
+        if is_provisional_label(label) {
+            forget_label(model, label);
+        }
+    }
     // And it has to actually vanish. The store rolled the row back before this
     // event was emitted, but the screen is drawn from the last query's answer, so
     // without a reload the toast says "rejected" over a row still showing the
@@ -181,6 +186,86 @@ fn on_rejected(model: &mut Model, subject: Subject, kind: &str, message: &str) -
     effects.push(Effect::LoadLabels);
     effects.push(Effect::LoadPending);
     effects
+}
+
+/// Forget a provisional label the store has just discarded, everywhere it is held by id.
+///
+/// A prune by subject is not enough for a label (BUG-27). An attach's inverse is a
+/// `DetachLabel` whose subject is the *task*, so it survived still naming `-1`: `u` then
+/// sent `DELETE /tasks/T/labels/-1` and `C-r` a `PUT` with `label_id: -1`, which is a
+/// 4xx the drain treats as permanent -- discarding every other entry queued for `T`.
+///
+/// So two rules, one per shape. An entry that *sends* the id is about the label and is
+/// dropped, by the same test `sync::references` uses for the queue. An entry that only
+/// *carries* it on a task is still the user's change to everything else, and loses the
+/// label instead: undoing a delete re-creates the task, and its labels are split into
+/// attaches. An `UpdateTask` left with nothing but the label to change was an undo of
+/// that label alone, and goes too.
+///
+/// Beyond the stacks, everything else that holds it, because the reload the rejection
+/// asks for has not answered yet and the store's guard would only turn each of these
+/// into a toast nobody can explain:
+///
+/// * the pool and the rows on screen -- a save resolves label names against the pool,
+///   and a delete pushes an inverse built from the row,
+/// * an open edit form, in both its `before` (a detach) and its labels field (an attach,
+///   by name),
+/// * an open label form or label picker, where it could still be ticked or picked.
+///
+/// Only for a provisional label. A rejected rename of a real label leaves the label on
+/// the server, and undoing its attach is still a real undo.
+fn forget_label(model: &mut Model, label: LabelId) {
+    for stack in [&mut model.undo, &mut model.redo] {
+        stack.retain_mut(|mutation| {
+            if mutation.wire_label() == Some(label) {
+                return false;
+            }
+            mutation.strip_label(label);
+            !matches!(mutation, Mutation::UpdateTask { before, after } if before == after)
+        });
+    }
+    // Its title, read before the pool loses it: the edit form holds names, not ids.
+    let dead = model
+        .data
+        .labels
+        .iter()
+        .chain(model.data.tasks.iter().flat_map(|task| task.labels.iter()))
+        .find(|held| held.id == label)
+        .cloned();
+    model.data.labels.retain(|held| held.id != label);
+    for task in &mut model.data.tasks {
+        task.drop_label(label);
+    }
+    for modal in &mut model.modals {
+        match modal {
+            Modal::Edit(state) => {
+                let fallback = Label {
+                    id: label,
+                    ..Label::default()
+                };
+                let dead = dead.as_ref().unwrap_or(&fallback);
+                let title_still_known = model
+                    .data
+                    .labels
+                    .iter()
+                    .any(|held| held.title.eq_ignore_ascii_case(dead.title.trim()));
+                state.forget_label(dead, dead.title.is_empty() || title_still_known);
+            }
+            Modal::Labels(state) => state.forget(label),
+            Modal::Picker(state) => state.forget_label(label),
+            // `LabelEdit` holds a label to rename, and renaming one that never existed is
+            // a `404` that `is_already_done` completes silently. The rest hold no label
+            // id, and `ConfirmLabels` is released by `release_held_labels`.
+            Modal::LabelEdit(_)
+            | Modal::ConfirmLabels(_)
+            | Modal::Help(_)
+            | Modal::Search(_)
+            | Modal::Add(_)
+            | Modal::Priority(_)
+            | Modal::Due(_)
+            | Modal::QuickActions(_) => {}
+        }
+    }
 }
 
 /// Take a fresh label list, and tell every modal holding a label about it.

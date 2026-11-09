@@ -344,6 +344,15 @@ impl PickerState {
             .and_then(|index| self.candidates.get(*index))
     }
 
+    /// Stop offering a label the store has discarded (BUG-27).
+    ///
+    /// Picked, it would become the list's filter on an id that names nothing.
+    pub fn forget_label(&mut self, label: LabelId) {
+        self.candidates
+            .retain(|candidate| candidate.pick != Pick::Label(label));
+        self.refilter();
+    }
+
     fn refilter(&mut self) {
         self.matches = fuzzy_order(
             self.candidates
@@ -610,6 +619,38 @@ impl EditState {
             labels: TextInput::new(labels),
             focus: EditField::Title,
             before: Box::new(task.clone()),
+        }
+    }
+
+    /// Forget a label the store has discarded (BUG-27), from both halves of the form.
+    ///
+    /// `before` is what the save computes its detaches against, so a dead label left there
+    /// is a `DetachLabel` for it. The labels field is what it computes its attaches from,
+    /// by name: while the reload is outstanding the pool still resolves the name to the
+    /// dead id, and afterwards it would ask to create a label the server just refused. So
+    /// the name goes too -- unless `title_still_known`, when another label carries the
+    /// same title (titles are not unique) and the name is the user's choice of that one.
+    pub fn forget_label(&mut self, label: &Label, title_still_known: bool) {
+        self.before.drop_label(label.id);
+        if title_still_known {
+            return;
+        }
+        let names: Vec<&str> = self
+            .labels
+            .value()
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        if names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(label.title.trim()))
+        {
+            let kept: Vec<&str> = names
+                .into_iter()
+                .filter(|name| !name.eq_ignore_ascii_case(label.title.trim()))
+                .collect();
+            self.labels = TextInput::new(kept.join(", "));
         }
     }
 

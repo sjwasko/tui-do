@@ -2146,6 +2146,242 @@ fn a_rejected_change_is_not_left_on_the_undo_stack() {
     );
 }
 
+/// Every label id a mutation would hand the store, on any path: the one it sends, and
+/// the ones a task it carries holds -- `decompose` turns those into attaches.
+fn label_ids(mutation: &Mutation) -> Vec<LabelId> {
+    match mutation {
+        Mutation::AttachLabel { label, .. }
+        | Mutation::DetachLabel { label, .. }
+        | Mutation::CreateLabel { label } => vec![label.id],
+        Mutation::UpdateLabel { before, after } => vec![before.id, after.id],
+        Mutation::CreateTask { task } => task.labels.iter().map(|l| l.id).collect(),
+        Mutation::DeleteTask { before } => before.labels.iter().map(|l| l.id).collect(),
+        Mutation::UpdateTask { before, after } => before
+            .labels
+            .iter()
+            .chain(after.labels.iter())
+            .map(|l| l.id)
+            .collect(),
+    }
+}
+
+/// Task 1 given priority 3, then label `-1` created and attached to it through the form.
+fn attached_to_a_provisional() -> Model {
+    let mut model = with_labels(Vec::new(), Vec::new());
+    press(&mut model, 'p');
+    press(&mut model, '3');
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.selected_task().unwrap().priority, 3);
+
+    press(&mut model, 'l');
+    for c in "next".chars() {
+        press(&mut model, c);
+    }
+    press_ctrl(&mut model, 'n');
+    update(&mut model, Msg::LabelsLoaded(vec![label(-1, "next")]));
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the tick queues an attach") {
+        Mutation::AttachLabel { task, label } => {
+            assert_eq!((*task, label.id), (TaskId(1), LabelId(-1)));
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    model
+}
+
+fn reject_the_create(model: &mut Model) {
+    update(
+        model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(-1)),
+            kind: "create_label".to_string(),
+            message: "You do not have the right to do this.".to_string(),
+        }),
+    );
+}
+
+#[test]
+fn an_undo_after_a_rejected_label_create_never_names_its_id() {
+    // BUG-27. The attach's inverse is a `DetachLabel` whose subject is the *task*, so a
+    // prune by `Subject::Label(-1)` kept it. `u` then sent `DELETE /tasks/1/labels/-1`,
+    // and `C-r` a `PUT` with `label_id: -1` -- a 4xx the drain treats as permanent, which
+    // discards every other entry queued for task 1.
+    let mut model = attached_to_a_provisional();
+    reject_the_create(&mut model);
+
+    let mut effects = press(&mut model, 'u');
+    effects.extend(press_ctrl(&mut model, 'r'));
+    effects.extend(press(&mut model, 'u'));
+    effects.extend(press(&mut model, 'u'));
+
+    let queued = all_applied(&effects);
+    assert!(!queued.is_empty(), "nothing was undone at all");
+    for mutation in queued {
+        assert!(
+            !label_ids(mutation).contains(&LabelId(-1)),
+            "queued a write naming a label whose create was rejected: {mutation:?}"
+        );
+    }
+}
+
+#[test]
+fn an_edit_made_before_the_attach_still_undoes_after_the_prune() {
+    let mut model = attached_to_a_provisional();
+    reject_the_create(&mut model);
+
+    let effects = press(&mut model, 'u');
+    match applied(&effects).expect("the priority edit is still undoable") {
+        Mutation::UpdateTask { after, .. } => assert_eq!(after.priority, 0),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn an_edit_made_after_the_attach_undoes_without_the_dead_label() {
+    // Here the task already carried `-1` when it was edited, so both halves of the
+    // inverse hold it. The edit itself is still the user's, so the label is stripped
+    // rather than the undo thrown away.
+    let mut model = attached_to_a_provisional();
+    press(&mut model, 'p');
+    press(&mut model, '5');
+    press_code(&mut model, KeyCode::Enter);
+    reject_the_create(&mut model);
+
+    let effects = press(&mut model, 'u');
+    let mutation = applied(&effects).expect("the later edit is still undoable");
+    match mutation {
+        Mutation::UpdateTask { after, .. } => assert_eq!(after.priority, 3),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    assert!(
+        !label_ids(mutation).contains(&LabelId(-1)),
+        "the undo still carries the dead label: {mutation:?}"
+    );
+}
+
+#[test]
+fn undoing_a_delete_made_after_a_rejected_label_create_drops_the_label() {
+    // The re-created task is split into a `CreateTask` and one `AttachLabel` per label it
+    // carries, so a `-1` left on it reaches the same permanent rejection. The reload the
+    // rejection asked for has not answered yet, which is the window a fast `x` lands in.
+    let mut model = attached_to_a_provisional();
+    reject_the_create(&mut model);
+    press(&mut model, 'x');
+
+    let effects = press(&mut model, 'u');
+    match applied(&effects).expect("the delete is undoable") {
+        Mutation::CreateTask { task } => {
+            assert_eq!(task.title, "first");
+            assert!(
+                task.labels.iter().all(|held| held.id != LabelId(-1)),
+                "the re-created task carries the rejected label: {:?}",
+                task.labels
+            );
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn undoing_a_delete_made_before_a_rejected_label_create_drops_the_label() {
+    let mut model = attached_to_a_provisional();
+    press(&mut model, 'x');
+    reject_the_create(&mut model);
+
+    let effects = press(&mut model, 'u');
+    match applied(&effects).expect("the delete is undoable") {
+        Mutation::CreateTask { task } => assert!(
+            task.labels.iter().all(|held| held.id != LabelId(-1)),
+            "the re-created task carries the rejected label: {:?}",
+            task.labels
+        ),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn saving_an_edit_form_open_across_the_rejection_names_no_dead_label() {
+    // The form opened on a task carrying `-1`, so its labels field says `next`, and the
+    // pool still resolves that name to `-1` until the reload answers. Stripping only the
+    // form's `before` turned the save into an `AttachLabel -1`, which the store refuses
+    // with a toast that says nothing the user can act on.
+    let mut model = attached_to_a_provisional();
+    press(&mut model, 'e');
+    reject_the_create(&mut model);
+    for c in " again".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_ctrl(&mut model, 's');
+
+    let queued = all_applied(&effects);
+    match queued.as_slice() {
+        [Mutation::UpdateTask { after, .. }] => assert_eq!(after.title, "first again"),
+        other => panic!("wrong mutations: {other:?}"),
+    }
+    for mutation in queued {
+        assert!(
+            !label_ids(mutation).contains(&LabelId(-1)),
+            "the save named a label whose create was rejected: {mutation:?}"
+        );
+    }
+    assert!(
+        model.modals.is_empty(),
+        "the save asked about a label instead of saving: {:?}",
+        model.modals
+    );
+}
+
+#[test]
+fn a_label_picker_open_across_the_rejection_stops_offering_it() {
+    let mut model = attached_to_a_provisional();
+    while !model.modals.is_empty() {
+        press_code(&mut model, KeyCode::Esc);
+    }
+    press(&mut model, 'g');
+    press(&mut model, 'l');
+    reject_the_create(&mut model);
+
+    match model.modals.last() {
+        Some(Modal::Picker(state)) => assert!(
+            state
+                .candidates
+                .iter()
+                .all(|candidate| candidate.pick != Pick::Label(LabelId(-1))),
+            "the picker still offers the dead label: {:?}",
+            state.candidates
+        ),
+        other => panic!("the label picker is not open: {other:?}"),
+    }
+}
+
+#[test]
+fn a_rejected_rename_of_a_real_label_leaves_its_attach_undoable() {
+    // The widened prune is for a label that never existed. A real label whose rename was
+    // refused is still on the server, and undoing its attach is still a real undo.
+    let mut model = with_labels(vec![label(7, "work")], Vec::new());
+    press(&mut model, 'l');
+    press(&mut model, ' ');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(matches!(
+        applied(&effects),
+        Some(Mutation::AttachLabel { .. })
+    ));
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Rejected {
+            subject: Subject::Label(LabelId(7)),
+            kind: "update_label".to_string(),
+            message: "nope".to_string(),
+        }),
+    );
+
+    let effects = press(&mut model, 'u');
+    assert!(
+        matches!(applied(&effects), Some(Mutation::DetachLabel { label, .. }) if label.id == LabelId(7)),
+        "the attach of a label that exists was forgotten: {effects:?}"
+    );
+}
+
 #[test]
 fn a_failed_sync_says_so_without_taking_the_interface_away() {
     let mut model = loaded();
