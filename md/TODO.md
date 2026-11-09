@@ -1006,6 +1006,17 @@ it a design job: a task marked done *elsewhere* also vanishes from that listing 
 wrongly deleted, so it needs a second cheap lookup to separate "deleted" from "now done".
 Possible, not worth doing before leads 1 and 2.
 
+**Revisited 2026-11-09, from "I have 179 active tasks but `R` says nearly 3,900".** The
+author's store held 178 open and 3,774 done (3,952 total, ~79 pages). Almost all of it is
+history rather than use: 3,584 tasks were created in the May 2026 import and 1,794 were
+completed in the November cleanup, against an organic rate of ~50-95 new tasks a month — so
+the listing grows by roughly 1,000 tasks, ~20 pages, a year. The progress line now reads
+`3952 tasks (178 open)` so the number stops looking wrong. **Status: none of leads 1-4 is
+done** — the timer still runs `Pass::Full` every `interval_seconds` (300), and the upsert
+still has no `updated` guard — and none is urgent at this size. Revisit when `R` or the
+timer's pass is felt as slow; do lead 1 first, since the timer, not `R`, is what repeats
+the full sweep 288 times a day, and lead 4 only after it.
+
 ### What actually breaks at Tier 5
 
 1. **Labels are one global pool.** Item 3 stores agent state as `agent:todo`,
