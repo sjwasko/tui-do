@@ -293,17 +293,16 @@ pub(super) fn is_being_created(tx: &Transaction<'_>, label: LabelId) -> Result<b
     )? == 1)
 }
 
-/// The labels attached to each of `tasks`, keyed by task id, each task's in title order.
+/// The labels attached to each of `tasks`, keyed by task, each task's in title order.
 ///
 /// One statement however many tasks there are. BUG-28: one per task made the open list
 /// about 1,900 label reads, a third of the ~5,800 statements behind one task-list read.
-/// `tasks` is a JSON array of ids, so the statement has one parameter at any count and
-/// never meets SQLite's variable limit.
 pub(super) fn labels_for_tasks(
     connection: &Connection,
-    tasks: &str,
-) -> Result<HashMap<i64, Vec<Label>>> {
-    let mut statement = connection.prepare(
+    tasks: &[TaskId],
+) -> Result<HashMap<TaskId, Vec<Label>>> {
+    group_by_task(
+        connection,
         "SELECT task_labels.task_id AS for_task,
                 labels.*,
                 creator.username AS creator_username,
@@ -314,11 +313,9 @@ pub(super) fn labels_for_tasks(
            LEFT JOIN users AS creator ON creator.id = labels.created_by_id
           WHERE task_labels.task_id IN (SELECT value FROM json_each(?1))
           ORDER BY task_labels.task_id, labels.title COLLATE NOCASE, labels.id",
-    )?;
-    let rows = statement.query_map(params![tasks], |row| {
-        Ok((row.get::<_, i64>("for_task")?, row_to_label(row)?))
-    })?;
-    group_by_task(rows)
+        tasks,
+        row_to_label,
+    )
 }
 
 /// Build a label from a row produced by [`SELECT`].

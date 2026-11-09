@@ -579,68 +579,64 @@ fn fill_children(connection: &Connection, tasks: &mut [Task]) -> Result<()> {
     if tasks.is_empty() {
         return Ok(());
     }
-    let ids: Vec<i64> = tasks.iter().map(|task| task.id.get()).collect();
-    let ids = serde_json::to_string(&ids)?;
+    let ids: Vec<TaskId> = tasks.iter().map(|task| task.id).collect();
     let mut labels = labels_for_tasks(connection, &ids)?;
     let mut assignees = assignees_for_tasks(connection, &ids)?;
     let mut reminders = reminders_for_tasks(connection, &ids)?;
     for task in tasks {
-        let id = task.id.get();
-        task.labels = labels.remove(&id).unwrap_or_default();
-        task.assignees = assignees.remove(&id).unwrap_or_default();
-        task.reminders = reminders.remove(&id).unwrap_or_default();
+        task.labels = labels.remove(&task.id).unwrap_or_default();
+        task.assignees = assignees.remove(&task.id).unwrap_or_default();
+        task.reminders = reminders.remove(&task.id).unwrap_or_default();
     }
     Ok(())
 }
 
-/// The reminders set on each of `tasks` (a JSON array of ids), keyed by task id.
+/// The reminders set on each of `tasks`, keyed by task.
 ///
 /// Loaded with every task rather than on demand, because the reason they are stored is
 /// that `update_task` sends them back — a task read for editing must carry them or the
 /// server deletes them.
 fn reminders_for_tasks(
     connection: &Connection,
-    tasks: &str,
-) -> Result<HashMap<i64, Vec<TaskReminder>>> {
-    let mut statement = connection.prepare(
+    tasks: &[TaskId],
+) -> Result<HashMap<TaskId, Vec<TaskReminder>>> {
+    group_by_task(
+        connection,
         "SELECT task_id, reminder, relative_period FROM task_reminders
           WHERE task_id IN (SELECT value FROM json_each(?1))
           ORDER BY task_id, reminder, relative_period",
-    )?;
-    let rows = statement.query_map(params![tasks], |row| {
-        Ok((
-            row.get::<_, i64>("task_id")?,
-            TaskReminder {
+        tasks,
+        |row| {
+            Ok(TaskReminder {
                 reminder: instant(row, "reminder")?.into(),
                 relative_period: row.get("relative_period")?,
-            },
-        ))
-    })?;
-    group_by_task(rows)
+            })
+        },
+    )
 }
 
-/// The users assigned to each of `tasks` (a JSON array of ids), keyed by task id, each
-/// task's in username order.
-fn assignees_for_tasks(connection: &Connection, tasks: &str) -> Result<HashMap<i64, Vec<User>>> {
-    let mut statement = connection.prepare(
+/// The users assigned to each of `tasks`, keyed by task, each task's in username order.
+fn assignees_for_tasks(
+    connection: &Connection,
+    tasks: &[TaskId],
+) -> Result<HashMap<TaskId, Vec<User>>> {
+    group_by_task(
+        connection,
         "SELECT task_assignees.task_id, users.id, users.username, users.name, users.email
            FROM users JOIN task_assignees ON task_assignees.user_id = users.id
           WHERE task_assignees.task_id IN (SELECT value FROM json_each(?1))
           ORDER BY task_assignees.task_id, users.username COLLATE NOCASE, users.id",
-    )?;
-    let rows = statement.query_map(params![tasks], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            User {
+        tasks,
+        |row| {
+            Ok(User {
                 id: row.get::<_, i64>(1)?.into(),
                 username: row.get(2)?,
                 name: row.get(3)?,
                 email: row.get(4)?,
                 ..User::default()
-            },
-        ))
-    })?;
-    group_by_task(rows)
+            })
+        },
+    )
 }
 
 /// Build a task from a row of the `tasks` table. Labels and assignees are filled after.

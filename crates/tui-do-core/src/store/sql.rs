@@ -7,21 +7,29 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Row, Transaction};
+use rusqlite::{params, Connection, Row, Transaction};
 
 use crate::error::Result;
-use tui_do_api::models::{User, UserId};
+use tui_do_api::models::{TaskId, User, UserId};
 
-/// Hand out `rows`, each a task id and one of that task's children, to their tasks,
+/// Run one child read for every task in `tasks`, and hand each row's child to its task,
 /// keeping each task's children in the order the rows came.
 ///
-/// The second half of every batched child read (BUG-28): one statement reads a child
-/// table for many tasks, ordered by task and then by the child's own order, and this
-/// splits the answer back up.
+/// Every batched child read goes through here (BUG-28): one statement per child table
+/// rather than one per task. `sql` takes the ids as `?1`, a JSON array read through
+/// `json_each`, so it has one parameter at any count and never meets SQLite's variable
+/// limit. Its first column is the task id, and it orders by task and then by the
+/// child's own order. `child` builds the child from the rest of the row.
 pub(super) fn group_by_task<T>(
-    rows: impl Iterator<Item = rusqlite::Result<(i64, T)>>,
-) -> Result<HashMap<i64, Vec<T>>> {
-    let mut grouped: HashMap<i64, Vec<T>> = HashMap::new();
+    connection: &Connection,
+    sql: &str,
+    tasks: &[TaskId],
+    mut child: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<HashMap<TaskId, Vec<T>>> {
+    let ids = serde_json::to_string(tasks)?;
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map(params![ids], |row| Ok((TaskId(row.get(0)?), child(row)?)))?;
+    let mut grouped: HashMap<TaskId, Vec<T>> = HashMap::new();
     for row in rows {
         let (task, child) = row?;
         grouped.entry(task).or_default().push(child);
