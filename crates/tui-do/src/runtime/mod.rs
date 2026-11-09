@@ -1120,7 +1120,19 @@ async fn open_existing_at(store_path: &std::path::Path) -> anyhow::Result<Store>
     }
 }
 
-fn store_path() -> anyhow::Result<std::path::PathBuf> {
+/// A runtime on this thread, with no I/O or timer driver, for a command that reads the
+/// local store and exits: shell completion and `tui-do add --tokens`. The store's reads
+/// are `spawn_blocking`, which needs neither driver, and nothing here may touch a network.
+///
+/// # Errors
+/// The runtime could not be built.
+pub fn store_only_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .context("could not start the async runtime")
+}
+
+pub(crate) fn store_path() -> anyhow::Result<std::path::PathBuf> {
     Store::default_path().context("could not decide where to keep the store")
 }
 
@@ -1138,20 +1150,70 @@ pub async fn vocabulary() -> tui_do_ui::assist::Vocabulary {
 }
 
 /// [`vocabulary`], from the store at `store_path`.
-async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocabulary {
+pub(crate) async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocabulary {
     let Ok(store) = open_existing_at(store_path).await else {
         return tui_do_ui::assist::Vocabulary::default();
     };
+    vocabulary_of(&store).await.unwrap_or_default()
+}
+
+/// The names in `store` a quick-add line can use.
+async fn vocabulary_of(store: &Store) -> anyhow::Result<tui_do_ui::assist::Vocabulary> {
     let projects = store
         .projects(ProjectFilter::default(), ProjectSort::default())
-        .await
-        .unwrap_or_default();
+        .await?;
     let labels = store
         .labels(LabelFilter::default(), LabelSort::default())
-        .await
-        .unwrap_or_default();
-    let users = store.usernames().await.unwrap_or_default();
-    tui_do_ui::assist::Vocabulary::new(&projects, &labels, users)
+        .await?;
+    let users = store.usernames().await?;
+    Ok(tui_do_ui::assist::Vocabulary::new(
+        &projects, &labels, users,
+    ))
+}
+
+/// `tui-do add --tokens`: every name a quick-add line may use, from the local store, and
+/// the token syntax. Read-only and offline, like `--dry-run`.
+///
+/// # Errors
+/// No store yet, with the message that says to run tui-do once; or a store that cannot
+/// be read.
+pub async fn tokens() -> anyhow::Result<String> {
+    let store = open_existing_store().await?;
+    Ok(token_listing(&vocabulary_of(&store).await?))
+}
+
+/// The `--tokens` listing for `vocabulary`: projects, labels and users, one name to a
+/// line and each written exactly as the canonical line writes it, then the syntax.
+///
+/// Every name goes through [`printable`]: it was written on a server, possibly by
+/// somebody else, and a newline in it would forge a line of this listing.
+fn token_listing(vocabulary: &tui_do_ui::assist::Vocabulary) -> String {
+    use std::fmt::Write as _;
+    use tui_do_core::quickadd::name_token;
+    let mut out = String::new();
+    for (heading, sigil, names) in [
+        ("projects", '+', &vocabulary.projects),
+        ("labels", '*', &vocabulary.labels),
+        ("users", '@', &vocabulary.users),
+    ] {
+        let _ = writeln!(out, "{heading}:");
+        if names.is_empty() {
+            let _ = writeln!(out, "(none in the local store)");
+        }
+        for name in names {
+            let _ = writeln!(out, "{}", printable(&name_token(sigil, name)));
+        }
+        out.push('\n');
+    }
+    out.push_str("syntax:\n");
+    for line in tui_do_ui::assist::TOKEN_SYNTAX {
+        let _ = writeln!(out, "  {line}");
+    }
+    out.push_str(
+        "\nbest form: title +project *label @user !N due YYYY-MM-DD start YYYY-MM-DD every <n> <unit>\n\
+         check a line first: tui-do add --dry-run '<line>'\n",
+    );
+    out
 }
 
 /// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run

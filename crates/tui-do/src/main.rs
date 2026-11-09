@@ -11,6 +11,8 @@ use anyhow::{bail, Context};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use tui_do_core::config::{migrate, Config};
 
+#[cfg(feature = "dynamic-completion")]
+mod complete;
 mod login;
 mod runtime;
 
@@ -83,6 +85,11 @@ enum Command {
     /// follows it except whitespace, punctuation and other tokens. A real add prints
     /// the same line as "as typed best: ..." whenever what was typed differs from it;
     /// copy that form next time.
+    ///
+    /// --tokens lists every project, label and user the local store knows, one to a
+    /// line and written the way the best form writes them, then the token syntax:
+    ///
+    ///   tui-do add --tokens
     ///
     /// NAMES WITH SPACES
     ///
@@ -204,6 +211,29 @@ enum Command {
     ///
     /// Re-run it after upgrading tui-do: the script is generated from the same command
     /// table as `--help`, so a stale one offers flags that have moved.
+    ///
+    /// NAMES FROM THE STORE
+    ///
+    /// The script above completes flags and subcommands only. To have
+    /// `tui-do add Call the VA +Le<TAB>` offer `+Legal`, use the dynamic script instead,
+    /// which asks tui-do on every Tab. Add one line to the shell's startup file:
+    ///
+    ///   bash  ~/.bashrc                    source <(TUI_DO_COMPLETE=bash tui-do)
+    ///   zsh   ~/.zshrc, after compinit     source <(TUI_DO_COMPLETE=zsh tui-do)
+    ///   fish  ~/.config/fish/config.fish   TUI_DO_COMPLETE=fish tui-do | source
+    ///
+    /// It completes +project, *label and @user from the local store, a date word after
+    /// `due` or `start`, and the flags as well. It reads the store and never writes,
+    /// syncs or contacts a server; with no store it offers nothing. Generate it at shell
+    /// start, as above, rather than saving it: the script and the binary speak a
+    /// protocol that may change between versions.
+    ///
+    /// It completes unquoted words. Inside a quoted '...' argument, what happens differs
+    /// by shell. `?` is not attempted in a shell; the `tui-do add` prompt has it.
+    ///
+    /// It needs tui-do's `dynamic-completion` feature, which is on by default. A build
+    /// without it treats TUI_DO_COMPLETE as an ordinary variable and starts normally;
+    /// use the static script above there.
     #[command(verbatim_doc_comment)]
     Completions(CompletionsArgs),
 }
@@ -269,6 +299,22 @@ struct AddArgs {
     /// local store only, so one created since the last sync is not known to it.
     #[arg(long)]
     dry_run: bool,
+
+    /// List the projects, labels and users a line may name, then the token syntax.
+    ///
+    /// One name to a line, grouped, each written exactly as the best form writes it:
+    /// `+[Life Admin]` for a project with a space in it. From the local store only, so
+    /// run tui-do once to sync first; adds nothing, writes nothing and contacts no
+    /// server. For agents: run it once to learn the names, then --dry-run to check a line.
+    // Plain text only. `--json` waits on item 3a's contract (md/TODO.md).
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "text", "offline", "create_labels", "dry_run",
+            "description", "description_file", "edit",
+        ]
+    )]
+    tokens: bool,
 
     /// The task's description, inline: `-d 'Ask about the March invoice.'`
     ///
@@ -444,6 +490,9 @@ fn init_logging() -> Option<PathBuf> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // First: a shell asking for completions gets them and nothing else on stdout.
+    #[cfg(feature = "dynamic-completion")]
+    complete::handle(Cli::command);
     let cli = Cli::parse();
     init_logging();
 
@@ -594,6 +643,12 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
 
 /// Add a task from the command line, or, given no text at a terminal, ask for one.
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
+    if args.tokens {
+        // Before the config: the names come from the store alone, and nothing is sent.
+        let listing = runtime::store_only_runtime()?.block_on(runtime::tokens())?;
+        print!("{listing}");
+        return Ok(());
+    }
     // First, so a script piping a description in without the text is told exactly that,
     // rather than clap's generic "TEXT is required".
     stdin_is_free(args)?;

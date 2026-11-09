@@ -455,6 +455,38 @@ fn common_prefix(names: &[String]) -> String {
     first[..end].to_string()
 }
 
+/// The slot being typed at the end of `before`, the byte offset where the name typed into
+/// it begins (past any bracket or quote), and every name that begins that way. `None`
+/// outside a slot, or when nothing matches.
+fn slot_with_matches(
+    before: &str,
+    vocabulary: &Vocabulary,
+) -> Option<(Partial, usize, Vec<String>)> {
+    let partial = slot_at(before)?;
+    let typed = partial.start + partial.open.map_or(0, char::len_utf8);
+    let lower = before[typed..].to_lowercase();
+    let names: Vec<String> = vocabulary
+        .names(partial.slot)
+        .into_iter()
+        .filter(|name| name.to_lowercase().starts_with(&lower))
+        .collect();
+    (!names.is_empty()).then_some((partial, typed, names))
+}
+
+/// Each matching name written whole, as it goes in the line: sigil, bracket and all.
+fn written_tokens(partial: Partial, names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .map(|name| {
+            format!(
+                "{}{}",
+                partial.slot.sigil(),
+                written(partial.slot, name, partial.open, Extent::Whole)
+            )
+        })
+        .collect()
+}
+
 /// What Tab does at the end of `before`, the text before the cursor.
 ///
 /// `None` when the cursor is not in a slot -- after no sigil and no `due ` -- or when
@@ -463,39 +495,45 @@ fn common_prefix(names: &[String]) -> String {
 /// second Tab to list.
 #[must_use]
 pub fn complete(before: &str, vocabulary: &Vocabulary) -> Option<Completion> {
-    let Partial { slot, start, open } = slot_at(before)?;
-    let partial = &before[start..];
-    let typed = open.map_or(partial, |open| &partial[open.len_utf8()..]);
-    let lower = typed.to_lowercase();
-    let names: Vec<String> = vocabulary
-        .names(slot)
-        .into_iter()
-        .filter(|name| name.to_lowercase().starts_with(&lower))
-        .collect();
-    if names.is_empty() {
-        return None;
-    }
-    let matches = names
-        .iter()
-        .map(|name| {
-            format!(
-                "{}{}",
-                slot.sigil(),
-                written(slot, name, open, Extent::Whole)
-            )
-        })
-        .collect();
+    let (partial, typed, names) = slot_with_matches(before, vocabulary)?;
+    let Partial { slot, start, open } = partial;
+    let matches = written_tokens(partial, &names);
     let text = if let [only] = names.as_slice() {
         Some(format!("{} ", written(slot, only, open, Extent::Whole)))
     } else {
         let prefix = common_prefix(&names);
-        (prefix.chars().count() > typed.chars().count())
+        (prefix.chars().count() > before[typed..].chars().count())
             .then(|| written(slot, &prefix, open, Extent::Prefix))
     };
     Some(Completion {
         range: start..before.len(),
         text,
         matches,
+    })
+}
+
+/// Every whole token the one being typed at the end of `before` could become.
+///
+/// For a shell, which replaces a word rather than a range of the line and has no second
+/// Tab of its own to list with: the same slots and the same names as [`complete`], each
+/// written out in full.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidates {
+    /// Where the token starts in `before`, in bytes: at its sigil, or at the first word
+    /// of a date.
+    pub start: usize,
+    /// Each matching name as it goes in the line: `+Legal`, `+[Home Improvement]`,
+    /// `next week`.
+    pub tokens: Vec<String>,
+}
+
+/// [`Candidates`] for the end of `before`, or `None` outside a slot or with no match.
+#[must_use]
+pub fn candidates(before: &str, vocabulary: &Vocabulary) -> Option<Candidates> {
+    let (partial, _, names) = slot_with_matches(before, vocabulary)?;
+    Some(Candidates {
+        start: partial.start - partial.slot.sigil().len(),
+        tokens: written_tokens(partial, &names),
     })
 }
 
@@ -548,8 +586,9 @@ pub fn help(which: Help, vocabulary: &Vocabulary) -> Aside {
     match which {
         Help::General => Aside {
             heading: "Anywhere in the line:".to_string(),
-            items: GENERAL_HELP
+            items: TOKEN_SYNTAX
                 .iter()
+                .chain(&[KEYS])
                 .map(|line| (*line).to_string())
                 .collect(),
         },
@@ -596,8 +635,9 @@ pub fn help(which: Help, vocabulary: &Vocabulary) -> Aside {
     }
 }
 
-/// The general help, one token to a line.
-const GENERAL_HELP: &[&str] = &[
+/// Every token, one to a line: the general help, and the syntax `tui-do add --tokens`
+/// prints after the names.
+pub const TOKEN_SYNTAX: &[&str] = &[
     "+project   +Legal, +[Home Improvement], +#12",
     "*label     *urgent, *[needs review]",
     "@user      @admin",
@@ -605,8 +645,10 @@ const GENERAL_HELP: &[&str] = &[
     "due <date> tomorrow, friday, next week, 2026-08-27",
     "start <date>   when work can begin",
     "every <n> <unit>   every 2 weeks, every month",
-    "Tab completes  ? after + * @ ! due start lists  Enter adds  Esc cancels",
 ];
+
+/// The prompt's keys, the general help's last line.
+const KEYS: &str = "Tab completes  ? after + * @ ! due start lists  Enter adds  Esc cancels";
 
 /// A quick-add line with completion and help: the field, what it can complete to, and
 /// what is shown under it.
@@ -757,6 +799,37 @@ mod tests {
 
     fn tab(line: &mut QuickAddInput) {
         line.press(Key::plain(KeyCode::Tab));
+    }
+
+    /// The shell's view of the same rules: every match written whole, and where the token
+    /// it replaces begins.
+    #[test]
+    fn candidates_are_whole_tokens_from_the_sigil() {
+        let names = vocabulary();
+        assert_eq!(
+            candidates("Call the VA +Le", &names),
+            Some(Candidates {
+                start: 12,
+                tokens: vec!["+Legal".into(), "+Leisure".into()],
+            })
+        );
+        assert_eq!(
+            candidates("x +Home", &names).map(|found| found.tokens),
+            Some(vec!["+[Home Improvement]".into(), "+[Home Office]".into()])
+        );
+        assert_eq!(
+            candidates("x due next we", &names),
+            Some(Candidates {
+                start: 6,
+                tokens: vec![
+                    "next week".into(),
+                    "next weekend".into(),
+                    "next wednesday".into()
+                ],
+            })
+        );
+        assert_eq!(candidates("Call the VA", &names), None);
+        assert_eq!(candidates("x +Nope", &names), None);
     }
 
     #[test]

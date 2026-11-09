@@ -191,23 +191,23 @@ impl Parsed {
     fn names(&self) -> Vec<String> {
         let mut names = Vec::new();
         if let Some(project) = &self.project {
-            names.push(format!("+{}", wrapped(project)));
+            names.push(name_token('+', project));
         }
-        names.extend(
-            self.labels
-                .iter()
-                .map(|label| format!("*{}", wrapped(label))),
-        );
-        names.extend(
-            self.assignees
-                .iter()
-                .map(|user| format!("@{}", wrapped(user))),
-        );
+        names.extend(self.labels.iter().map(|label| name_token('*', label)));
+        names.extend(self.assignees.iter().map(|user| name_token('@', user)));
         if let Some(priority) = self.priority {
             names.push(format!("!{priority}"));
         }
         names
     }
+}
+
+/// A name after its sigil, exactly as [`Parsed::canonical`] writes it: `+Legal`,
+/// `+[Life Admin]`, `*[needs review]`. For `tui-do add --tokens`, which lists the names an
+/// agent may use in the form it should type them.
+#[must_use]
+pub fn name_token(sigil: char, name: &str) -> String {
+    format!("{sigil}{}", wrapped(name))
 }
 
 /// A token's value, bracketed when it would not otherwise read back as itself.

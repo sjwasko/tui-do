@@ -512,7 +512,33 @@ $ tui-do add 'Write the plan +Work due 2026-11-12' --description-file plan.md
 Added "Write the plan" to Work, due Thu 12 Nov 2026, with a description (5 paragraphs, 114 characters)
 ```
 
-Shell completions, including for the quick-add flags:
+Shell completions come in two kinds. **Names** — `tui-do add Call the VA +Le` then Tab
+offers `+Legal` — come from your local store, so the shell has to ask tui-do on every Tab.
+Add one line to your shell's startup file:
+
+| shell | in | add |
+|---|---|---|
+| bash | `~/.bashrc` | `source <(TUI_DO_COMPLETE=bash tui-do)` |
+| zsh | `~/.zshrc`, after `compinit` | `source <(TUI_DO_COMPLETE=zsh tui-do)` |
+| fish | `~/.config/fish/config.fish` | `TUI_DO_COMPLETE=fish tui-do \| source` |
+
+That completes `+project`, `*label` and `@user` from the store, a date word after `due` or
+`start`, and the flags and subcommands too. A name with a space comes out in brackets,
+`+[Life Admin]`. It reads the store and never writes, syncs or contacts a server, and with no
+store it offers nothing. It is generated on each shell start rather than saved, because the
+script and the binary speak a protocol that may change between versions.
+
+It completes unquoted words. Inside a quoted `'…'` argument, what happens differs from shell
+to shell, and often nothing does. `?` is not offered in a shell at all: only the `tui-do add`
+prompt has it. In bash a bracketed name goes in backslash-escaped, `+\[Life\ Admin\]`, so it reaches
+tui-do as one word with its spacing intact; zsh and fish quote it themselves. An unquoted
+`!3` is still bash history expansion, as above.
+
+Name completion is the `dynamic-completion` cargo feature, on by default and in the release
+binaries. A build with `--no-default-features` ignores `TUI_DO_COMPLETE`; use the static
+script below there.
+
+**Flags only**, from a file written once, still works as it always did:
 
 ```sh
 tui-do completions fish > ~/.config/fish/completions/tui-do.fish
@@ -541,6 +567,11 @@ directly is a second writer with none of that.
 
 **`skills/tui-do/SKILL.md`** documents this for agents and is installable as a skill by tools
 that support them. It is plain Markdown, so anything else can simply read it.
+
+**Learn the names with `--tokens`.** `tui-do add --tokens` lists the projects, labels and
+users in the local store, one per line and grouped, each written the way a line should name
+it (`+[Life Admin]` for a project with a space), then the token syntax. It reads the store
+only, and fails with "run tui-do once to sync" if there is none yet.
 
 **Check generated lines with `--dry-run` first.** It adds nothing and exits non-zero,
 with the message a real add would give, if the line would fail. Then write them the way
