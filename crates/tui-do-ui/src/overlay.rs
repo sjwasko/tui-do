@@ -13,7 +13,7 @@
 //! acknowledged it *and* a load issued after that acknowledgement has answered: that load
 //! read a store which already held the write, so it is the truth and the copy is not.
 
-use tui_do_core::models::{Task, TaskId};
+use tui_do_core::models::{Label, Task, TaskId};
 use tui_do_core::store::Mutation;
 
 use crate::query::QueryId;
@@ -38,25 +38,31 @@ impl WriteSeq {
 struct Unsettled {
     write: WriteSeq,
     mutation: Mutation,
-    /// The task query current when the store acknowledged the write, or `None` while it
-    /// has not. A load issued under a later id read a store that already held it.
-    stored_under: Option<QueryId>,
+    /// For a create, the task's id once it is known, or `None` while the store has still
+    /// to allocate it. Unused for every other mutation.
+    created: Option<TaskId>,
+    /// The task load generation in force when the store's acknowledgement arrived, or
+    /// `None` while it has not. Any load issued under a later generation read a store that
+    /// already held this write.
+    acked_during: Option<QueryId>,
 }
 
 /// The edits a task load may not yet reflect, oldest first.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Overlay {
     last: WriteSeq,
-    writes: Vec<Unsettled>,
+    entries: Vec<Unsettled>,
 }
 
 /// What [`land`] did to the list, for a caller that moves the selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Landed {
-    /// A row went in at the top.
-    Inserted,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Landed<'a> {
+    /// The task with this id went in at the top.
+    Inserted(TaskId),
     /// The row at this index left the list.
     Removed(usize),
+    /// A label was renamed or recoloured, and the chips on the rows now carry this.
+    Relabelled(&'a Label),
     /// Rows changed in place, or nothing matched.
     InPlace,
 }
@@ -65,32 +71,42 @@ impl Overlay {
     /// Remember an edit that has just been drawn, and number it for the runtime.
     pub fn record(&mut self, mutation: Mutation) -> WriteSeq {
         self.last = self.last.next();
-        self.writes.push(Unsettled {
+        let created = match &mutation {
+            // The one place the placeholder is read. `0` is the value the store itself
+            // treats as "allocate an id here"; an undone delete re-creates a task under
+            // the id it already had, which is known from the start.
+            Mutation::CreateTask { task } if task.id.get() != 0 => Some(task.id),
+            _ => None,
+        };
+        self.entries.push(Unsettled {
             write: self.last,
             mutation,
-            stored_under: None,
+            created,
+            acked_during: None,
         });
         self.last
     }
 
-    /// The store holds `write`. `current` is the task query in force as it says so.
+    /// The store holds `write`. `current` is the task load generation in force as it says
+    /// so.
     pub fn stored(&mut self, write: WriteSeq, current: QueryId) {
-        if let Some(entry) = self.writes.iter_mut().find(|entry| entry.write == write) {
-            entry.stored_under = Some(current);
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.write == write) {
+            entry.acked_during = Some(current);
         }
     }
 
     /// The store refused `write`. Nothing will ever hold it, so the next load is right.
     pub fn failed(&mut self, write: WriteSeq) {
-        self.writes.retain(|entry| entry.write != write);
+        self.entries.retain(|entry| entry.write != write);
     }
 
     /// The store gave the task `write` created this id; it was drawn without one.
     pub fn created(&mut self, write: WriteSeq, id: TaskId) {
-        for entry in &mut self.writes {
+        for entry in &mut self.entries {
             if entry.write == write {
                 if let Mutation::CreateTask { task } = &mut entry.mutation {
                     task.id = id;
+                    entry.created = Some(id);
                 }
             }
         }
@@ -98,8 +114,11 @@ impl Overlay {
 
     /// A provisional task id has become the server's.
     pub fn retarget(&mut self, from: TaskId, to: TaskId) {
-        for entry in &mut self.writes {
+        for entry in &mut self.entries {
             entry.mutation.retarget(from, to);
+            if entry.created == Some(from) {
+                entry.created = Some(to);
+            }
         }
     }
 
@@ -109,7 +128,7 @@ impl Overlay {
         from: tui_do_core::models::LabelId,
         to: tui_do_core::models::LabelId,
     ) {
-        for entry in &mut self.writes {
+        for entry in &mut self.entries {
             entry.mutation.retarget_label(from, to);
         }
     }
@@ -117,29 +136,29 @@ impl Overlay {
     /// How many drawn edits a load may still not show.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.writes.len()
+        self.entries.len()
     }
 
     /// Whether every drawn edit is known to be in what the last load showed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.writes.is_empty()
+        self.entries.is_empty()
     }
 
     /// Lay the edits a load `answered` cannot be trusted with over what it found.
     ///
-    /// Forgets first every edit stored before that load was issued, since it found them
-    /// already. What is left goes back on in the order it was made, and every step is
+    /// Forgets first every edit acknowledged before that load was issued, since it found
+    /// them already. What is left goes back on in the order it was made, and every step is
     /// idempotent, because the load may have caught some of it anyway: a create is not
     /// put in twice, an update replaces only a row the load returned -- one the filter
     /// hides stays hidden -- and a removal of a row that is not there removes nothing.
     pub fn replay(&mut self, answered: QueryId, tasks: &mut Vec<Task>, include_done: bool) {
-        self.writes
-            .retain(|entry| entry.stored_under.is_none_or(|stored| stored >= answered));
-        for (at, entry) in self.writes.iter().enumerate() {
-            let later = &self.writes[at + 1..];
+        self.entries
+            .retain(|entry| entry.acked_during.is_none_or(|acked| acked >= answered));
+        for (at, entry) in self.entries.iter().enumerate() {
+            let later = &self.entries[at + 1..];
             match &entry.mutation {
-                Mutation::CreateTask { task } if self.already_loaded(task, tasks) => {}
+                Mutation::CreateTask { task } if self.already_loaded(entry, task, tasks) => {}
                 // Only the newest edit to a task says what it should look like now. Laid
                 // on in turn, a `d` followed by its undo would have the first take the
                 // row away and the second find nothing to put back.
@@ -154,21 +173,21 @@ impl Overlay {
 
     /// Whether a load already holds the task this create drew.
     ///
-    /// By id once the store has said what it is. Until then the row carries the
-    /// placeholder `0`, and the store's copy can only be recognised by what it says: a
-    /// provisional row in the same project with the same title, that no other create in
-    /// here has claimed by id.
-    fn already_loaded(&self, created: &Task, tasks: &[Task]) -> bool {
-        if created.id != TaskId::default() {
-            return tasks.iter().any(|task| task.id == created.id);
+    /// By id once the store has said what it is. Until then, the store's copy can only be
+    /// recognised by what it says: a provisional row in the same project with the same
+    /// title, that no other create in here has claimed by id.
+    fn already_loaded(&self, entry: &Unsettled, created: &Task, tasks: &[Task]) -> bool {
+        if let Some(id) = entry.created {
+            return tasks.iter().any(|task| task.id == id);
         }
         tasks.iter().any(|task| {
             task.id.get() < 0
                 && task.project_id == created.project_id
                 && task.title == created.title
-                && !self.writes.iter().any(|entry| {
-                    matches!(&entry.mutation, Mutation::CreateTask { task: other } if other.id == task.id)
-                })
+                && !self
+                    .entries
+                    .iter()
+                    .any(|other| other.created == Some(task.id))
         })
     }
 }
@@ -182,13 +201,17 @@ fn updates(mutation: &Mutation, id: TaskId) -> bool {
 /// The half of an optimistic edit that touches the rows, shared by the edit as it is made
 /// and by [`Overlay::replay`] over a load. The selection is the caller's: an edit as it is
 /// made moves the cursor, and a replay must leave it where the user put it.
-pub(crate) fn land(tasks: &mut Vec<Task>, mutation: &Mutation, include_done: bool) -> Landed {
+pub(crate) fn land<'a>(
+    tasks: &mut Vec<Task>,
+    mutation: &'a Mutation,
+    include_done: bool,
+) -> Landed<'a> {
     match mutation {
         Mutation::CreateTask { task } => {
             // At the top, so it is visible the instant it exists. The reload puts it in
             // its sorted place.
             tasks.insert(0, (**task).clone());
-            Landed::Inserted
+            Landed::Inserted(task.id)
         }
         Mutation::UpdateTask { after, .. } => {
             let Some(at) = tasks.iter().position(|task| task.id == after.id) else {
@@ -238,7 +261,7 @@ pub(crate) fn land(tasks: &mut Vec<Task>, mutation: &Mutation, include_done: boo
                     }
                 }
             }
-            Landed::InPlace
+            Landed::Relabelled(after)
         }
         Mutation::CreateLabel { .. } => Landed::InPlace,
     }

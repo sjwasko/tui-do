@@ -106,7 +106,7 @@ async fn a_reload_that_overtakes_a_write_does_not_offer_its_task_again() {
     harness.release_write().await;
     assert!(harness.model.data.tasks.is_empty());
     assert!(
-        harness.model.writes.is_empty(),
+        harness.model.unconfirmed.is_empty(),
         "every write is in what the store last said"
     );
 

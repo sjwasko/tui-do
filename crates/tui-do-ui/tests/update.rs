@@ -4315,7 +4315,7 @@ fn once_its_write_is_stored_a_later_load_is_trusted_with_it() {
     store_answers(&mut model, first);
     let reload = store_answers(&mut model, second);
     assert_eq!(
-        model.writes.len(),
+        model.unconfirmed.len(),
         2,
         "nothing is trusted until a later load answers"
     );
@@ -4329,7 +4329,7 @@ fn once_its_write_is_stored_a_later_load_is_trusted_with_it() {
     );
 
     assert!(
-        model.writes.is_empty(),
+        model.unconfirmed.is_empty(),
         "both writes are in what the store said"
     );
     assert_eq!(titles(&model), ["second, reopened elsewhere", "third"]);
@@ -4356,7 +4356,7 @@ fn a_load_issued_before_the_acknowledgement_is_still_not_trusted() {
         },
     );
     assert_eq!(titles(&model), ["second", "third"]);
-    assert_eq!(model.writes.len(), 1);
+    assert_eq!(model.unconfirmed.len(), 1);
 }
 
 #[test]
@@ -4372,7 +4372,7 @@ fn a_write_the_store_refused_is_no_longer_drawn() {
             message: "disk full".to_string(),
         },
     );
-    assert!(model.writes.is_empty());
+    assert!(model.unconfirmed.is_empty());
     assert_eq!(
         model.status.toast.as_ref().map(|toast| toast.level),
         Some(Level::Error)
@@ -4460,7 +4460,7 @@ fn a_replayed_create_is_not_shown_twice() {
             tasks: vec![task(1, "first"), stored],
         },
     );
-    assert!(model.writes.is_empty());
+    assert!(model.unconfirmed.is_empty());
     assert_eq!(count(&model), 1);
 }
 
@@ -4494,7 +4494,7 @@ fn a_replay_does_not_put_back_a_row_the_list_is_not_showing() {
         },
     );
     assert_eq!(titles(&model), ["first", "second", "third"]);
-    assert!(model.writes.is_empty());
+    assert!(model.unconfirmed.is_empty());
 }
 
 #[test]

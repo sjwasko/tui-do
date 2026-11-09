@@ -290,7 +290,7 @@ pub struct Model {
     /// The id of that request; older answers are dropped.
     pub query_id: QueryId,
     /// Edits already drawn that the last load may not have caught, replayed over the next.
-    pub writes: Overlay,
+    pub unconfirmed: Overlay,
     /// The layouts the user configured, or the built-in ones.
     pub layouts: Vec<ColumnLayout>,
     /// Which of them is active.
@@ -390,7 +390,7 @@ impl Model {
                 sort,
             },
             query_id: QueryId::default(),
-            writes: Overlay::default(),
+            unconfirmed: Overlay::default(),
             layouts,
             layout_ix,
             status: Status::default(),

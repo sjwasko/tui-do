@@ -67,7 +67,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // back over it first.
             let mut tasks = tasks;
             model
-                .writes
+                .unconfirmed
                 .replay(id, &mut tasks, model.query.include_done);
             model.data.tasks = tasks;
             model.data.loading = false;
@@ -103,17 +103,17 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // answer, and it arrives before the reload so `TasksLoaded` finds the row and
             // leaves the selection alone. The drawn copy learns it too, so a replay over a
             // load that already has the row recognises it rather than adding another.
-            model.writes.created(write, id);
+            model.unconfirmed.created(write, id);
             model.list.selected = Some(id);
             model.list.preview_scroll = 0;
             Vec::new()
         }
         Msg::Written(write) => {
-            model.writes.stored(write, model.query_id);
+            model.unconfirmed.stored(write, model.query_id);
             Vec::new()
         }
         Msg::WriteFailed { write, message } => {
-            model.writes.failed(write);
+            model.unconfirmed.failed(write);
             update(model, Msg::StoreFailed(message))
         }
         Msg::EffectFailed(message) => {
@@ -2184,7 +2184,7 @@ fn adopt_task(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<E
     if let Some(task) = find(&mut model.data.tasks, provisional) {
         task.id = assigned;
     }
-    model.writes.retarget(provisional, assigned);
+    model.unconfirmed.retarget(provisional, assigned);
     if model.list.selected == Some(provisional) {
         model.list.selected = Some(assigned);
     }
@@ -2233,7 +2233,7 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
     for label in &mut model.data.labels {
         swap(&mut label.id);
     }
-    model.writes.retarget_label(provisional, assigned);
+    model.unconfirmed.retarget_label(provisional, assigned);
     for task in &mut model.data.tasks {
         for label in &mut task.labels {
             swap(&mut label.id);
@@ -2320,7 +2320,7 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
 fn apply(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
     apply_locally(model, &mutation);
     // Kept until a load is known to show it -- see `Overlay`.
-    let write = model.writes.record(mutation.clone());
+    let write = model.unconfirmed.record(mutation.clone());
     // Asked for rather than incremented: `Effect::Apply` is what writes the outbox row,
     // and counting ahead of it would show a number the store does not agree with if the
     // write fails.
@@ -2333,13 +2333,11 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
     // stays here is what only an edit as it is made does: move the cursor, and reach the
     // label snapshots a load does not replace.
     match land(&mut model.data.tasks, mutation, model.query.include_done) {
-        Landed::Inserted => {
+        Landed::Inserted(id) => {
             // Selected, so the next key acts on it. The reload puts it in its sorted
             // place and the selection follows it there, which is what tracking the
             // selection by id is for.
-            if let Mutation::CreateTask { task } = mutation {
-                model.list.selected = Some(task.id);
-            }
+            model.list.selected = Some(id);
             model.list.offset = 0;
         }
         // A task marked done leaves a list that is not showing done tasks, and it leaves
@@ -2354,9 +2352,6 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
             let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
             model.list.selected = next.map(|task| task.id);
         }
-        Landed::InPlace => {}
-    }
-    match mutation {
         // A rename or a recolour has to reach *two* snapshots, because the model keeps
         // two copies of every label and neither is a view of the other:
         //
@@ -2374,10 +2369,10 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
         //
         // Matched on the id, not the title: the title is the thing that just changed. The
         // chips on the rows are `land`'s; the rest are here.
-        Mutation::UpdateLabel { after, .. } => {
+        Landed::Relabelled(after) => {
             for known in &mut model.data.labels {
                 if known.id == after.id {
-                    *known = (**after).clone();
+                    *known = after.clone();
                 }
             }
             // And a *third* copy, which became reachable the moment a label could be
@@ -2392,7 +2387,7 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                     Modal::Labels(state) => {
                         for held in &mut state.labels {
                             if held.id == after.id {
-                                *held = (**after).clone();
+                                *held = after.clone();
                             }
                         }
                     }
@@ -2444,14 +2439,8 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
         // anything here reads the store directly. Nothing in this model does; both label
         // snapshots above are written by `Msg::LabelsLoaded`, and rewritten only by the
         // arm above and by `adopt_label`, which renumbers what the server has just named.
-        //
-        // The task mutations touch only rows, and `land` has done them.
-        Mutation::CreateLabel { .. }
-        | Mutation::CreateTask { .. }
-        | Mutation::UpdateTask { .. }
-        | Mutation::DeleteTask { .. }
-        | Mutation::AttachLabel { .. }
-        | Mutation::DetachLabel { .. } => {}
+        // Every other mutation touches only rows, and `land` has done them.
+        Landed::InPlace => {}
     }
     keep_selection_visible(model);
 }
