@@ -66,6 +66,17 @@ enum Command {
     /// which reads as a version: write 2026-01-05, or put `due` in front. Any date
     /// that was set is named in the confirmation line, so a misread one shows at once.
     ///
+    /// CHECKING A LINE
+    ///
+    /// --dry-run prints what the line would create and the best way to write it, and
+    /// queues nothing, writes nothing and contacts no server:
+    ///
+    ///   tui-do add --dry-run 'call the dentist tomorrow !3 +Personal'
+    ///
+    /// It checks projects and labels against the local store only. A project created
+    /// elsewhere since the last sync can fail a dry run and still succeed for real,
+    /// because a real add asks the server once before giving up.
+    ///
     /// NAMES WITH SPACES
     ///
     /// Wrap the value in brackets or quotes, which is what keeps the second word from
@@ -198,7 +209,8 @@ struct AddArgs {
     /// Parses the line and resolves its project and labels against the local store
     /// exactly as a real add does, so a line that would fail fails the same way. Then
     /// prints what it would create and the line rewritten in its best form, and queues
-    /// nothing, writes nothing and contacts no server.
+    /// nothing, writes nothing and contacts no server. Projects are checked against the
+    /// local store only, so one created since the last sync is not known to it.
     #[arg(long)]
     dry_run: bool,
 }

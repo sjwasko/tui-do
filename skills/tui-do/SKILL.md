@@ -46,6 +46,26 @@ the title.
 | `due <date>` / `start <date>` | the same, said explicitly |
 | `every <n> <unit>` | repeat: `every 2 weeks`, `every month` |
 
+## Check the phrasing with `--dry-run`
+
+Run the line with `--dry-run` before adding it whenever it was generated rather than
+copied. It resolves the project and labels against the local store exactly as a real add
+would and prints what it would create, then queues nothing, writes nothing and contacts no
+server. A line that would fail exits non-zero with the same message.
+
+```console
+$ tui-do add --dry-run 'Call the dentist tomorrow +Personal *health !3 every week'
+Would add "Call the dentist" to Personal, due Mon 9 Nov 2026
+Parsed: title "Call the dentist" · +Personal · *health · !3 · due Mon 9 Nov 2026 · every week
+as typed best: Call the dentist +Personal *health !3 due 2026-11-09 every week
+Dry run: nothing was queued or sent.
+```
+
+It checks projects against the local store only. A project created elsewhere since the
+last sync can fail a dry run and still succeed for real, because a real add asks the server
+once before giving up; if a dry run says a project you know exists is missing, run `tui-do`
+once to sync.
+
 **Quote with single quotes.** At an interactive bash prompt `!3` is history expansion,
 including inside double quotes, so the priority is eaten before tui-do sees it. Scripts and
 agents run non-interactively, where this is off, but single quotes are correct everywhere.
@@ -57,6 +77,7 @@ Brackets beat quotes from a shell, because the shell strips quotes before tui-do
 
 | flag | when to use it |
 |---|---|
+| `--dry-run` | print what the line would add and its best form, and add nothing |
 | `--offline` | queue without attempting to send; use when you know there is no network and do not want the attempt |
 | `--create-labels` | create any label the line names that does not exist yet |
 | `--config <PATH>` | use a specific config, rather than the default lookup |

@@ -396,6 +396,24 @@ with its year, `2026.1.5`, which is a version number's shape and needs the keywo
 write `2026-01-05` instead. `tui-do add` names any date it set, so a misread one shows up
 at once: `Added "call mom" to Inbox, due Fri 27 Aug 2027`.
 
+**Check a line before adding it with `--dry-run`.** It parses the line, resolves its
+project and labels against the local store exactly as a real add would, and prints what it
+would create and the line in its best form. It queues nothing, writes nothing and contacts
+no server, and it fails, with the same message, wherever a real add would:
+
+```console
+$ tui-do add --dry-run 'Call the dentist tomorrow +Personal *health !3 every week'
+Would add "Call the dentist" to Personal, due Mon 9 Nov 2026
+Parsed: title "Call the dentist" · +Personal · *health · !3 · due Mon 9 Nov 2026 · every week
+as typed best: Call the dentist +Personal *health !3 due 2026-11-09 every week
+Dry run: nothing was queued or sent.
+```
+
+It checks projects against the **local store only**: a project created elsewhere since the
+last sync can fail a dry run and still succeed for real, because a real add asks the server
+once before giving up. It also refuses a store that does not exist yet, or one a real run
+would first have to upgrade, rather than creating or changing it.
+
 Wrap a name containing spaces in brackets or quotes; brackets are usually easier from a
 shell, which strips quotes before tui-do sees them:
 
@@ -419,8 +437,11 @@ agent) has history expansion off regardless.
 `tui-do add` applies locally and queues for the server exactly as the interface does, so it
 works on a plane. It is also the way to use tui-do from a script: the interface itself needs a
 terminal on both stdin and stdout, and refuses to start, with a message saying which is
-missing, when either is redirected. Two flags matter:
+missing, when either is redirected. Three flags matter:
 
+- **`--dry-run`** says what the line would add, and how it is best written, without
+  adding it. It reads only the local store, so a project created since the last sync is
+  unknown to it.
 - **`--create-labels`** creates any label the line names that does not exist yet. The
   interface asks instead of assuming.
 - **`--offline`** skips the send entirely, **but it needs a store that already knows your
@@ -458,6 +479,9 @@ directly is a second writer with none of that.
 
 **`skills/tui-do/SKILL.md`** documents this for agents and is installable as a skill by tools
 that support them. It is plain Markdown, so anything else can simply read it.
+
+**Check generated lines with `--dry-run` first.** It adds nothing and exits non-zero,
+with the message a real add would give, if the line would fail.
 
 One flag deserves mentioning: **`--create-labels` should usually stay off.**
 Labels are one global pool shared by every project, so a typo in a generated line becomes a
