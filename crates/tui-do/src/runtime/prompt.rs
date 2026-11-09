@@ -309,14 +309,23 @@ mod tests {
     fn drive(events: Vec<Event>) -> (anyhow::Result<Answer>, Terminal<TestBackend>) {
         let mut terminal = terminal();
         let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None));
+        let answer = resume(&mut terminal, &mut prompt, events);
+        (answer, terminal)
+    }
+
+    /// Carry on with a prompt the keys ran out on, as if the user had paused.
+    fn resume(
+        terminal: &mut Terminal<TestBackend>,
+        prompt: &mut Prompt,
+        events: Vec<Event>,
+    ) -> anyhow::Result<Answer> {
         let mut queue: VecDeque<Event> = events.into();
-        let answer = ask(&mut terminal, &mut prompt, |_| {
+        ask(terminal, prompt, |_| {
             queue
                 .pop_front()
                 .map(Some)
                 .ok_or_else(|| io::Error::other("no more keys"))
-        });
-        (answer, terminal)
+        })
     }
 
     fn screen(terminal: &Terminal<TestBackend>) -> String {
@@ -449,5 +458,48 @@ mod tests {
             shown.contains("+[Home Improvement]  +[Home Office]  +Legal"),
             "{shown}"
         );
+    }
+
+    /// How many rows of the screen hold the prompt line.
+    fn prompts_on(terminal: &Terminal<TestBackend>) -> usize {
+        screen(terminal)
+            .lines()
+            .filter(|row| row.contains("add›"))
+            .count()
+    }
+
+    #[test]
+    fn a_resize_redraws_in_place_and_leaves_nothing_behind() {
+        let mut terminal = terminal();
+        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None));
+        let line = "Pay rent +Legal !3 due tomorrow";
+        let mut events = typing(line);
+        events.push(key(KeyCode::F(1)));
+        assert!(resume(&mut terminal, &mut prompt, events).is_err());
+        assert_eq!(prompts_on(&terminal), 1);
+
+        // Narrower, then wider, each announced the way crossterm does.
+        for (width, height) in [(40, 14), (90, 20)] {
+            terminal.backend_mut().resize(width, height);
+            let resized = vec![Event::Resize(width, height)];
+            assert!(resume(&mut terminal, &mut prompt, resized).is_err());
+            let shown = screen(&terminal);
+            assert_eq!(
+                prompts_on(&terminal),
+                1,
+                "a stale prompt at {width}:\n{shown}"
+            );
+            assert_eq!(
+                shown.matches("Anywhere in the line:").count(),
+                1,
+                "the help is drawn once at {width}:\n{shown}"
+            );
+            assert!(shown.contains("add› Pay rent"), "{shown}");
+        }
+
+        // The line survives, and the way out still clears the prompt away.
+        let answer = resume(&mut terminal, &mut prompt, vec![key(KeyCode::Enter)]);
+        assert_eq!(answer.unwrap(), Answer::Add(line.to_string()));
+        assert_eq!(prompts_on(&terminal), 0, "{}", screen(&terminal));
     }
 }
