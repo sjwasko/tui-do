@@ -193,6 +193,9 @@ impl std::fmt::Display for Fatal {
 struct LoopTx {
     msg: UnboundedSender<Msg>,
     fatal: UnboundedSender<Fatal>,
+    /// This runtime's read gates (BUG-23). Made with the channel, so two loops in one
+    /// process never share a queued request, its store or its sender.
+    reads: Arc<coalesce::Reads>,
 }
 
 /// The loop's end of [`LoopTx`].
@@ -206,7 +209,11 @@ impl LoopTx {
         let (msg, msg_rx) = mpsc::unbounded_channel();
         let (fatal, fatal_rx) = mpsc::unbounded_channel();
         (
-            Self { msg, fatal },
+            Self {
+                msg,
+                fatal,
+                reads: Arc::default(),
+            },
             LoopRx {
                 msg: msg_rx,
                 fatal: fatal_rx,
@@ -357,7 +364,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         // carries a newer one.
         Effect::LoadTasks { id, filter, sort } => {
             let (store, answer) = (store.clone(), tx.clone());
-            coalesce::coalesced(&coalesce::TASKS, tx, (id, filter, sort), move |request| {
+            coalesce::coalesced(&tx.reads.tasks, tx, (id, filter, sort), move |request| {
                 let (store, tx) = (store.clone(), answer.clone());
                 async move {
                     let (id, filter, sort) = request;
@@ -371,7 +378,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         }
         Effect::LoadProjects => {
             let (store, answer) = (store.clone(), tx.clone());
-            coalesce::coalesced(&coalesce::PROJECTS, tx, (), move |()| {
+            coalesce::coalesced(&tx.reads.projects, tx, (), move |()| {
                 let (store, tx) = (store.clone(), answer.clone());
                 async move {
                     let msg = match store
@@ -387,7 +394,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         }
         Effect::LoadLabels => {
             let (store, answer) = (store.clone(), tx.clone());
-            coalesce::coalesced(&coalesce::LABELS, tx, (), move |()| {
+            coalesce::coalesced(&tx.reads.labels, tx, (), move |()| {
                 let (store, tx) = (store.clone(), answer.clone());
                 async move {
                     let msg = match store
@@ -403,7 +410,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         }
         Effect::LoadCounts => {
             let (store, answer) = (store.clone(), tx.clone());
-            coalesce::coalesced(&coalesce::COUNTS, tx, (), move |()| {
+            coalesce::coalesced(&tx.reads.counts, tx, (), move |()| {
                 let (store, tx) = (store.clone(), answer.clone());
                 async move {
                     let msg = match store.project_task_counts().await {
@@ -416,7 +423,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         }
         Effect::LoadPending => {
             let (store, answer) = (store.clone(), tx.clone());
-            coalesce::coalesced(&coalesce::PENDING, tx, (), move |()| {
+            coalesce::coalesced(&tx.reads.pending, tx, (), move |()| {
                 let (store, tx) = (store.clone(), answer.clone());
                 async move {
                     if let Ok(health) = store.queue_health().await {
