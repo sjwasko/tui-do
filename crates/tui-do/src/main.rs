@@ -645,10 +645,7 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
     if args.tokens {
         // Before the config: the names come from the store alone, and nothing is sent.
-        let listing = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .context("could not start the async runtime")?
-            .block_on(runtime::tokens())?;
+        let listing = runtime::store_only_runtime()?.block_on(runtime::tokens())?;
         print!("{listing}");
         return Ok(());
     }

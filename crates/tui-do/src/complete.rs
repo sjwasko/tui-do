@@ -125,12 +125,10 @@ fn store_names(previous: &[String], current: &OsStr, bash: bool) -> Vec<Completi
 ///
 /// No store, or one that cannot be read, gives the date words alone: they need no store.
 pub fn names_at(store_path: &Path, previous: &[String], current: &str) -> Vec<String> {
-    let vocabulary = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .map_or_else(
-            |_| Vocabulary::default(),
-            |runtime| runtime.block_on(crate::runtime::vocabulary_at(store_path)),
-        );
+    let vocabulary = crate::runtime::store_only_runtime().map_or_else(
+        |_| Vocabulary::default(),
+        |runtime| runtime.block_on(crate::runtime::vocabulary_at(store_path)),
+    );
     words(previous, current, &vocabulary)
 }
 

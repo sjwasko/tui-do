@@ -1120,6 +1120,18 @@ async fn open_existing_at(store_path: &std::path::Path) -> anyhow::Result<Store>
     }
 }
 
+/// A runtime on this thread, with no I/O or timer driver, for a command that reads the
+/// local store and exits: shell completion and `tui-do add --tokens`. The store's reads
+/// are `spawn_blocking`, which needs neither driver, and nothing here may touch a network.
+///
+/// # Errors
+/// The runtime could not be built.
+pub fn store_only_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .context("could not start the async runtime")
+}
+
 pub(crate) fn store_path() -> anyhow::Result<std::path::PathBuf> {
     Store::default_path().context("could not decide where to keep the store")
 }
