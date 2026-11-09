@@ -198,19 +198,15 @@ impl Store {
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn usernames(&self) -> Result<Vec<String>> {
-        self.read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT DISTINCT username FROM users WHERE username <> ''
-                  ORDER BY username COLLATE NOCASE",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut names = Vec::new();
-            for name in rows {
-                names.push(name?);
-            }
-            Ok(names)
-        })
-        .await
+        let mut names: Vec<String> = self
+            .users()
+            .await?
+            .into_iter()
+            .map(|user| user.username)
+            .collect();
+        // Sorted already; two ids under one name are one name to type.
+        names.dedup();
+        Ok(names)
     }
 
     /// Every user the store has seen, with the id an assignment needs, sorted by
