@@ -14,6 +14,7 @@ use tui_do_core::ZonedTime;
 use crate::geometry::{self, Frames};
 use crate::keymap::{Context, Key};
 use crate::modal::Modal;
+use crate::overlay::Overlay;
 use crate::query::{Query, QueryId, Scope};
 use crate::sidebar::{SidebarState, SidebarTarget};
 use crate::theme::Theme;
@@ -288,6 +289,8 @@ pub struct Model {
     pub query: Query,
     /// The id of that request; older answers are dropped.
     pub query_id: QueryId,
+    /// Edits already drawn that the last load may not have caught, replayed over the next.
+    pub unconfirmed: Overlay,
     /// The layouts the user configured, or the built-in ones.
     pub layouts: Vec<ColumnLayout>,
     /// Which of them is active.
@@ -387,6 +390,7 @@ impl Model {
                 sort,
             },
             query_id: QueryId::default(),
+            unconfirmed: Overlay::default(),
             layouts,
             layout_ix,
             status: Status::default(),

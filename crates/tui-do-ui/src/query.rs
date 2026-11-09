@@ -5,7 +5,7 @@
 //! makes that safe — see [`QueryId`] for why.
 
 use tui_do_core::config::columns::{Column, ColumnLayout, SortDirection};
-use tui_do_core::models::{LabelId, ProjectId};
+use tui_do_core::models::{LabelId, ProjectId, Task};
 use tui_do_core::store::{TaskFilter, TaskOrder, TaskSort};
 
 /// The most rows one query will return.
@@ -81,6 +81,30 @@ impl Query {
             search: self.search.clone(),
             limit: Some(TASK_LIMIT),
         }
+    }
+
+    /// Whether the store would return `task` for this query.
+    ///
+    /// The same predicates as [`Self::filter`], evaluated on one task the model already
+    /// holds, so a replayed create can be kept off a list that would not contain it. The
+    /// search folds ASCII case only, which is what SQLite's `LIKE` does; a title that
+    /// differs only in non-ASCII case is answered the way the store would answer it.
+    #[must_use]
+    pub fn admits(&self, task: &Task) -> bool {
+        let filter = self.filter();
+        filter.project.is_none_or(|id| task.project_id == id)
+            && filter
+                .label
+                .is_none_or(|id| task.labels.iter().any(|label| label.id == id))
+            && filter
+                .favorite
+                .is_none_or(|wanted| task.is_favorite == wanted)
+            && filter.done.is_none_or(|wanted| task.done == wanted)
+            && filter.search.as_deref().is_none_or(|search| {
+                task.title
+                    .to_ascii_lowercase()
+                    .contains(&search.to_ascii_lowercase())
+            })
     }
 }
 

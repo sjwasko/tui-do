@@ -650,7 +650,7 @@ fn quitting_from_the_palette_quits() {
 
 fn applied(effects: &[Effect]) -> Option<&Mutation> {
     effects.iter().find_map(|effect| match effect {
-        Effect::Apply(mutation) => Some(mutation),
+        Effect::Apply { mutation, .. } => Some(mutation),
         _ => None,
     })
 }
@@ -1145,7 +1145,7 @@ fn an_edit_after_a_create_is_sent_against_the_id_the_server_knows() {
     let applied = effects
         .iter()
         .find_map(|effect| match effect {
-            Effect::Apply(mutation) => Some(mutation),
+            Effect::Apply { mutation, .. } => Some(mutation),
             _ => None,
         })
         .expect("`d` queues a change");
@@ -2569,7 +2569,7 @@ fn the_edit_form_sends_one_update_for_the_task_body() {
     let applied: Vec<_> = effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::Apply(mutation) => Some(mutation),
+            Effect::Apply { mutation, .. } => Some(mutation),
             _ => None,
         })
         .collect();
@@ -2613,7 +2613,15 @@ fn labels_leave_the_form_as_their_own_mutations() {
     let effects = save(&mut model);
     let attached: Vec<_> = effects
         .iter()
-        .filter(|effect| matches!(effect, Effect::Apply(Mutation::AttachLabel { .. })))
+        .filter(|effect| {
+            matches!(
+                effect,
+                Effect::Apply {
+                    mutation: Mutation::AttachLabel { .. },
+                    ..
+                }
+            )
+        })
         .collect();
     assert_eq!(attached.len(), 1, "the label was not sent on its own");
 }
@@ -2717,7 +2725,10 @@ fn editing_a_task_does_not_move_it_to_a_project_that_merely_shares_a_name() {
     let effects = save(&mut model);
 
     let moved = effects.iter().find_map(|effect| match effect {
-        Effect::Apply(Mutation::UpdateTask { after, .. }) => Some(after.project_id),
+        Effect::Apply {
+            mutation: Mutation::UpdateTask { after, .. },
+            ..
+        } => Some(after.project_id),
         _ => None,
     });
     assert_eq!(
@@ -2741,7 +2752,10 @@ fn retyping_the_project_field_still_moves_the_task() {
     let effects = save(&mut model);
 
     let moved = effects.iter().find_map(|effect| match effect {
-        Effect::Apply(Mutation::UpdateTask { after, .. }) => Some(after.project_id),
+        Effect::Apply {
+            mutation: Mutation::UpdateTask { after, .. },
+            ..
+        } => Some(after.project_id),
         _ => None,
     });
     assert_eq!(
@@ -2765,7 +2779,10 @@ fn a_configured_default_project_takes_the_tasks_that_name_none() {
     let effects = press_code(&mut model, KeyCode::Enter);
 
     let filed = effects.iter().find_map(|effect| match effect {
-        Effect::Apply(Mutation::CreateTask { task }) => Some(task.project_id),
+        Effect::Apply {
+            mutation: Mutation::CreateTask { task },
+            ..
+        } => Some(task.project_id),
         _ => None,
     });
     assert_eq!(filed, Some(ProjectId(3)));
@@ -2786,7 +2803,10 @@ fn a_hash_id_names_the_project_that_a_shared_title_cannot() {
     let effects = press_code(&mut model, KeyCode::Enter);
 
     let filed = effects.iter().find_map(|effect| match effect {
-        Effect::Apply(Mutation::CreateTask { task }) => Some(task.project_id),
+        Effect::Apply {
+            mutation: Mutation::CreateTask { task },
+            ..
+        } => Some(task.project_id),
         _ => None,
     });
     assert_eq!(
@@ -2808,7 +2828,10 @@ fn a_hash_id_that_names_nothing_falls_back_to_the_title() {
     let effects = press_code(&mut model, KeyCode::Enter);
 
     let filed = effects.iter().find_map(|effect| match effect {
-        Effect::Apply(Mutation::CreateTask { task }) => Some(task.project_id),
+        Effect::Apply {
+            mutation: Mutation::CreateTask { task },
+            ..
+        } => Some(task.project_id),
         _ => None,
     });
     assert_eq!(filed, Some(ProjectId(3)));
@@ -2875,7 +2898,7 @@ fn all_applied(effects: &[Effect]) -> Vec<&Mutation> {
     effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::Apply(mutation) => Some(mutation),
+            Effect::Apply { mutation, .. } => Some(mutation),
             _ => None,
         })
         .collect()
@@ -4425,4 +4448,376 @@ fn a_failure_with_nothing_queued_is_still_an_error() {
     let toast = model.status.toast.as_ref().expect("bad news is still news");
     assert_eq!(toast.level, Level::Error);
     assert_eq!(toast.text, AUTH_FAILURE);
+}
+
+/// The write an effect list asks to store, and its number.
+fn write_of(effects: &[Effect]) -> (tui_do_ui::WriteSeq, Mutation) {
+    effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Apply { write, mutation } => Some((*write, mutation.clone())),
+            _ => None,
+        })
+        .expect("a write was asked for")
+}
+
+/// What the runtime sends once the store holds `write`: the acknowledgement, then the
+/// reload. Answers with the reload's task query.
+fn store_answers(model: &mut Model, write: tui_do_ui::WriteSeq) -> tui_do_ui::QueryId {
+    update(model, Msg::Written(write));
+    loaded_query(&update(model, Msg::Reload)).expect("the reload asks for tasks")
+}
+
+fn titles(model: &Model) -> Vec<&str> {
+    model
+        .data
+        .tasks
+        .iter()
+        .map(|task| task.title.as_str())
+        .collect()
+}
+
+#[test]
+fn a_reload_that_read_the_store_before_a_later_write_does_not_bring_its_row_back() {
+    // BUG-22. `d` on first and then on second makes two writes, each stored by an effect
+    // of its own. The first lands and its reload is issued -- after the acknowledgement,
+    // so it can be trusted with the first -- but it reads the store before the second has
+    // landed and still finds second open. Taken wholesale, that put second back on screen
+    // and a held `d` pressed it again: 17 duplicate writes in 1,767.
+    let mut model = loaded();
+    let (first, _) = write_of(&press(&mut model, 'd'));
+    let (second, _) = write_of(&press(&mut model, 'd'));
+    assert_ne!(first, second, "each write has its own number");
+    assert_eq!(selected_title(&model), "third");
+
+    let reload = store_answers(&mut model, first);
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(2, "second"), task(3, "third")],
+        },
+    );
+
+    assert_eq!(
+        titles(&model),
+        ["third"],
+        "second was marked done on screen and the store has not answered for it yet"
+    );
+    assert_eq!(selected_title(&model), "third");
+    match write_of(&press(&mut model, 'd')).1 {
+        Mutation::UpdateTask { after, .. } => {
+            assert_eq!(after.id, TaskId(3), "the next press is for the next task");
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_stale_reload_at_the_end_of_the_list_leaves_nothing_to_press_twice() {
+    // The shape that sends a task twice: the last row is pressed, the list is empty, and
+    // a stale answer would put the row back as the only one -- selected, because an
+    // empty selection falls to the first row.
+    let mut model = loaded();
+    answer(&mut model, vec![task(1, "first"), task(2, "second")]);
+    let (first, _) = write_of(&press(&mut model, 'd'));
+    press(&mut model, 'd');
+    assert!(model.data.tasks.is_empty());
+
+    let reload = store_answers(&mut model, first);
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(2, "second")],
+        },
+    );
+
+    assert!(model.data.tasks.is_empty(), "{:?}", titles(&model));
+    assert!(
+        applied(&press(&mut model, 'd')).is_none(),
+        "nothing is selected, so a further press writes nothing"
+    );
+}
+
+#[test]
+fn once_its_write_is_stored_a_later_load_is_trusted_with_it() {
+    // The replay ends. After second's acknowledgement, a load issued afterwards read a
+    // store that held the write, so what it says wins -- here another client has reopened
+    // second since, and that has to show.
+    let mut model = loaded();
+    let (first, _) = write_of(&press(&mut model, 'd'));
+    let (second, _) = write_of(&press(&mut model, 'd'));
+    store_answers(&mut model, first);
+    let reload = store_answers(&mut model, second);
+    assert_eq!(
+        model.unconfirmed.len(),
+        2,
+        "nothing is trusted until a later load answers"
+    );
+
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(2, "second, reopened elsewhere"), task(3, "third")],
+        },
+    );
+
+    assert!(
+        model.unconfirmed.is_empty(),
+        "both writes are in what the store said"
+    );
+    assert_eq!(titles(&model), ["second, reopened elsewhere", "third"]);
+    assert_eq!(
+        selected_title(&model),
+        "third",
+        "the cursor stays where it was"
+    );
+}
+
+#[test]
+fn a_load_issued_before_the_acknowledgement_is_still_not_trusted() {
+    // The acknowledgement arrives while a load is out. That load may have read the store
+    // first, so it is laid over like any other until the reload after it answers.
+    let mut model = loaded();
+    let (write, _) = write_of(&press(&mut model, 'd'));
+    let out = model.query_id;
+    update(&mut model, Msg::Written(write));
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: vec![task(1, "first"), task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["second", "third"]);
+    assert_eq!(model.unconfirmed.len(), 1);
+}
+
+#[test]
+fn a_write_the_store_refused_is_no_longer_drawn() {
+    // Nothing will ever hold it, so the reload after the failure is the truth: first is
+    // back, and the user is told.
+    let mut model = loaded();
+    let (write, _) = write_of(&press(&mut model, 'd'));
+    update(
+        &mut model,
+        Msg::WriteFailed {
+            write,
+            message: "disk full".to_string(),
+        },
+    );
+    assert!(model.unconfirmed.is_empty());
+    assert_eq!(
+        model.status.toast.as_ref().map(|toast| toast.level),
+        Some(Level::Error)
+    );
+
+    let reload = loaded_query(&update(&mut model, Msg::Reload)).expect("a reload");
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(1, "first"), task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+}
+
+#[test]
+fn a_replayed_create_is_not_shown_twice() {
+    let mut model = loaded();
+    press(&mut model, 'a');
+    for c in "water the plants".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    let count = |model: &Model| {
+        titles(model)
+            .iter()
+            .filter(|title| **title == "water the plants")
+            .count()
+    };
+    let out = model.query_id;
+    let mut stored = task(-1, "water the plants");
+    stored.project_id = model.data.tasks[0].project_id;
+
+    // A load that read the store after the create landed but before the model was told
+    // its id: the row is there under a provisional id the model does not know yet.
+    let found = vec![stored.clone(), task(1, "first")];
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: found.clone(),
+        },
+    );
+    assert_eq!(count(&model), 1, "{:?}", titles(&model));
+
+    // The same, once it has been told.
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: found,
+        },
+    );
+    assert_eq!(count(&model), 1, "{:?}", titles(&model));
+    assert_eq!(
+        selected_title(&model),
+        "water the plants",
+        "and it is selected"
+    );
+
+    // A load that read the store before the create still shows it, at the top.
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: vec![task(1, "first")],
+        },
+    );
+    assert_eq!(titles(&model), ["water the plants", "first"]);
+    assert_eq!(selected_title(&model), "water the plants");
+
+    let reload = store_answers(&mut model, write);
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(1, "first"), stored],
+        },
+    );
+    assert!(model.unconfirmed.is_empty());
+    assert_eq!(count(&model), 1);
+}
+
+#[test]
+fn a_replay_does_not_put_back_a_row_the_list_is_not_showing() {
+    // `d` and then `u`: the undo is an update to a row the list no longer has, so as it
+    // is made it changes nothing, and the reload shows the row again. A load that has the
+    // done but not the undo must not have the done laid over it and then find nothing --
+    // and must not invent a row the filter hides, either. Only the newest edit to a task
+    // is laid on.
+    let mut model = loaded();
+    let (done, _) = write_of(&press(&mut model, 'd'));
+    let (undone, _) = write_of(&press(&mut model, 'u'));
+    let reload = store_answers(&mut model, done);
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["second", "third"]);
+
+    // The load that read the undo shows first again, and is trusted with both.
+    let reload = store_answers(&mut model, undone);
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: reload,
+            tasks: vec![task(1, "first"), task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+    assert!(model.unconfirmed.is_empty());
+}
+
+#[test]
+fn an_undo_laid_over_a_load_that_missed_it_shows_the_row_reopened() {
+    // The other order: the load read the store before either write, so it still has
+    // first open. The newest edit to it is the undo, which puts it back as it was rather
+    // than the done taking it away.
+    let mut model = loaded();
+    write_of(&press(&mut model, 'd'));
+    write_of(&press(&mut model, 'u'));
+    let out = model.query_id;
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: vec![task(1, "first"), task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+    assert!(!model.data.tasks[0].done);
+}
+
+#[test]
+fn a_create_the_list_would_not_show_is_not_replayed_onto_it() {
+    // Quick-add into another project while looking at this one. The row is drawn at the
+    // top as it is made and the first load takes it away, as the reload always did; the
+    // replay must not put it back, though its id is known and the load does not have it.
+    let mut model = loaded();
+    model.query.scope = Scope::Project(ProjectId(1));
+    press(&mut model, 'a');
+    for c in "for later +Personal".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    assert_eq!(titles(&model)[0], "for later", "drawn as it was made");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+
+    let out = model.query_id;
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id: out,
+            tasks: vec![task(1, "first"), task(2, "second"), task(3, "third")],
+        },
+    );
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+}
+
+#[test]
+fn a_query_admits_what_the_store_would_return_for_it() {
+    let mut query = tui_do_ui::Query::default();
+    let mut open = task(1, "Water the Plants");
+    assert!(query.admits(&open));
+
+    open.done = true;
+    assert!(!query.admits(&open), "done tasks are hidden by default");
+    query.include_done = true;
+    assert!(query.admits(&open));
+
+    query.scope = Scope::Project(ProjectId(2));
+    assert!(!query.admits(&open), "another project");
+    query.scope = Scope::Project(ProjectId(1));
+    assert!(query.admits(&open));
+
+    query.search = Some("the plants".to_string());
+    assert!(query.admits(&open), "the search folds case, as LIKE does");
+    query.search = Some("cactus".to_string());
+    assert!(!query.admits(&open));
+    query.search = None;
+
+    query.scope = Scope::Favorites;
+    assert!(!query.admits(&open));
+    open.is_favorite = true;
+    assert!(query.admits(&open));
+
+    query.scope = Scope::Label(LabelId(4));
+    assert!(!query.admits(&open));
+    open.labels.push(Label {
+        id: LabelId(4),
+        title: "home".to_string(),
+        ..Label::default()
+    });
+    assert!(query.admits(&open));
 }

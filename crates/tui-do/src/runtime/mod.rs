@@ -413,10 +413,13 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
                 let _ = store.set_state(LAST_PROJECT, &value).await;
             });
         }
-        Effect::Apply(mutation) => {
+        Effect::Apply { write, mutation } => {
             let (store, tx) = (store.clone(), tx.clone());
             let sync = sync.cloned();
             spawn_effect(tx.clone(), async move {
+                // Answered by number either way, so the model knows which of the edits it
+                // drew the store now holds, and stops laying it over loads issued after
+                // this -- see `tui_do_ui::Overlay`.
                 match store.queue(mutation).await {
                     // A create is the one mutation whose id the interface did not know
                     // when it drew the row: `Store::queue` allocates the provisional id
@@ -424,14 +427,18 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
                     // names a row that exists by the time the list comes back.
                     Ok(entry) => {
                         if let Mutation::CreateTask { task } = &entry.mutation {
-                            let _ = tx.send(Msg::TaskCreated(task.id));
+                            let _ = tx.send(Msg::TaskCreated { write, id: task.id });
                         }
+                        let _ = tx.send(Msg::Written(write));
                     }
                     // The model has already shown the change. Saying the store refused it
                     // is the only honest thing to do; the reload below puts the list back
                     // to what was actually written.
                     Err(error) => {
-                        let _ = tx.send(Msg::StoreFailed(error.to_string()));
+                        let _ = tx.send(Msg::WriteFailed {
+                            write,
+                            message: error.to_string(),
+                        });
                     }
                 }
                 // Reload from the store rather than trusting the optimistic copy, then

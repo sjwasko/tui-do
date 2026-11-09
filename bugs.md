@@ -58,6 +58,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-15~~ | CONFIRMED by hand, FIXED, two non-vacuous tests | yes |
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
 | ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
+| ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
 
 ## What is left, at a glance
 
@@ -65,7 +66,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
-| **Found by the drain torture test** | BUG-22, BUG-23 — new 2026-09-13, both need fixing. ~~BUG-21~~ is fixed |
+| **Found by the drain torture test** | BUG-23 — new 2026-09-13, needs fixing. ~~BUG-21~~ and ~~BUG-22~~ are fixed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -1361,7 +1362,7 @@ all; `a_fast_drain_is_throttled_to_far_fewer_events_than_entries` pins the throt
 
 ---
 
-### BUG-22 — a reload racing a write re-shows an already-queued task, so auto-repeat queues it twice
+### ~~BUG-22~~ — FIXED — a reload racing a write re-shows an already-queued task, so auto-repeat queues it twice
 
 `crates/tui-do-ui/src/update.rs:2296` (`apply_locally`), and the runtime's spawned
 `Effect::Apply`/reload pair.
@@ -1404,6 +1405,35 @@ subject and field.
 defers a push until the reload it races has landed, and that getting the order wrong "is
 not cosmetic". This is that race, reached from the UI side, with a consequence nobody had
 named.
+
+**Fixed 2026-11-08** by the first road: a load can no longer regress an edit the model has
+drawn. Each `Effect::Apply` carries a `WriteSeq`, and the runtime answers `Msg::Written` or
+`Msg::WriteFailed` naming it once `store.queue` returns. The model keeps every drawn edit in
+`Model::unconfirmed` (`tui_do_ui::Overlay`) and lays them back over each task load in the
+order they were made, through the same `overlay::land` that `apply_locally` uses. An edit is
+forgotten once a load issued *after* its acknowledgement answers — the `QueryId` was already
+a load generation — because that load read a store which held it; a failed write is
+forgotten at once. The replay is idempotent: a create is recognised by id, or before its id
+is known by a provisional row with its title and project; a create the current query would
+not return (`Query::admits`, the store's filter applied to one task) is not put back at all,
+so a quick-add into another project is drawn as it is made and gone on the first load, as
+before; an update replaces only a row the load returned; and only the newest update to a
+task is laid on, so `d` then `u` does not lose the row.
+
+**There is no cap on the overlay, by decision.** An entry leaves when its write fails or when
+a load issued after its acknowledgement answers, and the runtime sends that reload
+immediately. Only repeatedly failing task loads keep entries alive, and then the list is
+already frozen under a `StoreFailed` banner and the cost is one mutation per edit made in
+that time. Dropping an unacknowledged entry early brings this bug back for that task, so a
+cap would trade a small, user-sized amount of memory for a correctness bug.
+
+Serialising the writes in the runtime was ruled out: it orders the writes, but a reload can
+still be issued between two keypresses and overtake the second. Ten tests in
+`crates/tui-do-ui/tests/update.rs`: four fail with the replay switched off, and the create,
+undo and filtered-create cases each fail with their own guard removed.
+`crates/tui-do-smoke/tests/held_done.rs` drives it end to end with `Harness::hold_writes`
+and counts one `POST` per task; with the replay off it fails with
+`the reload put ["second"] back on screen`.
 
 ---
 
