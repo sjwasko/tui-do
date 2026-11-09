@@ -964,7 +964,7 @@ fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
         ..Default::default()
     };
     model.modals.push(tui_do_ui::modal::Modal::Edit(Box::new(
-        tui_do_ui::modal::EditState::new(&task, "Alpha"),
+        tui_do_ui::modal::EditState::new(&task, "Alpha", &model.now),
     )));
 
     let screen = draw(&model);

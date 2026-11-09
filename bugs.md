@@ -45,6 +45,7 @@ throughout, both learned the hard way in this pass:
 | bug | its test is | deterministic? |
 |---|---|---|
 | ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
+| ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
@@ -67,6 +68,7 @@ throughout, both learned the hard way in this pass:
 
 | | |
 |---|---|
+| **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~ and ~~BUG-22~~ are fixed. BUG-23 is partly fixed — the drain, the backlog at key-up and the quit wording — and what it leaves is filed as **BUG-28**: while a key is held the push still gets ~1.4 sends/s, because a task-list read is always running |
@@ -175,6 +177,74 @@ and not because of the product: `mount_create` echoed a hardcoded title, and sin
 replaces the local row with the server's answer, the mock was renaming the task under the
 cursor. The selection was right and the assertion was reading the wrong thing. A fixture
 that echoes something other than what was sent is not a harmless simplification.
+
+---
+
+### ~~BUG-30~~ — FIXED — Critical — saving the edit form moves the due date a day later
+
+**Found by the user in real use on 2026-11-08, and confirmed against their store.** A task
+was due 10 March 2027 at 23:59 EST, stored as `2027-03-11T04:59Z`. They opened it with `e`,
+changed only the title, and saved. The stored due date became `2027-03-12T04:59Z`, which
+is 11 March local. **A day lost per save**, on a field nobody touched.
+
+**Two causes, and either alone is a bug.**
+
+1. **The prefill was in UTC.** `EditState::new` (`modal.rs`) and `Action::SetDue`
+   (`update.rs`, the `D` prompt) both did `due.format("%d/%m/%Y")` on the stored UTC
+   instant. For a 23:59 due date anywhere west of UTC that is the *next* day, so the form
+   showed `11/03/2027`. This is the BUG-12 shape again: a date shown to the user without
+   converting into `now.timezone()` first.
+2. **Save re-parsed Due unconditionally.** `apply_edit` ran `quickadd::parse_due` on the
+   field whatever else had changed, so the UTC day was read back as a *local* day at the
+   default 23:59: 11 March 23:59 EST, `2027-03-12T04:59Z`. Even with a correct prefill this
+   reset any other time of day to 23:59 on every save — a task due 14:00 became due 23:59
+   because its title was fixed. `D` then Enter on the prefilled value did the same.
+
+**Who is affected.** It has been there since the edit form was added on 2026-08-25, in
+every release including v1.0.2. **Any task edited with `e`, or given Enter in the `D`
+prompt, since then may have drifted**: a day later per save west of UTC for a 23:59 date,
+and to 23:59 for any other time of day. The server keeps no history of a task's fields, so
+there is nothing to compare against and no way to tell which tasks moved. The only record
+is the user's own memory of when things were due.
+
+**Fixed 2026-11-08, as the user decided.**
+
+- **Untouched means untouched.** `EditState` keeps `due_was`, the text it prefilled, and
+  `DueState` keeps `was`; `EditDraft` and `Submission::Due` carry it to `update`. A field
+  whose text still equals its prefill keeps the stored instant exactly, time of day
+  included, and is not parsed. Enter on the unchanged `D` prompt queues nothing and says
+  "Nothing changed". The same comparison `project_was` already made for the project field.
+- **The prefill is in the user's zone**, through one helper both places use,
+  `modal::due_field_text`, which converts with `.with_timezone(&now.timezone())` first.
+  `EditState::new` takes `now` for it.
+- **The format is ISO, `2027-03-10`** — the user's choice. A four-digit year parses with
+  or without `due` in front (BUG-24) and cannot be read day-first or month-first. A time
+  other than the due default (`DateField::Due.default_time()`, 23:59) is shown as
+  `2027-03-10 at 14:00`, which `parse_due` reads back to the same minute, so retyping only
+  the day keeps the hour.
+
+No other place in `tui-do-ui` formats a stored date as input: the edit form has no start
+date field, and display (`rows::relative_date`, `%b %-d` and `%b %-d, %y`) already
+converts into the user's zone since BUG-20.
+
+**Tests**, in `crates/tui-do-ui/tests/update.rs`, pinned at -05:00 through
+`zone::pinned`:
+
+- `a_title_only_save_keeps_the_due_date_to_the_instant` — the user's case. Failed on the
+  old code with exactly the reported `2027-03-12T04:59Z`.
+- `saving_twice_never_drifts_the_due_date` — two saves in a row, asserted after both.
+- `a_due_time_that_is_not_the_default_survives_a_title_only_save` — 14:00 local; failed on
+  the old code, reset to 23:59 and moved a day.
+- `enter_on_the_unchanged_due_prompt_queues_nothing` — failed on the old code.
+- `a_date_typed_into_the_due_prompt_still_applies`,
+  `an_edited_due_field_is_read_as_a_local_date` (`2027-03-15` is 15 March 23:59 local) and
+  `an_emptied_due_field_still_clears_the_date` — the edits that must still work.
+- `the_edit_form_shows_the_due_date_on_the_users_own_day`,
+  `the_due_prompt_shows_the_due_date_on_the_users_own_day` and
+  `a_due_time_that_is_not_the_default_is_shown_in_the_form` — all failed on the old code
+  (`11/03/2027`, `10/03/2027`).
+- `the_prefilled_due_text_reads_back_to_the_same_instant` — `parse_due` round-trips the
+  prefill to the minute, default time and otherwise.
 
 ---
 

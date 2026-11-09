@@ -9,10 +9,13 @@
 //! resize, with no fall-through to the screen underneath, because "sometimes it leaks" is
 //! how the predecessor's key handling grew to 790 lines.
 
+use chrono::{DateTime, Timelike as _, Utc};
 use crossterm::event::{KeyCode, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use tui_do_core::models::{Label, LabelId, ProjectId, Task};
+use tui_do_core::quickadd::DateField;
+use tui_do_core::ZonedTime;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::keymap::{help_rows, Action, Context, Key};
@@ -450,8 +453,14 @@ pub enum Submission {
     Edited(Box<EditDraft>),
     /// Set the selected task's priority to this, 0 to 5.
     Priority(i64),
-    /// Set the selected task's due date from this text. Empty clears it.
-    Due(String),
+    /// Set the selected task's due date from `typed`. Empty clears it.
+    Due {
+        /// What the field held when Enter was pressed.
+        typed: String,
+        /// What it was prefilled with. Equal to `typed` means the date was not touched,
+        /// and the stored instant stands (BUG-30).
+        was: String,
+    },
     /// Make these, exactly these, the selected task's labels.
     Labels(Vec<LabelId>),
     /// Create a label with this title. Always an [`Outcome::Update`]: the form that
@@ -575,6 +584,14 @@ pub struct EditState {
     pub priority: TextInput,
     /// The due-date field.
     pub due: TextInput,
+    /// The due date the form was opened with, as text.
+    ///
+    /// The field shows a day and the parser gives back an instant, so re-reading an
+    /// untouched field is not the identity: it reset any time of day to 23:59 and, read
+    /// from a prefill in the wrong zone, moved the date a day on every save (BUG-30).
+    /// Keeping what was shown lets `update` tell "untouched" from "retyped" and leave the
+    /// stored instant alone in the first case, exactly as `project_was` does.
+    pub due_was: String,
     /// The project field.
     pub project: TextInput,
     /// The project name the form was opened with.
@@ -595,25 +612,22 @@ impl EditState {
     ///
     /// `project_name` and the label names are passed in rather than looked up, because
     /// the modal cannot reach the model and a form that showed ids would be a form nobody
-    /// could edit.
+    /// could edit. `now` is the model's clock, for the zone the due date is shown in.
     #[must_use]
-    pub fn new(task: &Task, project_name: &str) -> Self {
+    pub fn new(task: &Task, project_name: &str, now: &ZonedTime) -> Self {
         let labels = task
             .labels
             .iter()
             .map(|label| label.title.clone())
             .collect::<Vec<_>>()
             .join(", ");
+        let due = due_field_text(task.due_date.get(), now);
         Self {
             title: TextInput::new(task.title.clone()),
             description: TextInput::multiline(task.description.clone()),
             priority: TextInput::new(task.priority.to_string()),
-            due: TextInput::new(
-                task.due_date
-                    .get()
-                    .map(|due| due.format("%d/%m/%Y").to_string())
-                    .unwrap_or_default(),
-            ),
+            due: TextInput::new(due.clone()),
+            due_was: due,
             project: TextInput::new(project_name.to_string()),
             project_was: project_name.to_string(),
             labels: TextInput::new(labels),
@@ -689,10 +703,33 @@ impl EditState {
             description: self.description.value().to_string(),
             priority: self.priority.value().trim().to_string(),
             due: self.due.value().trim().to_string(),
+            due_was: self.due_was.trim().to_string(),
             project: self.project.value().trim().to_string(),
             project_was: self.project_was.trim().to_string(),
             labels: self.labels.value().to_string(),
         }
+    }
+}
+
+/// A stored due date as the text a field that edits it starts with: the edit form's Due
+/// and the `D` prompt.
+///
+/// In the user's zone, because the field is read back in it: formatting the UTC instant
+/// showed the next day for a 23:59 due date anywhere west of UTC (BUG-30). ISO
+/// `2027-03-10`, because a four-digit year parses with or without `due` in front and
+/// cannot be read day-first or month-first. A time of day other than the due default is
+/// shown as `2027-03-10 at 14:00`, which [`tui_do_core::quickadd::parse_due`] reads back
+/// to the same minute, so retyping nothing but the day keeps the hour.
+#[must_use]
+pub fn due_field_text(due: Option<DateTime<Utc>>, now: &ZonedTime) -> String {
+    let Some(due) = due else {
+        return String::new();
+    };
+    let local = due.with_timezone(&now.timezone());
+    if (local.hour(), local.minute()) == DateField::Due.default_time() {
+        local.format("%Y-%m-%d").to_string()
+    } else {
+        local.format("%Y-%m-%d at %H:%M").to_string()
     }
 }
 
@@ -714,6 +751,9 @@ pub struct EditDraft {
     pub priority: String,
     /// The due date, as typed.
     pub due: String,
+    /// The due date the form was opened with, to tell an untouched field from a retyped
+    /// one: an untouched field keeps the stored instant, time of day included.
+    pub due_was: String,
     /// The project name, as typed.
     pub project: String,
     /// The project name the form was opened with, to tell an untouched field from a
@@ -905,6 +945,9 @@ impl ModalView for PriorityState {
 pub struct DueState {
     /// What has been typed. Prefilled with the date the task already has.
     pub input: TextInput,
+    /// What the field was prefilled with, so Enter on it unchanged leaves the stored
+    /// instant alone rather than re-reading it (BUG-30).
+    pub was: String,
 }
 
 impl DueState {
@@ -913,6 +956,7 @@ impl DueState {
     pub fn new(current: &str) -> Self {
         Self {
             input: TextInput::new(current),
+            was: current.to_string(),
         }
     }
 }
@@ -924,7 +968,10 @@ impl ModalView for DueState {
             // Deliberately submits an empty field rather than treating it as a cancel:
             // clearing a due date is a thing people want, and Esc is already the way to
             // back out without changing anything.
-            KeyCode::Enter => Outcome::Submit(Submission::Due(self.input.value().to_string())),
+            KeyCode::Enter => Outcome::Submit(Submission::Due {
+                typed: self.input.value().to_string(),
+                was: self.was.clone(),
+            }),
             _ => {
                 self.input.press(key);
                 Outcome::Consumed
@@ -2421,7 +2468,10 @@ mod tests {
         // Clearing the date is a request, not a cancellation.
         assert_eq!(
             modal.handle(code(KeyCode::Enter)),
-            Outcome::Submit(Submission::Due(String::new()))
+            Outcome::Submit(Submission::Due {
+                typed: String::new(),
+                was: "24/12/2026".to_string(),
+            })
         );
 
         let mut abandoned = Modal::Due(DueState::new("24/12/2026"));

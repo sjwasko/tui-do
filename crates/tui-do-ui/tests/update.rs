@@ -3042,7 +3042,8 @@ fn the_due_prompt_opens_on_what_the_task_already_says() {
     let Some(Modal::Due(state)) = model.modals.last() else {
         panic!("D opens the due prompt: {:?}", model.modals);
     };
-    assert_eq!(state.input.value(), "24/12/2026");
+    // 09:00 is not the due default, so the time is shown and survives a retyped day.
+    assert_eq!(state.input.value(), "2026-12-24 at 09:00");
 }
 
 #[test]
@@ -3072,7 +3073,7 @@ fn an_empty_due_field_clears_the_date_rather_than_cancelling() {
     answer(&mut model, vec![first]);
 
     press_code(&mut model, KeyCode::Char('D'));
-    for _ in 0..10 {
+    for _ in 0..30 {
         press_code(&mut model, KeyCode::Backspace);
     }
     let effects = press_code(&mut model, KeyCode::Enter);
@@ -4820,4 +4821,197 @@ fn a_query_admits_what_the_store_would_return_for_it() {
         ..Label::default()
     });
     assert!(query.admits(&open));
+}
+
+/// BUG-30: a reader at -05:00 on 2026-11-08, the day the bug was found.
+fn in_new_york() -> tui_do_core::ZonedTime {
+    tui_do_core::zone::pinned(
+        chrono::FixedOffset::west_opt(5 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 11, 8, 12, 0, 0)
+            .unwrap(),
+    )
+}
+
+/// A model at -05:00 whose first task is due at `due`.
+fn due_in_new_york(due: chrono::DateTime<Utc>) -> Model {
+    let mut model = loaded();
+    model.now = in_new_york();
+    let mut first = task(1, "first");
+    first.due_date = Some(due).into();
+    answer(&mut model, vec![first]);
+    model
+}
+
+/// The `before` and `after` of the one `UpdateTask` in `effects`.
+fn the_update(effects: &[Effect]) -> (Task, Task) {
+    match applied(effects).expect("an update was queued") {
+        Mutation::UpdateTask { before, after } => ((**before).clone(), (**after).clone()),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+/// Open the edit form, add `suffix` to the title, and save.
+fn retitle(model: &mut Model, suffix: &str) -> (Task, Task) {
+    let state = open_edit(model);
+    type_into(state, suffix);
+    let effects = save(model);
+    the_update(&effects)
+}
+
+/// Open the edit form, replace the Due field with `typed`, and save.
+fn retype_due(model: &mut Model, typed: &str) -> (Task, Task) {
+    let state = open_edit(model);
+    state.focus = tui_do_ui::modal::EditField::Due;
+    for _ in 0..40 {
+        state.handle(Key::plain(KeyCode::Backspace));
+    }
+    type_into(state, typed);
+    let effects = save(model);
+    the_update(&effects)
+}
+
+#[test]
+fn a_title_only_save_keeps_the_due_date_to_the_instant() {
+    // The user's task: due 10 March 2027 at 23:59 EST. Saving a new title stored
+    // 2027-03-12T04:59Z, which is 11 March local -- a day lost per save.
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let (before, after) = retitle(&mut model, " renamed");
+    assert_eq!(after.title, "first renamed");
+    assert_eq!(before.due_date.get(), Some(due));
+    assert_eq!(after.due_date.get(), Some(due), "the due date moved");
+}
+
+#[test]
+fn saving_twice_never_drifts_the_due_date() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let (_, once) = retitle(&mut model, " a");
+    answer(&mut model, vec![once.clone()]);
+    let (_, twice) = retitle(&mut model, " b");
+
+    assert_eq!(once.due_date.get(), Some(due));
+    assert_eq!(
+        twice.due_date.get(),
+        Some(due),
+        "a second save moved it again"
+    );
+    assert_eq!(twice.title, "first a b");
+}
+
+#[test]
+fn a_due_time_that_is_not_the_default_survives_a_title_only_save() {
+    // 14:00 at -05:00. Re-reading the field reset this to 23:59 on every save.
+    let due = Utc.with_ymd_and_hms(2027, 3, 10, 19, 0, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let (_, after) = retitle(&mut model, "!");
+    assert_eq!(after.due_date.get(), Some(due));
+}
+
+#[test]
+fn an_edited_due_field_is_read_as_a_local_date() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let (_, after) = retype_due(&mut model, "2027-03-15");
+    // 15 March 23:59 at -05:00.
+    assert_eq!(
+        after.due_date.get(),
+        Some(Utc.with_ymd_and_hms(2027, 3, 16, 4, 59, 0).unwrap())
+    );
+}
+
+#[test]
+fn an_emptied_due_field_still_clears_the_date() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let (_, after) = retype_due(&mut model, "");
+    assert_eq!(after.due_date.get(), None);
+}
+
+#[test]
+fn enter_on_the_unchanged_due_prompt_queues_nothing() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    press_code(&mut model, KeyCode::Char('D'));
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(
+        applied(&effects).is_none(),
+        "the prefill was re-read as a new date: {effects:?}"
+    );
+    assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
+    assert!(model.undo.is_empty());
+}
+
+#[test]
+fn a_date_typed_into_the_due_prompt_still_applies() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    press_code(&mut model, KeyCode::Char('D'));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+    );
+    for c in "2027-03-15".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    let (_, after) = the_update(&effects);
+    assert_eq!(
+        after.due_date.get(),
+        Some(Utc.with_ymd_and_hms(2027, 3, 16, 4, 59, 0).unwrap())
+    );
+}
+
+#[test]
+fn the_edit_form_shows_the_due_date_on_the_users_own_day() {
+    // 2027-03-11T04:59Z is 10 March at -05:00. The form showed `11/03/2027`.
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+    let state = open_edit(&mut model);
+    assert_eq!(state.due.value(), "2027-03-10");
+}
+
+#[test]
+fn the_due_prompt_shows_the_due_date_on_the_users_own_day() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+    press_code(&mut model, KeyCode::Char('D'));
+    let Some(Modal::Due(state)) = model.modals.last() else {
+        panic!("D opens the due prompt: {:?}", model.modals);
+    };
+    assert_eq!(state.input.value(), "2027-03-10");
+}
+
+#[test]
+fn a_due_time_that_is_not_the_default_is_shown_in_the_form() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 10, 19, 0, 0).unwrap();
+    let mut model = due_in_new_york(due);
+    let state = open_edit(&mut model);
+    assert_eq!(state.due.value(), "2027-03-10 at 14:00");
+}
+
+#[test]
+fn the_prefilled_due_text_reads_back_to_the_same_instant() {
+    // An edited field goes through the parser, so the prefill has to be text it reads
+    // back to the minute: retyping only the day of `2027-03-10 at 14:00` keeps 14:00.
+    for due in [
+        Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap(),
+        Utc.with_ymd_and_hms(2027, 3, 10, 19, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 12, 1, 5, 30, 0).unwrap(),
+    ] {
+        let text = tui_do_ui::modal::due_field_text(Some(due), &in_new_york());
+        assert_eq!(
+            tui_do_core::quickadd::parse_due(&text, &in_new_york()),
+            Some(due),
+            "{text:?}"
+        );
+    }
 }
