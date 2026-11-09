@@ -19,7 +19,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
-use tui_do_core::quickadd::{self, Parsed};
+use tui_do_core::quickadd;
 use tui_do_core::ZonedTime;
 use tui_do_ui::assist::{QuickAddInput, Vocabulary};
 use tui_do_ui::theme::Theme;
@@ -83,38 +83,6 @@ pub(super) fn placeholder(vocabulary: &Vocabulary, now: &ZonedTime) -> String {
         "Call the dentist {} {} !3 due {day}",
         token('+', vocabulary.projects.first(), "Personal"),
         token('*', vocabulary.labels.first(), "health"),
-    )
-}
-
-/// What the line will create, re-read on every key.
-// TODO(item 12 step 1): call Parsed::summary
-fn preview(parsed: &Parsed, now: &ZonedTime) -> String {
-    let mut parts = vec![format!("\"{}\"", super::printable(&parsed.title))];
-    if let Some(project) = &parsed.project {
-        parts.push(format!("+{}", super::printable(project)));
-    }
-    parts.extend(
-        parsed
-            .labels
-            .iter()
-            .map(|label| format!("*{}", super::printable(label))),
-    );
-    parts.extend(
-        parsed
-            .assignees
-            .iter()
-            .map(|user| format!("@{}", super::printable(user))),
-    );
-    if let Some(priority) = parsed.priority {
-        parts.push(format!("!{priority}"));
-    }
-    if parsed.repeat.is_some() {
-        parts.push("repeats".to_string());
-    }
-    format!(
-        "{}{}",
-        parts.join(" "),
-        super::dates_suffix(parsed.due_date, parsed.start_date, &now.timezone())
     )
 }
 
@@ -222,7 +190,12 @@ fn render(frame: &mut Frame<'_>, prompt: &Prompt) {
     } else {
         let parsed = quickadd::parse(value, &prompt.now);
         Span::styled(
-            format!("→ {}", preview(&parsed, &prompt.now)),
+            // The summary a dry run prints, so the preview and `--dry-run` agree word for
+            // word. Control characters out, as everywhere tui-do prints a title.
+            format!(
+                "→ {}",
+                super::printable(&parsed.summary(&prompt.now.timezone()))
+            ),
             theme.accent(),
         )
     };
@@ -443,7 +416,7 @@ mod tests {
         let (_, terminal) = drive(typing("Pay rent +Legal !3 due tomorrow"));
         let shown = screen(&terminal);
         assert!(
-            shown.contains("→ \"Pay rent\" +Legal !3, due Mon 9 Nov 2026"),
+            shown.contains("→ title \"Pay rent\" · +Legal · !3 · due Mon 9 Nov 2026"),
             "{shown}"
         );
     }
