@@ -152,12 +152,20 @@ impl<B: Backend> Drop for TerminalGuard<B> {
 }
 
 /// Have a panic on any thread give the terminal back before it is reported.
+///
+/// Once per process. Each call would otherwise wrap the hook before it, so a process
+/// that took the terminal twice -- the prompt, then anything after it -- would stack
+/// restores, and a guard taken in a loop would grow the chain without bound. The restore
+/// is idempotent either way; this keeps the hook one layer deep.
 fn install_hook() {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore();
-        previous(info);
-    }));
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore();
+            previous(info);
+        }));
+    });
 }
 
 /// Whether the terminal is still ours to draw on.
