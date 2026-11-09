@@ -859,15 +859,21 @@ impl Store {
     /// # Errors
     /// As [`Self::pending`].
     pub async fn mutations(&self, ids: Vec<i64>) -> Result<HashMap<i64, Mutation>> {
+        /// Well under SQLite's bound-parameter limit, which is 32,766 since 3.32.
+        const CHUNK: usize = 500;
         let decodes = Arc::clone(&self.decodes);
         self.read(move |connection| {
-            let mut statement = connection.prepare("SELECT payload FROM outbox WHERE id = ?1")?;
             let mut found = HashMap::with_capacity(ids.len());
-            for id in ids {
-                let payload: Option<String> = statement
-                    .query_row(params![id], |row| row.get(0))
-                    .optional()?;
-                if let Some(payload) = payload {
+            for chunk in ids.chunks(CHUNK) {
+                let marks = vec!["?"; chunk.len()].join(", ");
+                let mut statement = connection.prepare(&format!(
+                    "SELECT id, payload FROM outbox WHERE id IN ({marks})"
+                ))?;
+                let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    let (id, payload) = row?;
                     found.insert(id, decode(&decodes, &payload)?);
                 }
             }
