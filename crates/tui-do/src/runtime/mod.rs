@@ -82,10 +82,7 @@ const FLUSH_DOTS: u32 = 5;
 /// config that names a server it cannot parse. Once the loop is running, failures become
 /// messages rather than errors — that is the point of the split.
 pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Result<()> {
-    let store_path = Store::default_path().context("could not decide where to keep the store")?;
-    let store = Store::open(&store_path)
-        .await
-        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+    let store = open_store().await?;
 
     let (tx, rx) = LoopTx::channel();
 
@@ -1089,17 +1086,49 @@ fn describe(projects: &[tui_do_core::models::Project]) -> String {
     }
 }
 
+/// Open the store where it lives: `TUI_DO_DB`, or the platform's data directory.
+///
+/// # Errors
+/// No data directory to put it in, or a store that cannot be opened or migrated.
+pub async fn open_store() -> anyhow::Result<Store> {
+    let store_path = store_path()?;
+    Store::open(&store_path)
+        .await
+        .with_context(|| format!("could not open the store at {}", store_path.display()))
+}
+
+/// Open the store read-only, without creating or migrating it: for a dry run, and for the
+/// names the prompt completes from, neither of which may leave a store behind.
+///
+/// # Errors
+/// [`tui_do_core::CoreError::NotReady`] as it stands, since it already says what to run;
+/// anything else with the path it was opening.
+pub async fn open_existing_store() -> anyhow::Result<Store> {
+    let store_path = store_path()?;
+    match Store::open_existing_read_only(&store_path).await {
+        Ok(store) => Ok(store),
+        Err(error @ tui_do_core::CoreError::NotReady(_)) => Err(error.into()),
+        Err(error) => Err(anyhow::Error::new(error).context(format!(
+            "could not open the store at {}",
+            store_path.display()
+        ))),
+    }
+}
+
+fn store_path() -> anyhow::Result<std::path::PathBuf> {
+    Store::default_path().context("could not decide where to keep the store")
+}
+
 /// What `tui-do add`'s prompt completes from: the projects, labels and users in the
 /// local store. Read here, by the runtime, because nothing in `tui-do-ui` may (Rule 1).
 ///
-/// # Errors
-/// A store that cannot be opened. An unreadable list is only an empty one: the prompt
-/// still works without completion.
-pub async fn vocabulary() -> anyhow::Result<tui_do_ui::assist::Vocabulary> {
-    let store_path = Store::default_path().context("could not decide where to keep the store")?;
-    let store = Store::open(&store_path)
-        .await
-        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+/// Opened read-only, so a prompt that is cancelled, or ends in a dry run, leaves no
+/// store behind where there was none. No store, or an unreadable list, is only an empty
+/// vocabulary: the prompt still works, without completion and with the static example.
+pub async fn vocabulary() -> tui_do_ui::assist::Vocabulary {
+    let Ok(store) = open_existing_store().await else {
+        return tui_do_ui::assist::Vocabulary::default();
+    };
     let projects = store
         .projects(ProjectFilter::default(), ProjectSort::default())
         .await
@@ -1109,9 +1138,7 @@ pub async fn vocabulary() -> anyhow::Result<tui_do_ui::assist::Vocabulary> {
         .await
         .unwrap_or_default();
     let users = store.usernames().await.unwrap_or_default();
-    Ok(tui_do_ui::assist::Vocabulary::new(
-        &projects, &labels, users,
-    ))
+    tui_do_ui::assist::Vocabulary::new(&projects, &labels, users)
 }
 
 /// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run
@@ -1160,26 +1187,13 @@ pub async fn add(
         anyhow::bail!("nothing to add");
     }
 
-    let store_path = Store::default_path().context("could not decide where to keep the store")?;
     // Before `Store::open`, which creates and migrates, and before `build_sync`, so a dry
     // run never so much as builds a client.
     if mode.dry_run {
-        let store = match Store::open_existing_read_only(&store_path).await {
-            Ok(store) => store,
-            // Already a whole sentence that says what to run.
-            Err(error @ tui_do_core::CoreError::NotReady(_)) => return Err(error.into()),
-            Err(error) => {
-                return Err(anyhow::Error::new(error).context(format!(
-                    "could not open the store at {}",
-                    store_path.display()
-                )))
-            }
-        };
+        let store = open_existing_store().await?;
         return rehearse(config, &store, &parsed, &clock, mode.create_labels).await;
     }
-    let store = Store::open(&store_path)
-        .await
-        .with_context(|| format!("could not open the store at {}", store_path.display()))?;
+    let store = open_store().await?;
 
     let (sync, problem) = build_sync(config, config_path, &store);
 

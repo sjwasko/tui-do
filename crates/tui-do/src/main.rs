@@ -464,7 +464,7 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
         .build()
         .context("could not start the async runtime")?;
     let text = if args.text.is_empty() {
-        let vocabulary = runtime.block_on(runtime::vocabulary())?;
+        let vocabulary = runtime.block_on(runtime::vocabulary());
         match runtime::ask_for_task(vocabulary)? {
             Some(text) => text,
             None => bail!("cancelled; nothing was added"),
