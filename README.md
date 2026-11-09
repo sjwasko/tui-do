@@ -564,6 +564,11 @@ directly is a second writer with none of that.
 **`skills/tui-do/SKILL.md`** documents this for agents and is installable as a skill by tools
 that support them. It is plain Markdown, so anything else can simply read it.
 
+**Learn the names with `--tokens`.** `tui-do add --tokens` lists the projects, labels and
+users in the local store, one per line and grouped, each written the way a line should name
+it (`+[Life Admin]` for a project with a space), then the token syntax. It reads the store
+only, and fails with "run tui-do once to sync" if there is none yet.
+
 **Check generated lines with `--dry-run` first.** It adds nothing and exits non-zero,
 with the message a real add would give, if the line would fail. Then write them the way
 the `as typed best:` line shows: title, then `+project *label @user !N`, then

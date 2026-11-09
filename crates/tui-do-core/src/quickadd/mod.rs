@@ -35,6 +35,7 @@ use std::ops::Range;
 use chrono::{DateTime, TimeZone, Utc};
 
 pub use dates::{DateField, Unit};
+pub use echo::name_token;
 
 /// How often a task repeats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

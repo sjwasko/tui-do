@@ -46,6 +46,35 @@ the title.
 | `due <date>` / `start <date>` | the same, said explicitly |
 | `every <n> <unit>` | repeat: `every 2 weeks`, `every month` |
 
+## Learn the names once with `--tokens`
+
+Before generating lines, run `tui-do add --tokens` once. It lists the projects, labels and
+users this machine's store knows, one per line and grouped, each written exactly as you
+should type it — `+[Life Admin]` for a project with a space — then the token syntax. It
+reads the local store only: it adds nothing, writes nothing and contacts no server. With no
+store yet it exits non-zero and says to run `tui-do` once to sync. Plain text only; there is
+no `--json` yet.
+
+```console
+$ tui-do add --tokens
+projects:
++Legal
++[Life Admin]
+
+labels:
+*[needs review]
+*urgent
+
+users:
+@admin
+
+syntax:
+  +project   +Legal, +[Home Improvement], +#12
+  ...
+```
+
+Use only names from that list, then check each line with `--dry-run`.
+
 ## Check the phrasing with `--dry-run`
 
 Run the line with `--dry-run` before adding it whenever it was generated rather than
@@ -124,6 +153,7 @@ the right text was read.
 
 | flag | when to use it |
 |---|---|
+| `--tokens` | list the projects, labels and users a line may name, and the syntax; run once first |
 | `--dry-run` | print what the line would add and its best form, and add nothing |
 | `--description-file -` | read the task's description from stdin; see above |
 | `--offline` | queue without attempting to send; use when you know there is no network and do not want the attempt |

@@ -582,8 +582,9 @@ pub fn help(which: Help, vocabulary: &Vocabulary) -> Aside {
     match which {
         Help::General => Aside {
             heading: "Anywhere in the line:".to_string(),
-            items: GENERAL_HELP
+            items: TOKEN_SYNTAX
                 .iter()
+                .chain(&[KEYS])
                 .map(|line| (*line).to_string())
                 .collect(),
         },
@@ -630,8 +631,9 @@ pub fn help(which: Help, vocabulary: &Vocabulary) -> Aside {
     }
 }
 
-/// The general help, one token to a line.
-const GENERAL_HELP: &[&str] = &[
+/// Every token, one to a line: the general help, and the syntax `tui-do add --tokens`
+/// prints after the names.
+pub const TOKEN_SYNTAX: &[&str] = &[
     "+project   +Legal, +[Home Improvement], +#12",
     "*label     *urgent, *[needs review]",
     "@user      @admin",
@@ -639,8 +641,10 @@ const GENERAL_HELP: &[&str] = &[
     "due <date> tomorrow, friday, next week, 2026-08-27",
     "start <date>   when work can begin",
     "every <n> <unit>   every 2 weeks, every month",
-    "Tab completes  ? after + * @ ! due start lists  Enter adds  Esc cancels",
 ];
+
+/// The prompt's keys, the general help's last line.
+const KEYS: &str = "Tab completes  ? after + * @ ! due start lists  Enter adds  Esc cancels";
 
 /// A quick-add line with completion and help: the field, what it can complete to, and
 /// what is shown under it.

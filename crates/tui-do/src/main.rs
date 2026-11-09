@@ -85,6 +85,11 @@ enum Command {
     /// the same line as "as typed best: ..." whenever what was typed differs from it;
     /// copy that form next time.
     ///
+    /// --tokens lists every project, label and user the local store knows, one to a
+    /// line and written the way the best form writes them, then the token syntax:
+    ///
+    ///   tui-do add --tokens
+    ///
     /// NAMES WITH SPACES
     ///
     /// Wrap the value in brackets or quotes, which is what keeps the second word from
@@ -289,6 +294,22 @@ struct AddArgs {
     /// local store only, so one created since the last sync is not known to it.
     #[arg(long)]
     dry_run: bool,
+
+    /// List the projects, labels and users a line may name, then the token syntax.
+    ///
+    /// One name to a line, grouped, each written exactly as the best form writes it:
+    /// `+[Life Admin]` for a project with a space in it. From the local store only, so
+    /// run tui-do once to sync first; adds nothing, writes nothing and contacts no
+    /// server. For agents: run it once to learn the names, then --dry-run to check a line.
+    // Plain text only. `--json` waits on item 3a's contract (md/TODO.md).
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "text", "offline", "create_labels", "dry_run",
+            "description", "description_file", "edit",
+        ]
+    )]
+    tokens: bool,
 
     /// The task's description, inline: `-d 'Ask about the March invoice.'`
     ///
@@ -616,6 +637,15 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
 
 /// Add a task from the command line, or, given no text at a terminal, ask for one.
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
+    if args.tokens {
+        // Before the config: the names come from the store alone, and nothing is sent.
+        let listing = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .context("could not start the async runtime")?
+            .block_on(runtime::tokens())?;
+        print!("{listing}");
+        return Ok(());
+    }
     // First, so a script piping a description in without the text is told exactly that,
     // rather than clap's generic "TEXT is required".
     stdin_is_free(args)?;
