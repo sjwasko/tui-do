@@ -89,6 +89,14 @@ impl TextInput {
         crate::rows::display_width(&self.value[..self.cursor])
     }
 
+    /// What a single line `width` columns wide shows of the field, caret included.
+    ///
+    /// Worked out from the cursor alone; see [`crate::rows::input_window`].
+    #[must_use]
+    pub fn window(&self, width: u16) -> crate::rows::InputWindow {
+        crate::rows::input_window(&self.value, self.cursor, width)
+    }
+
     /// Apply a key press. Returns whether it was one this field acts on.
     ///
     /// Named `press` rather than `handle` so it cannot be confused with the

@@ -21,7 +21,7 @@ use crate::modal::{
 };
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
-use crate::rows::{self, MeasuredColumn, RowContext};
+use crate::rows::{self, InputWindow, MeasuredColumn, RowContext};
 use crate::sidebar::{self, SidebarRow};
 use crate::theme::{self, Theme};
 
@@ -994,20 +994,7 @@ fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
             )],
         }
     };
-    let left = vec![
-        Span::styled("due ", theme.accent()),
-        Span::styled(state.input.value().to_string(), theme.text()),
-    ];
-    let padding = usize::from(
-        area.width
-            .saturating_sub(line_width(&left) + line_width(&right)),
-    );
-    let mut spans = fit(left, area.width.saturating_sub(line_width(&right) + 1));
-    spans.push(Span::raw(" ".repeat(padding)));
-    spans.extend(right);
-    frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    place_cursor(frame, area, &state.input, 4);
+    prompt_line(frame, area, "due ", &state.input, right, theme);
 }
 
 /// The footer of the label form: the two keys the modal handles itself.
@@ -1079,7 +1066,8 @@ fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme)
     // A row of its own, taken off the list rather than added to the box: `lines` is
     // truncated to the height at the end, and a full list would otherwise push the offer
     // off the bottom -- hiding the key precisely when it is being offered.
-    let mut lines = vec![input_line(&state.input, theme)];
+    let field = state.input.window(area.width.saturating_sub(2));
+    let mut lines = vec![input_line(&field, theme)];
     let rows = usize::from(area.height).saturating_sub(1 + usize::from(offer.is_some()));
     let first = scrolled_to(state.selected, state.matches.len(), rows);
     for (position, index) in state.matches.iter().enumerate().skip(first) {
@@ -1127,7 +1115,7 @@ fn labels_body(state: &LabelsState, frame: &mut Frame, area: Rect, theme: Theme)
     );
     lines.extend(offer);
     frame.render_widget(Paragraph::new(lines), area);
-    place_cursor(frame, area, &state.input, 2);
+    place_cursor(frame, area, 2, &field);
 }
 
 /// The question: the names that do not exist, and why it is worth asking.
@@ -1207,19 +1195,18 @@ fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme:
                 theme.muted()
             },
         );
-        if focused {
+        // Scrolled to the caret while focused, the same as the task form (BUG-32).
+        let shown = if focused {
+            let field = input.window(room);
             caret = Some((
-                area.x + GUTTER + input.caret_column().min(room),
+                area.x + GUTTER + field.caret_x,
                 area.y + u16::try_from(lines.len()).unwrap_or(0),
             ));
-        }
-        let mut spans = vec![
-            name,
-            Span::styled(
-                rows::truncate(input.value(), room),
-                value_style(theme, focused),
-            ),
-        ];
+            field.text
+        } else {
+            rows::truncate(input.value(), room)
+        };
+        let mut spans = vec![name, Span::styled(shown, value_style(theme, focused))];
         if field == LabelField::Colour && state.colour_is_valid() {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
@@ -1326,13 +1313,18 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
                 lines.push(Line::default());
             }
         } else {
-            let shown = rows::truncate(input.value(), width);
-            if focused {
+            // The focused field scrolls to keep its caret in view (BUG-32); the others
+            // show their start, cut with an ellipsis.
+            let shown = if focused {
+                let field = input.window(width);
                 caret = Some((
-                    area.x + GUTTER + input.caret_column().min(width),
+                    area.x + GUTTER + field.caret_x,
                     area.y + u16::try_from(lines.len()).unwrap_or(0),
                 ));
-            }
+                field.text
+            } else {
+                rows::truncate(input.value(), width)
+            };
             let text = if shown.is_empty() && !focused {
                 Span::styled("—".to_string(), theme.muted())
             } else {
@@ -1414,20 +1406,7 @@ fn add_prompt(model: &Model, state: &QuickAddInput, frame: &mut Frame) {
             Span::styled("  Enter:add  Esc:cancel", theme.muted()),
         ]
     };
-    let left = vec![
-        Span::styled("+ ", theme.accent()),
-        Span::styled(input.value().to_string(), theme.text()),
-    ];
-    let padding = usize::from(
-        area.width
-            .saturating_sub(line_width(&left) + line_width(&right)),
-    );
-    let mut spans = fit(left, area.width.saturating_sub(line_width(&right) + 1));
-    spans.push(Span::raw(" ".repeat(padding)));
-    spans.extend(right);
-    frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    place_cursor(frame, area, input, 2);
+    prompt_line(frame, area, "+ ", input, right, theme);
 }
 
 /// What Tab listed or `?` explained, in the rows just above the add prompt.
@@ -1471,10 +1450,6 @@ fn search_prompt(model: &Model, state: &SearchState, frame: &mut Frame) {
         return;
     }
 
-    let left = vec![
-        Span::styled("/", theme.accent()),
-        Span::styled(state.input.value().to_string(), theme.text()),
-    ];
     let count = if model.data.loading {
         String::new()
     } else if state.input.value().is_empty() {
@@ -1488,35 +1463,61 @@ fn search_prompt(model: &Model, state: &SearchState, frame: &mut Frame) {
         format!("{count}  Enter:keep  Esc:cancel"),
         theme.muted(),
     )];
+    prompt_line(frame, area, "/", &state.input, right, theme);
+}
+
+/// A prompt on the status line: the prompt, the field, and `right` pushed to the far end.
+///
+/// The field gets whatever `right` and the prompt leave, less one column of gap, and is
+/// windowed into it so the caret is always on screen (BUG-32).
+fn prompt_line(
+    frame: &mut Frame,
+    area: Rect,
+    prompt: &'static str,
+    input: &TextInput,
+    right: Vec<Span<'static>>,
+    theme: Theme,
+) {
+    let prefix = rows::display_width(prompt);
+    let field = input.window(area.width.saturating_sub(line_width(&right) + 1 + prefix));
+    let left = vec![
+        Span::styled(prompt, theme.accent()),
+        Span::styled(field.text.clone(), theme.text()),
+    ];
     let padding = usize::from(
         area.width
             .saturating_sub(line_width(&left) + line_width(&right)),
     );
-
     let mut spans = fit(left, area.width.saturating_sub(line_width(&right) + 1));
     spans.push(Span::raw(" ".repeat(padding)));
     spans.extend(right);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    place_cursor(frame, area, &state.input, 1);
+    place_cursor(frame, area, prefix, &field);
 }
 
-fn input_line(input: &TextInput, theme: Theme) -> Line<'static> {
+/// A query field on the first row of a box: `> ` and the window of the value that fits.
+fn input_line(field: &InputWindow, theme: Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled("> ", theme.accent()),
-        Span::styled(input.value().to_string(), theme.text()),
+        Span::styled(field.text.clone(), theme.text()),
     ])
 }
 
-fn place_cursor(frame: &mut Frame, area: Rect, input: &TextInput, prefix: u16) {
-    let x = area.x + prefix + input.caret_column();
+/// Put the terminal's caret in a one-line field drawn `prefix` columns into `area`.
+///
+/// The window already holds the caret inside the field's width, so the check against the
+/// right edge only matters for a field that was given no width at all.
+fn place_cursor(frame: &mut Frame, area: Rect, prefix: u16, field: &InputWindow) {
+    let x = area.x + prefix + field.caret_x;
     if x < area.right() {
         frame.set_cursor_position((x, area.y));
     }
 }
 
 fn picker_body(picker: &PickerState, frame: &mut Frame, area: Rect, theme: Theme) {
-    let mut lines = vec![input_line(&picker.input, theme)];
+    let field = picker.input.window(area.width.saturating_sub(2));
+    let mut lines = vec![input_line(&field, theme)];
     let rows = usize::from(area.height).saturating_sub(1);
     let first = scrolled_to(picker.selected, picker.matches.len(), rows);
     for (position, index) in picker.matches.iter().enumerate().skip(first) {
@@ -1557,7 +1558,7 @@ fn picker_body(picker: &PickerState, frame: &mut Frame, area: Rect, theme: Theme
     }
     lines.truncate(usize::from(area.height));
     frame.render_widget(Paragraph::new(lines), area);
-    place_cursor(frame, area, &picker.input, 2);
+    place_cursor(frame, area, 2, &field);
 }
 
 /// A box of this size in the middle of `area`.
