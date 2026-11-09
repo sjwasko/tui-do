@@ -36,7 +36,7 @@ use crate::error::{CoreError, Result};
 
 pub use labels::{LabelFilter, LabelOrder, LabelSort};
 pub use outbox::{
-    is_provisional, is_provisional_label, Mutation, OutboxEntry, QueueHealth, Subject,
+    is_provisional, is_provisional_label, Mutation, OutboxEntry, QueueHealth, Queued, Subject,
 };
 pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
 pub use state::{CURRENT_USER, LAST_PROJECT, LAST_PULL, LAST_RECONCILE, PAGE_CAP};
@@ -51,6 +51,27 @@ pub use tasks::{ProjectCounts, ServerApply, TaskCount, TaskFilter, TaskOrder, Ta
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
     path: StorePath,
+    /// How many outbox payloads the drain's reads have parsed. See
+    /// [`Store::payload_decodes`].
+    decodes: Arc<DecodeCount>,
+}
+
+/// Counts payload parses for [`Store::payload_decodes`]. Holds nothing, and counts
+/// nothing, in a build without the `test-hooks` feature.
+#[derive(Debug, Default)]
+pub(crate) struct DecodeCount {
+    #[cfg(any(test, feature = "test-hooks"))]
+    count: std::sync::atomic::AtomicU64,
+}
+
+impl DecodeCount {
+    /// One more payload parsed.
+    #[allow(clippy::unused_self)]
+    pub(crate) fn bump(&self) {
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Where a store lives, for error messages.
@@ -120,6 +141,7 @@ impl Store {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: StorePath::Memory,
+            decodes: Arc::default(),
         })
     }
 
@@ -156,7 +178,24 @@ impl Store {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: StorePath::File(path),
+            decodes: Arc::default(),
         })
+    }
+
+    /// How many queued payloads have been parsed by [`Store::pending`] and the reads the
+    /// drain makes, since this store was opened.
+    ///
+    /// For tests only, and absent from a build without the `test-hooks` feature. BUG-23:
+    /// the drain re-read and re-parsed the whole queue before every entry it sent, which
+    /// is quadratic in the depth of the queue, and a count is the one way to assert that
+    /// it no longer does without timing it.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn payload_decodes(&self) -> u64 {
+        self.decodes
+            .count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Where this store lives, for diagnostics.

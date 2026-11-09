@@ -43,6 +43,8 @@
 //! risks a duplicate. A duplicate task is an annoyance and a lost one is a bug report, so
 //! the entry stays.
 
+mod queue;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -54,6 +56,7 @@ use crate::error::Result;
 use crate::store::{
     Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
 };
+use queue::DrainQueue;
 
 /// How far back an incremental pull reaches beyond the watermark.
 ///
@@ -333,6 +336,10 @@ pub struct Sync {
     /// The least time between two [`SyncEvent::Sending`]s. [`PROGRESS_EVERY`] unless a
     /// test asks for less.
     progress_every: Duration,
+    /// Whether a request is on the wire right now, as opposed to the push reading or
+    /// writing the store between two of them. Read by the runtime only to word what it
+    /// prints when it gives up waiting at quit (BUG-23).
+    requesting: Arc<AtomicBool>,
 }
 
 /// How often a push reports what is left.
@@ -373,6 +380,22 @@ impl Drop for Pushing<'_> {
     }
 }
 
+/// Holds a flag true for as long as it lives.
+struct Flag<'a>(&'a AtomicBool);
+
+impl<'a> Flag<'a> {
+    fn raised(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self(flag)
+    }
+}
+
+impl Drop for Flag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Sync {
     /// Whether a push is mid-flight right now.
     ///
@@ -381,6 +404,13 @@ impl Sync {
     #[must_use]
     pub fn is_pushing(&self) -> bool {
         self.pushing.load(Ordering::SeqCst)
+    }
+
+    /// Whether a push has a request on the wire right now, rather than being between
+    /// two of them. See [`Sync::requesting`].
+    #[must_use]
+    pub fn is_requesting(&self) -> bool {
+        self.requesting.load(Ordering::SeqCst)
     }
 
     /// Whether a push has ended by panicking, so its last request may have been sent
@@ -400,6 +430,7 @@ impl Sync {
             pushing: Arc::new(AtomicBool::new(false)),
             interrupted: Arc::new(AtomicBool::new(false)),
             progress_every: PROGRESS_EVERY,
+            requesting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -519,24 +550,36 @@ impl Sync {
         // interval -- the one-entry push after an edit -- reports nothing extra.
         let mut reported = Instant::now();
 
+        // The queue's shape, refreshed by id rather than re-read whole (BUG-23). See
+        // `queue.rs` for why only this loop can make it stale.
+        let mut queue = DrainQueue::new();
+
         loop {
-            let pending = self.store.pending(None).await?;
+            queue.refresh(&self.store).await?;
             if reported.elapsed() >= self.progress_every {
                 reported = Instant::now();
                 self.emit(SyncEvent::Sending {
-                    remaining: pending.len(),
+                    remaining: queue.len(),
                 });
             }
-            let mut candidate = None;
-            for queued in &pending {
-                let subject = queued.mutation.subject();
+            if !blocked_labels.is_empty() {
+                queue
+                    .carry(&self.store, |queued| {
+                        !attempted.contains(&queued.id) && !blocked.contains(&queued.subject)
+                    })
+                    .await?;
+            }
+            let candidate = queue.next_candidate(|queued, mutation| {
+                let subject = queued.subject;
                 if attempted.contains(&queued.id)
                     || blocked.contains(&subject)
-                    || blocked_labels
-                        .iter()
-                        .any(|label| references(&queued.mutation, *label))
+                    || mutation.is_some_and(|mutation| {
+                        blocked_labels
+                            .iter()
+                            .any(|label| references(mutation, *label))
+                    })
                 {
-                    continue;
+                    return false;
                 }
                 if backoff == Backoff::Respect && !queued.is_due(now) {
                     // Not attempted on this pass, and just as much in the way as one that
@@ -550,18 +593,42 @@ impl Sync {
                     if let Subject::Label(id) = subject {
                         blocked_labels.insert(id);
                     }
-                    continue;
+                    return false;
                 }
-                candidate = Some(queued.clone());
-                break;
-            }
-            let Some(entry) = candidate else {
+                true
+            });
+            let Some(id) = candidate else {
                 break;
             };
+            // Read now, after whatever settled earlier in this pass has rewritten it.
+            let Some(entry) = self.store.entry(id).await? else {
+                tracing::warn!(id, "a queued entry vanished before it was sent");
+                queue.forget(id);
+                continue;
+            };
+            // A label blocked during this scan was not in the queue's parsed payloads
+            // yet, so the one in hand is the first chance to see that this entry sends it.
+            if blocked_labels
+                .iter()
+                .any(|label| references(&entry.mutation, *label))
+            {
+                queue.keep(entry.id, entry.mutation);
+                continue;
+            }
             attempted.insert(entry.id);
 
             match self.deliver(&entry).await? {
-                Ok(()) => report.sent += 1,
+                Ok(()) => {
+                    report.sent += 1;
+                    queue.forget(entry.id);
+                    // A settle rewrites what was queued behind a create.
+                    if matches!(
+                        entry.mutation,
+                        Mutation::CreateTask { .. } | Mutation::CreateLabel { .. }
+                    ) {
+                        queue.mark_stale();
+                    }
+                }
                 Err(error) if is_already_done(&entry.mutation, &error) => {
                     // The server has nothing to do because it is already in the state
                     // this entry asked for. Rolling back would undo the user's intent to
@@ -569,6 +636,7 @@ impl Sync {
                     tracing::debug!(kind = entry.mutation.kind(), "already in that state");
                     self.store.complete(entry.id).await?;
                     report.sent += 1;
+                    queue.forget(entry.id);
                 }
                 Err(error) if is_permanent(&error) => {
                     let subject = entry.mutation.subject();
@@ -581,15 +649,25 @@ impl Sync {
                     // never issued. `references` finds those without widening the
                     // discard for a rejected task, whose blast radius stays exactly the
                     // entries that share its subject.
-                    let doomed: Vec<OutboxEntry> = pending
+                    //
+                    // The whole queue is read here, payloads and all, because the
+                    // rollback needs every doomed entry's mutation. A rejection is rare,
+                    // and `seen()` keeps the set to what this pass had already looked at,
+                    // as the snapshot it used to take before every entry did.
+                    let doomed: Vec<OutboxEntry> = self
+                        .store
+                        .pending(None)
+                        .await?
                         .into_iter()
                         .filter(|queued| {
-                            queued.mutation.subject() == subject
-                                || matches!(subject, Subject::Label(id) if references(&queued.mutation, id))
+                            queued.id <= queue.seen()
+                                && (queued.mutation.subject() == subject
+                                    || matches!(subject, Subject::Label(id) if references(&queued.mutation, id)))
                         })
                         .collect();
                     report.rejected += doomed.len();
                     self.store.discard_all(doomed).await?;
+                    queue.mark_stale();
                     tracing::warn!(%subject, error = %message, "the server refused a queued change");
                     self.emit(SyncEvent::Rejected {
                         subject,
@@ -636,7 +714,12 @@ impl Sync {
     /// store failure, which is a real error and ends the pass, while the inner one is
     /// the server's answer, which the caller weighs against [`is_permanent`].
     async fn deliver(&self, entry: &OutboxEntry) -> Result<std::result::Result<(), ApiError>> {
-        let outcome = match self.transmit(entry).await {
+        let sent = {
+            // Cleared by `Drop`, so an aborted push does not leave it set.
+            let _requesting = Flag::raised(&self.requesting);
+            self.transmit(entry).await
+        };
+        let outcome = match sent {
             Ok(outcome) => outcome,
             Err(error) => return Ok(Err(error)),
         };

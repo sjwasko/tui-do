@@ -33,6 +33,8 @@
 //! replays both, creating a duplicate task or re-deleting a label that is already gone.
 //! One entry, one request, so a retry means exactly what it says.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -43,7 +45,7 @@ use tui_do_api::models::{Label, LabelId, Task, TaskId};
 use super::labels::{attach_label, is_being_created, upsert_label};
 use super::state::{read_state, write_state};
 use super::tasks::upsert_task;
-use super::Store;
+use super::{DecodeCount, Store};
 use crate::error::Result;
 
 /// The `sync_state` key holding the next provisional task id.
@@ -486,7 +488,7 @@ impl OutboxEntry {
     /// Whether the backoff has elapsed and this may be sent.
     #[must_use]
     pub fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.next_attempt_at.is_none_or(|at| at <= now)
+        is_due(self.next_attempt_at, now)
     }
 
     /// Whether this entry has failed at least once and is waiting to be retried.
@@ -494,6 +496,80 @@ impl OutboxEntry {
     pub const fn is_failing(&self) -> bool {
         self.attempts > 0
     }
+}
+
+/// Where a queued entry stands, without its payload: what the drain needs to decide
+/// whether it may be sent next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Queued {
+    /// Queue position, as [`OutboxEntry::id`].
+    pub id: i64,
+    /// What it acts on, as [`Mutation::subject`] says -- the store keeps the two equal.
+    pub subject: Subject,
+    /// As [`OutboxEntry::attempts`].
+    pub attempts: i64,
+    /// As [`OutboxEntry::next_attempt_at`].
+    pub next_attempt_at: Option<DateTime<Utc>>,
+}
+
+impl Queued {
+    /// Whether the backoff has elapsed. As [`OutboxEntry::is_due`].
+    #[must_use]
+    pub fn is_due(&self, now: DateTime<Utc>) -> bool {
+        is_due(self.next_attempt_at, now)
+    }
+}
+
+/// An outbox row as read, before its payload is parsed.
+struct StoredEntry {
+    id: i64,
+    created: String,
+    payload: String,
+    attempts: i64,
+    last_error: Option<String>,
+    next_attempt_at: Option<String>,
+}
+
+impl StoredEntry {
+    /// From `id, created, payload, attempts, last_error, next_attempt_at`, in that order.
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            created: row.get(1)?,
+            payload: row.get(2)?,
+            attempts: row.get(3)?,
+            last_error: row.get(4)?,
+            next_attempt_at: row.get(5)?,
+        })
+    }
+
+    fn decode(self, decodes: &DecodeCount) -> Result<OutboxEntry> {
+        Ok(OutboxEntry {
+            id: self.id,
+            created: DateTime::parse_from_rfc3339(&self.created)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            mutation: decode(decodes, &self.payload)?,
+            attempts: self.attempts,
+            last_error: self.last_error,
+            next_attempt_at: parse_instant(self.next_attempt_at.as_deref()),
+        })
+    }
+}
+
+/// A stored timestamp, or `None` for one that is absent or unreadable.
+fn parse_instant(text: Option<&str>) -> Option<DateTime<Utc>> {
+    text.and_then(|text| {
+        DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
+    })
+}
+
+/// Whether a backoff ending at `next_attempt_at` has elapsed by `now`. `None` is "as
+/// soon as possible". One rule for [`OutboxEntry`] and [`Queued`], which both carry it.
+fn is_due(next_attempt_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    next_attempt_at.is_none_or(|at| at <= now)
 }
 
 /// The shortest wait before a failed entry is tried again.
@@ -661,6 +737,7 @@ impl Store {
     /// [`crate::CoreError::Store`] on any SQL failure, or
     /// [`crate::CoreError::Encoding`] if a stored payload cannot be parsed.
     pub async fn pending(&self, limit: Option<u32>) -> Result<Vec<OutboxEntry>> {
+        let decodes = Arc::clone(&self.decodes);
         self.read(move |connection| {
             // Every queued entry, including ones whose `next_attempt_at` is still in the
             // future. **Deliberately unfiltered**, and an earlier version of this comment
@@ -677,36 +754,129 @@ impl Store {
                 sql.push_str(&format!(" LIMIT {limit}"));
             }
             let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map([], |row| {
+            let rows = statement.query_map([], StoredEntry::from_row)?;
+            let mut entries = Vec::new();
+            for row in rows {
+                entries.push(row?.decode(&decodes)?);
+            }
+            Ok(entries)
+        })
+        .await
+    }
+
+    /// Where every entry queued after `after` stands, oldest first, without its payload.
+    ///
+    /// What the drain reads to choose what to send next. BUG-23: it used to call
+    /// [`Self::pending`] before every entry, which parses every payload in the queue each
+    /// time -- 23.7 ms at 1,781 entries, so about 40 s of re-reading in a drain that deep.
+    /// This reads four small columns, and with `after` set only the rows a pass has not
+    /// seen yet; ids only grow, so those are exactly what has been queued since.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure, or
+    /// [`crate::CoreError::Encoding`] for a row whose subject has to be read from its
+    /// payload and cannot be.
+    pub async fn queued_after(&self, after: i64) -> Result<Vec<Queued>> {
+        let decodes = Arc::clone(&self.decodes);
+        self.read(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, subject_kind, subject_id, attempts, next_attempt_at,
+                        CASE WHEN subject_id IS NULL OR subject_kind NOT IN ('task', 'label')
+                             THEN payload END
+                   FROM outbox WHERE id > ?1 ORDER BY id ASC",
+            )?;
+            let rows = statement.query_map(params![after], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
                 ))
             })?;
-
-            let mut entries = Vec::new();
+            let mut queued = Vec::new();
             for row in rows {
-                let (id, created, payload, attempts, last_error, next_attempt_at) = row?;
-                entries.push(OutboxEntry {
+                let (id, kind, subject_id, attempts, next_attempt_at, payload) = row?;
+                let subject = match (kind.as_str(), subject_id, payload) {
+                    ("task", Some(subject), _) => Subject::Task(TaskId(subject)),
+                    ("label", Some(subject), _) => Subject::Label(LabelId(subject)),
+                    // Every insert writes both columns, so this row came from somewhere
+                    // else. The payload knows what it acts on.
+                    (_, _, Some(payload)) => decode(&decodes, &payload)?.subject(),
+                    // Unreachable while `payload` is `NOT NULL`. Refused rather than
+                    // skipped: a row the drain cannot see is a change it never sends, and
+                    // the count on the status line would still include it.
+                    (kind, subject, None) => {
+                        return Err(crate::CoreError::Config {
+                            path: "<outbox>".to_string(),
+                            reason: format!(
+                                "entry {id} has subject {kind}/{subject:?} and no payload"
+                            ),
+                        })
+                    }
+                };
+                queued.push(Queued {
                     id,
-                    created: DateTime::parse_from_rfc3339(&created)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    mutation: serde_json::from_str(&payload)?,
+                    subject,
                     attempts,
-                    last_error,
-                    next_attempt_at: next_attempt_at.as_deref().and_then(|text| {
-                        DateTime::parse_from_rfc3339(text)
-                            .ok()
-                            .map(|dt| dt.with_timezone(&Utc))
-                    }),
+                    next_attempt_at: parse_instant(next_attempt_at.as_deref()),
                 });
             }
-            Ok(entries)
+            Ok(queued)
+        })
+        .await
+    }
+
+    /// One queued entry, payload and all, or `None` if it has gone.
+    ///
+    /// The drain reads it at the moment it is about to send it, which is what keeps a
+    /// payload that an earlier entry's settle rewrote -- `settle_create`,
+    /// `settle_create_label` -- from going out in its old shape.
+    ///
+    /// # Errors
+    /// As [`Self::pending`].
+    pub async fn entry(&self, id: i64) -> Result<Option<OutboxEntry>> {
+        let decodes = Arc::clone(&self.decodes);
+        self.read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT id, created, payload, attempts, last_error, next_attempt_at
+                       FROM outbox WHERE id = ?1",
+                    params![id],
+                    StoredEntry::from_row,
+                )
+                .optional()?
+                .map(|stored| stored.decode(&decodes))
+                .transpose()
+        })
+        .await
+    }
+
+    /// The mutations of the entries named, by id. An entry that has gone is left out.
+    ///
+    /// # Errors
+    /// As [`Self::pending`].
+    pub async fn mutations(&self, ids: Vec<i64>) -> Result<HashMap<i64, Mutation>> {
+        /// Well under SQLite's bound-parameter limit, which is 32,766 since 3.32.
+        const CHUNK: usize = 500;
+        let decodes = Arc::clone(&self.decodes);
+        self.read(move |connection| {
+            let mut found = HashMap::with_capacity(ids.len());
+            for chunk in ids.chunks(CHUNK) {
+                let marks = vec!["?"; chunk.len()].join(", ");
+                let mut statement = connection.prepare(&format!(
+                    "SELECT id, payload FROM outbox WHERE id IN ({marks})"
+                ))?;
+                let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    let (id, payload) = row?;
+                    found.insert(id, decode(&decodes, &payload)?);
+                }
+            }
+            Ok(found)
         })
         .await
     }
@@ -718,6 +888,24 @@ impl Store {
     pub async fn pending_count(&self) -> Result<i64> {
         self.read(|connection| {
             Ok(connection.query_row("SELECT count(*) FROM outbox", [], |row| row.get(0))?)
+        })
+        .await
+    }
+
+    /// How many entries are queued with an id of `id` or below.
+    ///
+    /// What the drain checks its own picture of the queue against: rows it has already
+    /// seen change only through it, while anything new lands above `id`.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn pending_through(&self, id: i64) -> Result<i64> {
+        self.read(move |connection| {
+            Ok(connection.query_row(
+                "SELECT count(*) FROM outbox WHERE id <= ?1",
+                params![id],
+                |row| row.get(0),
+            )?)
         })
         .await
     }
@@ -987,6 +1175,12 @@ impl Store {
         })
         .await
     }
+}
+
+/// Parse one stored payload, counting it. See [`Store::payload_decodes`].
+fn decode(decodes: &DecodeCount, payload: &str) -> Result<Mutation> {
+    decodes.bump();
+    Ok(serde_json::from_str(payload)?)
 }
 
 /// Allocate the next provisional task id: -1, then -2, and so on.

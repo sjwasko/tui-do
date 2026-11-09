@@ -2588,3 +2588,89 @@ async fn a_fast_drain_is_throttled_to_far_fewer_events_than_entries() {
         seen.len()
     );
 }
+
+#[tokio::test]
+async fn a_drain_parses_each_payload_once_however_deep_the_queue() {
+    // BUG-23: the drain re-read the whole queue before every entry, parsing every payload
+    // each time. 1,781 entries cost 1,586,871 parses; this many cost 1,830 that way.
+    let server = MockServer::start().await;
+    let store = Store::in_memory().unwrap();
+    queue_deletes(&server, &store, 60, std::time::Duration::ZERO).await;
+    let (sync, _rx) = engine(&server, &store);
+
+    let before = store.payload_decodes();
+    assert_eq!(sync.push().await.unwrap().sent, 60);
+    let parsed = store.payload_decodes() - before;
+
+    assert_eq!(
+        parsed, 60,
+        "a 60-entry drain parsed {parsed} payloads; once each is 60"
+    );
+}
+
+/// Answers `DELETE`s, holding the first until the test lets it go.
+struct HeldFirst {
+    arrived: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl wiremock::Respond for HeldFirst {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        // Only the first request has a sender to take; the rest answer at once.
+        let first = self.arrived.lock().unwrap().take();
+        if let Some(arrived) = first {
+            arrived.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        ResponseTemplate::new(200).set_body_json(json!({"message": "ok"}))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entry_queued_mid_drain_goes_out_in_the_same_pass() {
+    // The drain no longer re-reads the whole queue per entry, so what was queued after it
+    // started has to reach it some other way: it asks for ids it has not seen.
+    let server = MockServer::start().await;
+    let (arrived_tx, arrived) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    Mock::given(method("DELETE"))
+        .respond_with(HeldFirst {
+            arrived: std::sync::Mutex::new(Some(arrived_tx)),
+            release: std::sync::Mutex::new(release_rx),
+        })
+        .mount(&server)
+        .await;
+    let store = Store::in_memory().unwrap();
+    let tasks: Vec<Task> = (1..=3).map(|id| task(id, "gone")).collect();
+    store.upsert_tasks(tasks.clone()).await.unwrap();
+    for gone in &tasks[..2] {
+        store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(gone.clone()),
+            })
+            .await
+            .unwrap();
+    }
+    let (sync, _rx) = engine(&server, &store);
+    let push = tokio::spawn(async move { sync.push().await.unwrap() });
+
+    // The first request is on the wire, so the pass has read the queue and is mid-drain.
+    tokio::task::spawn_blocking(move || arrived.recv().unwrap())
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::DeleteTask {
+            before: Box::new(tasks[2].clone()),
+        })
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+
+    let report = push.await.unwrap();
+    assert_eq!(
+        report.sent, 3,
+        "the entry queued mid-drain waited for another pass"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}

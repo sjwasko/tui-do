@@ -9,6 +9,7 @@
 //! keypress and a frame: every effect is spawned onto its own task and answers by sending
 //! a message back. The render loop's only await is on the message channel.
 
+mod coalesce;
 mod terminal;
 
 use std::future::Future;
@@ -192,6 +193,9 @@ impl std::fmt::Display for Fatal {
 struct LoopTx {
     msg: UnboundedSender<Msg>,
     fatal: UnboundedSender<Fatal>,
+    /// This runtime's read gates (BUG-23). Made with the channel, so two loops in one
+    /// process never share a queued request, its store or its sender.
+    reads: Arc<coalesce::Reads>,
 }
 
 /// The loop's end of [`LoopTx`].
@@ -205,7 +209,11 @@ impl LoopTx {
         let (msg, msg_rx) = mpsc::unbounded_channel();
         let (fatal, fatal_rx) = mpsc::unbounded_channel();
         (
-            Self { msg, fatal },
+            Self {
+                msg,
+                fatal,
+                reads: Arc::default(),
+            },
             LoopRx {
                 msg: msg_rx,
                 fatal: fatal_rx,
@@ -350,57 +358,77 @@ async fn event_loop<B: ratatui::backend::Backend>(
 /// function is called from the loop that also draws.
 fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx) {
     match effect {
+        // The five reads `Msg::Reload` asks for go through `coalesce`: one of each in
+        // flight and the newest request waiting behind it (BUG-23). A load that is
+        // already running answers under its own id; only the one that starts later
+        // carries a newer one.
         Effect::LoadTasks { id, filter, sort } => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store.tasks(filter, sort).await {
-                    Ok(tasks) => Msg::TasksLoaded { id, tasks },
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.tasks, tx, (id, filter, sort), move |request| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let (id, filter, sort) = request;
+                    let msg = match store.tasks(filter, sort).await {
+                        Ok(tasks) => Msg::TasksLoaded { id, tasks },
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadProjects => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store
-                    .projects(ProjectFilter::default(), ProjectSort::default())
-                    .await
-                {
-                    Ok(projects) => Msg::ProjectsLoaded(projects),
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.projects, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store
+                        .projects(ProjectFilter::default(), ProjectSort::default())
+                        .await
+                    {
+                        Ok(projects) => Msg::ProjectsLoaded(projects),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadLabels => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store
-                    .labels(LabelFilter::default(), LabelSort::default())
-                    .await
-                {
-                    Ok(labels) => Msg::LabelsLoaded(labels),
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.labels, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store
+                        .labels(LabelFilter::default(), LabelSort::default())
+                        .await
+                    {
+                        Ok(labels) => Msg::LabelsLoaded(labels),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadCounts => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                let msg = match store.project_task_counts().await {
-                    Ok(counts) => Msg::CountsLoaded(counts),
-                    Err(error) => Msg::StoreFailed(error.to_string()),
-                };
-                let _ = tx.send(msg);
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.counts, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store.project_task_counts().await {
+                        Ok(counts) => Msg::CountsLoaded(counts),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
             });
         }
         Effect::LoadPending => {
-            let (store, tx) = (store.clone(), tx.clone());
-            spawn_effect(tx.clone(), async move {
-                if let Ok(health) = store.queue_health().await {
-                    let _ = tx.send(Msg::PendingLoaded(health));
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.pending, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    if let Ok(health) = store.queue_health().await {
+                        let _ = tx.send(Msg::PendingLoaded(health));
+                    }
                 }
             });
         }
@@ -731,9 +759,17 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
         let handle = in_flight().lock().ok().and_then(|mut slot| slot.take());
         if let Some(handle) = handle {
             if tokio::time::timeout(deadline, handle).await.is_err() {
-                // Still sending when the grace ran out. Walk away without pushing: what is
+                // Still pushing when the grace ran out. Walk away without pushing: what is
                 // queued is safe, and re-sending it is what creates the duplicate.
-                println!("Still sending; leaving the rest queued for next time.");
+                //
+                // BUG-23: this always said "Still sending", including the time it was
+                // printed after five seconds with no request on the wire at all. Say
+                // which it is.
+                if sync.is_requesting() {
+                    println!("Still sending; leaving the rest queued for next time.");
+                } else {
+                    println!("Waiting to send; leaving the rest queued for next time.");
+                }
                 return;
             }
         }

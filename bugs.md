@@ -59,6 +59,8 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-21~~ | FIXED — two drain tests against a mock, one update test | timing-based, wide margins |
 | ~~BUG-24~~ | FIXED — table test over 15 strings, title and dates both asserted | yes |
 | ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
+| BUG-23 | PARTLY FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset | yes |
+| BUG-28 | hold a store read on a barrier while a loop of presses runs; assert the push still sends | yes |
 
 ## What is left, at a glance
 
@@ -66,7 +68,7 @@ throughout, both learned the hard way in this pass:
 |---|---|
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
-| **Found by the drain torture test** | BUG-23 — new 2026-09-13, needs fixing. ~~BUG-21~~ and ~~BUG-22~~ are fixed |
+| **Found by the drain torture test** | ~~BUG-21~~ and ~~BUG-22~~ are fixed. BUG-23 is partly fixed — the drain, the backlog at key-up and the quit wording — and what it leaves is filed as **BUG-28**: while a key is held the push still gets ~1.4 sends/s, because a task-list read is always running |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -85,11 +87,11 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | Sync engine | 0 | 5 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
-| Runtime and CLI | 0 | 4 → 2 | 3 |
+| Runtime and CLI | 0 | 5 → 3 | 3 |
 | API client | 0 | 1 → 0 | 1 |
-| **found** | **1** | **17** | **15** |
+| **found** | **1** | **18** | **15** |
 | **fixed** | **1** | **9** | **2** |
-| **open** | **0** | **8** | **13** |
+| **open** | **0** | **9** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -1437,7 +1439,7 @@ and counts one `POST` per task; with the replay off it fails with
 
 ---
 
-### BUG-23 — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
+### ~~BUG-23~~ — PARTLY FIXED — a sustained stream of local writes starves the push, and `flush_on_exit`'s grace reports "still sending" when nothing is
 
 `crates/tui-do-core/src/store/mod.rs` (the `Arc<Mutex<Connection>>`),
 `crates/tui-do-core/src/sync/mod.rs:459` (the drain loop's `pending()` re-read), and
@@ -1491,6 +1493,60 @@ idle five seconds. The last line in the process's life is the POST at
 tight loop from one task while a second task calls `pending()` in a loop, and assert the
 reader's completions per second stays above some floor. It fails today. A fair lock, or a
 dedicated reader path that does not contend with the writer, makes it deterministic.
+
+**Fixed 2026-11-08, and the diagnosis above was wrong about the cause.** A probe against a
+file-backed store — 3,877 tasks, outbox depths 0, 353 and 1,781, on a heavily loaded box —
+measured each read the loop makes:
+
+| op | depth 0 | 353 | 1,781 |
+|---|---|---|---|
+| `Store::pending(None)`, which the drain re-read before **every** entry | 0.16 ms | 6.7 ms | 23.7 ms |
+| `Store::tasks(done = false)`, the reload issued after **every** keypress | 530 ms | 330 ms | 190 ms |
+| `project_task_counts` | 4.6 | 1.3 | 1.5 |
+| `queue_health` | 0.1 | 0.2 | 2.6 |
+
+and, with a 24/s keypress loop for 5 s against a task looping `pending()`: **33.6 reads/s
+with writes alone, 1.2 reads/s with each press's reload set.** So it is **saturation, not
+mutex fairness**: one full-list reload per press is more lock time than a second holds, and
+the push barely gets a turn. The mutex was left alone.
+
+**The idle grace is probably the backlog, and that is inferred rather than observed on the
+original run.** The probe, re-run with spawned reloads, had **182** still queued on the lock
+when the key came up, and they took **18.8 s** to clear — so the push's reads at quit waited
+behind seconds of reloads that had already been asked for. That fits a five-second grace
+with no requests in it; the original process's lock was never inspected.
+
+**What is fixed, 2026-11-08:** the drain's quadratic re-read, the backlog of reloads left
+on the lock when the key comes up, and the quit message. **What is not:** the push while a
+key is *held*, which is filed as **BUG-28** below. Three changes:
+
+- **Reloads are coalesced** (`runtime/coalesce.rs`). Each of the five reads `Msg::Reload`
+  asks for runs at most once at a time, with the newest request waiting behind it; anything
+  asked for while one waits replaces it. A running read answers under its own query id, and
+  only the one that starts later carries a newer one — which BUG-22's overlay depends on,
+  because it trusts a load for a write only if the load's id is newer than the id in force
+  when the write landed. Reloads queued at key-up: **182 → 3**, cleared in 0.45 s.
+- **The drain no longer re-reads every payload.** It keeps the queue's shape — id, subject,
+  backoff, from `Store::queued_after` — asks only for ids newer than the last it saw, and
+  parses a payload when it is about to send it (`Store::entry`), or when a blocked label
+  makes the scan ask `references` (`Store::mutations`). A settle or a rejection marks what
+  it holds stale and the next look re-reads the shape, so `retarget`/`retarget_label`
+  rewrites are always read after they land. Against an instant mock, 1,781 queued entries:
+  **107 → 2,482 entries/s, 1,586,871 → 1,781 payload parses.**
+- **Quitting says which it gave up on**: "Still sending" when a request is on the wire,
+  "Waiting to send" when the push is between requests.
+
+**What is not fixed** is the starvation the title names, while the key is held: one
+coalesced task-list read is always running, and the push still gets about 1.4 sends a
+second. That is BUG-28.
+
+Tests: `a_drain_parses_each_payload_once_however_deep_the_queue` asserts 60 parses for 60
+entries (the old drain made 1,830); `an_entry_queued_mid_drain_goes_out_in_the_same_pass`
+holds the first request in the mock, queues an entry, and asserts all three go out in one
+pass; `requests_made_during_a_read_become_one_read_with_the_newest` holds a read on a
+`Notify`, issues fifty more, and asserts exactly two reads ran, the first under its own id
+and the second under the newest; `a_read_that_panics_does_not_leave_its_kind_running`
+pins the gate's reset. The gates belong to one runtime, on its `LoopTx`.
 
 ---
 
@@ -1751,6 +1807,60 @@ plus `AttachLabel`, then a `SyncEvent::Rejected` for `Subject::Label(-1)`, then 
 `Action::Redo`. Assert that no effect queues a mutation naming a negative label id whose
 create is no longer on the stack. A fix is probably to prune by `references` as the sync
 engine does, not by subject alone, but that is a decision for whoever takes it.
+
+---
+
+### BUG-28 — while a key is held, a task-list read is always running and the push gets ~1.4 sends a second
+
+`crates/tui-do-core/src/store/tasks.rs` (`Store::tasks`) and
+`crates/tui-do/src/runtime/coalesce.rs`. What BUG-23 left behind, filed 2026-11-08.
+
+**Diagnosed, not fixed.** BUG-23 coalesced the reloads, so at most one task-list read runs
+and at most one waits behind it. Under a held key that is still a read running back to
+back for as long as the key is down: every press asks for one, and the one waiting starts
+the instant the last one lands. The store is one connection behind a mutex, so the push
+gets a turn only between them.
+
+**What one read costs.** `Store::tasks` reads the rows in one query and then, for each
+task, its labels, assignees and reminders in three more (`labels_for`, `assignees_for`,
+`reminders_for`). The open list is about 1,935 of the 3,877 tasks on dev, so one read is
+**about 5,800 queries**, measured at 120-530 ms on a loaded box.
+
+**Measured, 2026-11-08,** with a probe on a file-backed store: 3,877 tasks, 353 entries
+queued, 24 presses a second for 5 s, against an instant mock, load average above 30.
+
+| reloads | push, entries sent per second |
+|---|---|
+| none | **95** |
+| one per press, uncoalesced, old drain | 1.6 |
+| coalesced, old drain | 4.0 |
+| coalesced, new drain (what ships) | **1.4** |
+
+The last three are within that box's noise of each other. Coalescing fixed the backlog —
+182 reloads queued at key-up became 3 — and did nothing for the rate while the key is down.
+
+**No data is at risk.** Everything queued drains within seconds of the key coming up, at
+the full rate. What is lost is the queue draining *while* someone works through a long run
+of edits, and the status line counting up rather than down.
+
+**Two candidate fixes, not yet chosen:**
+
+- **Make the read cheap.** Batch the three child reads into one `IN (...)` query each over
+  the ids just read, so a task-list read is four queries rather than ~5,800. This shortens
+  every read the interface makes, not just these.
+- **Ask for fewer reads under sustained input.** Hold a waiting reload until the push has
+  had a turn, or until some minimum time has passed since the last one landed, so reloads
+  hold at most a fraction of each second. Cheaper to write, and the list lags the keyboard
+  by that much.
+
+**Suggested test, deterministic.** Do not time it. Give the coalescer a read that waits on a
+barrier, so a task-list read is "always running" by construction, and keep a request
+waiting behind it as a held key does. Queue one outbox entry against a mock that counts
+requests, start a push, then release the barrier exactly once per push request. Assert the
+push sends its entry while a reload is still waiting — today it can only get the lock
+between two reads. For the first fix the store-level version is enough: count the
+statements one `Store::tasks` call prepares (a hook like `payload_decodes`, behind
+`test-hooks`) and assert it does not grow with the number of tasks.
 
 ## Minor
 

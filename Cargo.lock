@@ -3287,6 +3287,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tui-do-api",
+ "tui-do-core",
  "wiremock",
 ]
 
