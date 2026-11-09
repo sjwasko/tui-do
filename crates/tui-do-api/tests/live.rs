@@ -232,7 +232,7 @@ async fn info_reports_the_version_the_spec_was_captured_from() {
     let info = client.info().await.expect("GET /info should succeed");
 
     assert_eq!(
-        info.version, "v2.5.0",
+        info.version, "v2.8.0",
         "the server was upgraded; refresh the spec with `cargo xtask fetch-spec` and \
          re-run the conformance tests before trusting anything else"
     );
