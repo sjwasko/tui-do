@@ -7,7 +7,7 @@
 
 use tui_do_core::config::columns::ColumnLayout;
 use tui_do_core::config::{Config, QuickAction, ViewConfig};
-use tui_do_core::models::{Label, Project, ProjectId, Task, TaskId};
+use tui_do_core::models::{Label, Project, ProjectId, Task, TaskId, User};
 use tui_do_core::store::{Mutation, ProjectCounts};
 use tui_do_core::ZonedTime;
 
@@ -215,9 +215,10 @@ pub struct Snapshot {
     pub projects: Vec<Project>,
     /// Every label, for the picker and for colouring.
     pub labels: Vec<Label>,
-    /// Every username the store has seen, which is what `@` completes from: the same
-    /// list `tui-do add`'s prompt reads, so both offer the same names.
-    pub users: Vec<String>,
+    /// Every user the store has seen, which is what `@` completes from -- the same list
+    /// `tui-do add`'s prompt reads, so both offer the same names -- and what `@name`
+    /// resolves to an id against when a task is added.
+    pub users: Vec<User>,
     /// Per-project counts for the sidebar.
     pub counts: ProjectCounts,
     /// Whether a task query is in flight. Distinguishes "no tasks" from "not yet".

@@ -1,4 +1,5 @@
-//! `tui-do add` when the server refuses the task (BUG-35), and the limits it checks first.
+//! `tui-do add` against a server: what it sends, and what it says when the server
+//! refuses (BUG-34, BUG-35).
 //!
 //! The binary runs against a scratch config *and* a scratch store, both set, never one,
 //! and against a wiremock server on loopback, so nothing here can reach a real network.
@@ -7,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
-use tui_do_core::models::{Project, ProjectId};
+use tui_do_core::models::{Project, ProjectId, Task, TaskId, User, UserId};
 use tui_do_core::store::{TaskFilter, TaskSort};
 use tui_do_core::Store;
 use wiremock::matchers::{method, path};
@@ -39,6 +40,21 @@ async fn scratch(name: &str, url: &str) -> PathBuf {
         }])
         .await
         .unwrap();
+    // A task naming alice, which is how a user reaches the store: there is no user list.
+    store
+        .upsert_tasks(vec![Task {
+            id: TaskId(9),
+            project_id: ProjectId(1),
+            title: "seen before".to_string(),
+            assignees: vec![User {
+                id: UserId(3),
+                username: "alice".to_string(),
+                ..User::default()
+            }],
+            ..Task::default()
+        }])
+        .await
+        .unwrap();
     dir
 }
 
@@ -64,13 +80,16 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Tasks in the store other than the one `scratch` put there.
 async fn tasks_in(dir: &Path) -> usize {
     let store = Store::open(dir.join("tui-do.db")).await.unwrap();
     store
         .tasks(TaskFilter::default(), TaskSort::default())
         .await
         .unwrap()
-        .len()
+        .iter()
+        .filter(|task| task.id != TaskId(9))
+        .count()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -146,4 +165,46 @@ async fn a_line_past_the_servers_limits_is_refused_before_anything_is_queued() {
     }
     assert_eq!(tasks_in(&dir).await, 0);
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_named_user_is_sent_as_an_assignee() {
+    // BUG-34: the name left the title and the dry run promised it, and the body went
+    // out with no assignees.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/projects/1/tasks"))
+        .respond_with(json(
+            201,
+            r#"{"id":41,"project_id":1,"title":"Review the PR","assignees":[{"id":3,"username":"alice"}]}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = scratch("add-assignee", &server.uri()).await;
+
+    let dry = tui_do(
+        &dir,
+        &["add", "--dry-run", "Review the PR +Personal @alice @nobody"],
+    )
+    .await;
+    let said = text(&dry.stdout);
+    assert!(said.contains("No user called nobody"), "{said}");
+    assert!(said.contains("@alice"), "{said}");
+
+    let output = tui_do(&dir, &["add", "Review the PR +Personal @alice @nobody"]).await;
+    let out = text(&output.stdout);
+    assert!(output.status.success(), "{out}\n{}", text(&output.stderr));
+    assert!(out.contains("No user called nobody"), "{out}");
+
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|request| request.method.as_str() == "PUT")
+        .expect("the create was sent");
+    let body = String::from_utf8_lossy(&put.body);
+    assert!(
+        body.contains(r#""assignees":[{"id":3,"#),
+        "alice should be in the body by id, and nobody not at all: {body}"
+    );
 }

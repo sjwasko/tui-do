@@ -481,7 +481,7 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
             coalesce::coalesced(&tx.reads.users, tx, (), move |()| {
                 let (store, tx) = (store.clone(), answer.clone());
                 async move {
-                    let msg = match store.usernames().await {
+                    let msg = match store.users().await {
                         Ok(users) => Msg::UsersLoaded(users),
                         Err(error) => Msg::StoreFailed(error.to_string()),
                     };
@@ -1393,11 +1393,13 @@ pub async fn add(
         .labels(LabelFilter::default(), LabelSort::default())
         .await
         .unwrap_or_default();
+    let users = store.users().await.unwrap_or_default();
 
     let mut built = tui_do_ui::quickadd_task(
         &parsed,
         &projects,
         &labels,
+        &users,
         None,
         config.view.default_project.as_deref(),
     );
@@ -1420,6 +1422,7 @@ pub async fn add(
                     &parsed,
                     &projects,
                     &labels,
+                    &users,
                     None,
                     config.view.default_project.as_deref(),
                 );
@@ -1451,6 +1454,7 @@ pub async fn add(
         backdated: queued.backdated.as_deref(),
         created_labels: &queued.created_labels,
         unknown_labels: &queued.unknown_labels,
+        unknown_users: &queued.unknown_users,
         description: &description,
     };
     let mut lines = outcome.lines(Tense::Did).into_iter();
@@ -1599,10 +1603,12 @@ async fn rehearse(
         .labels(LabelFilter::default(), LabelSort::default())
         .await
         .unwrap_or_default();
+    let users = store.users().await.unwrap_or_default();
     let built = tui_do_ui::quickadd_task(
         parsed,
         &projects,
         &labels,
+        &users,
         None,
         config.view.default_project.as_deref(),
     )
@@ -1629,6 +1635,7 @@ async fn rehearse(
         backdated: backdated.as_deref(),
         created_labels: &created_labels,
         unknown_labels: &unknown_labels,
+        unknown_users: &built.unknown_users,
         description,
     };
     for line in outcome.lines(Tense::Would) {
@@ -1749,6 +1756,8 @@ struct Outcome<'a> {
     created_labels: &'a [String],
     /// Labels named that do not exist, and are left off.
     unknown_labels: &'a [String],
+    /// Users named that the store has never seen, and are left off (BUG-34).
+    unknown_users: &'a [String],
     /// The description, or `""`. Never printed whole: it is long by nature, so a real
     /// add reports its size, and a dry run its first line as well.
     description: &'a str,
@@ -1767,6 +1776,7 @@ impl Outcome<'_> {
             backdated,
             created_labels,
             unknown_labels,
+            unknown_users,
             description,
         } = self;
         let verb = match tense {
@@ -1841,6 +1851,21 @@ impl Outcome<'_> {
                 ),
             });
         }
+        if !unknown_users.is_empty() {
+            let one = unknown_users.len() == 1;
+            let left = match (tense, one) {
+                (Tense::Did, true) => "it was",
+                (Tense::Did, false) => "they were",
+                (Tense::Would, true) => "it would be",
+                (Tense::Would, false) => "they would be",
+            };
+            lines.push(format!(
+                "No {} called {} — {left} left off. tui-do can assign only users it has \
+                 seen on a task; `tui-do add --tokens` lists them.",
+                if one { "user" } else { "users" },
+                printable(&unknown_users.join(", "))
+            ));
+        }
         lines
     }
 }
@@ -1892,6 +1917,8 @@ struct Queued {
     /// Labels that were named and do not exist, and were left off because
     /// `--create-labels` was not passed.
     unknown_labels: Vec<String>,
+    /// Users named that the store has never seen, and were left off (BUG-34).
+    unknown_users: Vec<String>,
     /// Everything this add queued, so a refusal of it can be told from a refusal of an
     /// older entry the same push happened to send.
     subjects: Vec<Subject>,
@@ -1946,6 +1973,7 @@ async fn queue_add(
     let title = built.task.title.clone();
     let ambiguous_project = built.ambiguous_project;
     let unknown_labels = std::mem::take(&mut built.unknown_labels);
+    let unknown_users = std::mem::take(&mut built.unknown_users);
     // Read before the task is moved into the mutation. Same rule as the interface: a date
     // already gone by is allowed, never confirmed quietly.
     let backdated = tui_do_ui::past_due_note(built.task.due_date.get(), now());
@@ -1964,6 +1992,7 @@ async fn queue_add(
         backdated,
         created_labels,
         unknown_labels,
+        unknown_users,
         subjects,
     })
 }
@@ -2081,6 +2110,7 @@ mod tests {
                 ..tui_do_core::models::Task::default()
             },
             unknown_labels: vec!["brand-new".to_string()],
+            unknown_users: Vec::new(),
             ambiguous_project: false,
         };
         let mode = AddMode {
@@ -2137,6 +2167,7 @@ mod tests {
             backdated: Some("that date has passed"),
             created_labels: &created,
             unknown_labels: &unknown,
+            unknown_users: &[],
             description: "",
         };
         assert_eq!(
@@ -2178,6 +2209,7 @@ mod tests {
             backdated: None,
             created_labels: &[],
             unknown_labels: &[],
+            unknown_users: &[],
             description,
         };
         assert_eq!(
@@ -2698,7 +2730,7 @@ mod tests {
     fn build_task(text: &str) -> tui_do_ui::QuickAdd {
         let projects = [a_project(1, "Inbox")];
         let parsed = tui_do_core::quickadd::parse(text, &now());
-        tui_do_ui::quickadd_task(&parsed, &projects, &[], None, None)
+        tui_do_ui::quickadd_task(&parsed, &projects, &[], &[], None, None)
             .expect("the default project resolves")
     }
 

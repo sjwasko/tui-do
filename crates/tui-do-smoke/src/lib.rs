@@ -221,7 +221,7 @@ impl Harness {
                 vec![Msg::LabelsLoaded(labels)]
             }
             Effect::LoadUsers => {
-                let users = self.store.usernames().await.expect("read the usernames");
+                let users = self.store.users().await.expect("read the users");
                 vec![Msg::UsersLoaded(users)]
             }
             Effect::LoadCounts => {

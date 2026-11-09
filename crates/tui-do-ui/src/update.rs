@@ -7,7 +7,7 @@
 
 use chrono::{DateTime, Utc};
 use tui_do_core::config::{QuickAction, QuickActionKind};
-use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
+use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId, User};
 use tui_do_core::quickadd;
 use tui_do_core::store::{is_provisional_label, Mutation, ProjectCounts, Subject};
 use tui_do_core::sync::{Phase, Stage};
@@ -678,7 +678,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             let vocabulary = crate::assist::Vocabulary::new(
                 &model.data.projects,
                 &model.data.labels,
-                model.data.users.iter().cloned(),
+                model.data.users.iter().map(|user| user.username.clone()),
             );
             model
                 .modals
@@ -1188,6 +1188,11 @@ pub struct QuickAdd {
     /// interface stops and asks (see [`ConfirmLabelsState`]), since the pool is global to
     /// every project and a typo in a task line would pollute completion everywhere.
     pub unknown_labels: Vec<String>,
+    /// Users named that the store has never seen, and so cannot be assigned.
+    ///
+    /// Left off and said, never sent: the server assigns by id, and a name nothing here
+    /// can turn into one would otherwise vanish silently (BUG-34).
+    pub unknown_users: Vec<String>,
     /// More than one project answers to the name that was used.
     ///
     /// Not hypothetical: the dev instance has three projects called `Inbox` — a
@@ -1206,14 +1211,17 @@ pub fn quickadd_task(
     parsed: &quickadd::Parsed,
     projects: &[Project],
     labels: &[Label],
+    users: &[User],
     showing: Option<ProjectId>,
     configured: Option<&str>,
 ) -> Option<QuickAdd> {
     let project = project_for(projects, parsed.project.as_deref(), showing, configured)?;
     let (found, unknown_labels) = resolve_labels(labels, &parsed.labels);
+    let (assignees, unknown_users) = resolve_users(users, &parsed.assignees);
     Some(QuickAdd {
-        task: build_task(parsed, project, found),
+        task: build_task(parsed, project, found, assignees),
         unknown_labels,
+        unknown_users,
         ambiguous_project: parsed
             .project
             .as_deref()
@@ -1234,7 +1242,12 @@ fn matches_by_name<'a>(
 }
 
 /// The task itself, once the project and labels are settled.
-fn build_task(parsed: &quickadd::Parsed, project: ProjectId, labels: Vec<Label>) -> Task {
+fn build_task(
+    parsed: &quickadd::Parsed,
+    project: ProjectId,
+    labels: Vec<Label>,
+    assignees: Vec<User>,
+) -> Task {
     let mut task = Task {
         // Vikunja binds the path first and the body second, so a body that leaves this
         // at 0 makes the server look up project 0 and answer 404 about the project you
@@ -1246,6 +1259,10 @@ fn build_task(parsed: &quickadd::Parsed, project: ProjectId, labels: Vec<Label>)
         due_date: parsed.due_date.into(),
         start_date: parsed.start_date.into(),
         labels,
+        // In the body, which is how Vikunja takes them on a create: measured on dev
+        // 2026-11-09, a `PUT` carrying one assignee read back with it. Before BUG-34 the
+        // parsed names were dropped here and every `@user` assigned nobody.
+        assignees,
         ..Task::default()
     };
     if let Some(repeat) = parsed.repeat {
@@ -2021,6 +2038,7 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
         &parsed,
         &model.data.projects,
         &model.data.labels,
+        &model.data.users,
         showing,
         model.default_project.as_deref(),
     ) else {
@@ -2062,6 +2080,9 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
             "no label called {}",
             built.unknown_labels.join(", ")
         ));
+    }
+    if !built.unknown_users.is_empty() {
+        notes.push(format!("no user called {}", built.unknown_users.join(", ")));
     }
     if built.ambiguous_project {
         notes.push(format!("more than one project is called {project}"));
@@ -2182,6 +2203,35 @@ fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String
                     missing.push(name.clone());
                 }
             }
+        }
+    }
+    (found, missing)
+}
+
+/// The users `wanted` names, and the names nobody here answers to.
+///
+/// A username is matched exactly first and then ignoring case, so `@Ada` reaches `Ada`
+/// even when `ada` is also a user. Each user is assigned once however often named.
+fn resolve_users(known: &[User], wanted: &[String]) -> (Vec<User>, Vec<String>) {
+    let mut found: Vec<User> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for name in wanted {
+        let trimmed = name.trim();
+        let user = known
+            .iter()
+            .find(|user| user.username == trimmed)
+            .or_else(|| {
+                known
+                    .iter()
+                    .find(|user| user.username.eq_ignore_ascii_case(trimmed))
+            });
+        match user {
+            Some(user) if found.iter().any(|seen| seen.id == user.id) => {}
+            Some(user) => found.push(user.clone()),
+            None if missing
+                .iter()
+                .any(|seen| seen.eq_ignore_ascii_case(trimmed)) => {}
+            None => missing.push(name.clone()),
         }
     }
     (found, missing)

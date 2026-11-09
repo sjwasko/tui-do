@@ -753,7 +753,17 @@ fn the_add_prompt_completes_users_from_the_list_the_store_sent() {
     );
     update(
         &mut model,
-        Msg::UsersLoaded(vec!["ada".into(), "admin".into()]),
+        Msg::UsersLoaded(
+            ["ada", "admin"]
+                .into_iter()
+                .zip(1..)
+                .map(|(name, id)| tui_do_core::models::User {
+                    id: tui_do_core::models::UserId(id),
+                    username: name.to_string(),
+                    ..tui_do_core::models::User::default()
+                })
+                .collect(),
+        ),
     );
     let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
     press_all(&mut model, &chars("aShip it @adm"));

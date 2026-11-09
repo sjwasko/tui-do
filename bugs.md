@@ -47,7 +47,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
 | ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
 | ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
-| BUG-34 | `quick_add` of `x @alice` with alice known builds a task assigned to user 3; unknown, it builds none and reports it | yes |
+| ~~BUG-34~~ | FIXED — the interface's `a` assigns by id, exact case first, once each, and reports an unknown name; the binary sends `"assignees":[{"id":3,…` to wiremock; the store returns users with ids | yes |
 | ~~BUG-35~~ | FIXED — the binary against wiremock: a `412` exits 1 with the message and no `Sent.`, a `201` still says `Sent.`, and both limits refuse a dry run and a real add with no request made | yes |
 | BUG-33 | abort a push once a held mock has received the create, then push again: one `PUT` must reach the server, or the second must adopt | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
@@ -76,7 +76,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
-| **Found by the `tui-do add` smoke test** | **BUG-34** — open, Important: `@user` is parsed and never assigned. ~~BUG-35~~ — FIXED 2026-11-09: a create the server rejects exits 1 with its reason, and the title and repeat limits are checked before queuing. Six minor findings under Minor |
+| **Found by the `tui-do add` smoke test** | ~~BUG-34~~ — FIXED 2026-11-09: `@user` assigns by id, and an unknown name is reported. ~~BUG-35~~ — FIXED 2026-11-09: a create the server rejects exits 1 with its reason, and the title and repeat limits are checked before queuing. Six minor findings under Minor |
 | **Found fixing BUG-31** | **BUG-33** — open, Important: a create whose request reached the server before the process ended is sent again on the next launch, and makes a second task. The read-before-retry BUG-19 added only runs for an entry with a recorded failure, and a killed process records nothing |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
@@ -2291,10 +2291,20 @@ and push again. Today the second push sends a second `PUT` and nothing calls the
 the fix must send no second `PUT` and adopt the found task's id. A second case with no
 match on the server must still create, so the gate does not turn into "never retry".
 
-### BUG-34 — `@user` is parsed, promised and never assigned
+### ~~BUG-34~~ — FIXED 2026-11-09 — `@user` is parsed, promised and never assigned
 
 `crates/tui-do-ui/src/update.rs`: `build_task` (~1237). Found 2026-11-09 by the `tui-do add`
-smoke test (1,193 lines against dev); diagnosis only, nothing is fixed.
+smoke test (1,193 lines against dev).
+
+**Fixed.** `Store::users` returns the users the store has seen with their ids, the model
+holds them (`Msg::UsersLoaded(Vec<User>)`), and `quickadd_task` resolves each `@name`
+against them, exact case first and then ignoring case, each user once. `build_task` puts
+them in the body, which a create honours: measured on dev, a `PUT` with one assignee reads
+back with it, a non-member answers `403`/`7003` and an unknown id `404`/`1005`, both now
+reported by BUG-35's fix. A name the store has never seen is left off and said, by
+`tui-do add`, its dry run and the interface's toast. Re-run against dev: all 75 `@demo` lines
+assigned, all 27 `@nobody` lines reported. `tests/add_server.rs` checks the body the binary
+sends; it and the interface test fail with the assignees dropped again.
 
 `quickadd` reads `@demo`, takes it out of the title, and `--dry-run` reports it
 (`Parsed: title "smoke" · @demo`). Then `build_task` builds the `Task` from the title,

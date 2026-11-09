@@ -8,7 +8,7 @@
 use chrono::{TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_do_core::config::columns::ColumnLayout;
-use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId};
+use tui_do_core::models::{Label, LabelId, Project, ProjectId, Task, TaskId, User, UserId};
 use tui_do_core::store::{Mutation, ProjectCounts, QueueHealth, Subject, TaskCount, TaskOrder};
 use tui_do_core::sync::{Phase, PullReport, PushReport, Stage, SyncReport};
 use tui_do_core::{Config, SyncEvent};
@@ -686,6 +686,64 @@ fn quick_add_builds_the_task_the_syntax_describes() {
     // And it is on screen before the store has been told.
     assert_eq!(model.data.tasks.first().unwrap().title, "Call the VA");
     assert!(model.undo.len() == 1, "and it can be taken back");
+}
+
+fn user(id: i64, username: &str) -> User {
+    User {
+        id: UserId(id),
+        username: username.to_string(),
+        ..User::default()
+    }
+}
+
+#[test]
+fn quick_add_assigns_the_users_it_names() {
+    // BUG-34: `@user` was parsed and taken out of the title, then dropped, so every
+    // quick-added task was assigned to nobody.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::UsersLoaded(vec![user(3, "alice"), user(4, "Ada"), user(5, "ada")]),
+    );
+    press(&mut model, 'a');
+    for c in "Review the PR @alice @Ada @ALICE".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("a task was queued") {
+        Mutation::CreateTask { task } => {
+            assert_eq!(task.title, "Review the PR");
+            let ids: Vec<i64> = task.assignees.iter().map(|u| u.id.get()).collect();
+            // Exact case first, so `@Ada` is Ada and not ada; `@ALICE` is alice again,
+            // and assigned once.
+            assert_eq!(ids, vec![3, 4]);
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_user_nobody_has_seen_is_reported_rather_than_dropped() {
+    let mut model = loaded();
+    update(&mut model, Msg::UsersLoaded(vec![user(3, "alice")]));
+    press(&mut model, 'a');
+    for c in "Thing @alice @nobody".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the task was still created") {
+        Mutation::CreateTask { task } => {
+            assert_eq!(task.title, "Thing");
+            assert_eq!(task.assignees.len(), 1);
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(
+        toast.text.contains("no user called nobody"),
+        "{}",
+        toast.text
+    );
 }
 
 #[test]

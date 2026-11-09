@@ -5,7 +5,7 @@
 //! turns them into state changes and [`crate::Effect`]s. Nothing else crosses the line.
 
 use crossterm::event::KeyEvent;
-use tui_do_core::models::{Label, Project, Task, TaskId};
+use tui_do_core::models::{Label, Project, Task, TaskId, User};
 use tui_do_core::store::{ProjectCounts, QueueHealth};
 use tui_do_core::SyncEvent;
 use tui_do_core::ZonedTime;
@@ -43,8 +43,8 @@ pub enum Msg {
     /// The store answered with the label list.
     LabelsLoaded(Vec<Label>),
 
-    /// The store answered with the usernames it has seen.
-    UsersLoaded(Vec<String>),
+    /// The store answered with the users it has seen.
+    UsersLoaded(Vec<User>),
 
     /// The store answered with per-project task counts.
     CountsLoaded(ProjectCounts),

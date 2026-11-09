@@ -213,6 +213,38 @@ impl Store {
         .await
     }
 
+    /// Every user the store has seen, with the id an assignment needs, sorted by
+    /// username ignoring case.
+    ///
+    /// The same people as [`Self::usernames`]: there is no user list to pull, so this is
+    /// everyone who has created or been given a task this box knows. Quick-add resolves
+    /// `@name` against it, because the server assigns by id, not by name (BUG-34).
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn users(&self) -> Result<Vec<User>> {
+        self.read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, username, name FROM users WHERE username <> ''
+                  ORDER BY username COLLATE NOCASE, id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(User {
+                    id: tui_do_api::models::UserId(row.get(0)?),
+                    username: row.get(1)?,
+                    name: row.get(2)?,
+                    ..User::default()
+                })
+            })?;
+            let mut users = Vec::new();
+            for user in rows {
+                users.push(user?);
+            }
+            Ok(users)
+        })
+        .await
+    }
+
     /// Read one task, with its labels and assignees.
     ///
     /// # Errors
@@ -968,6 +1000,13 @@ mod tests {
         again.assignees = vec![assigned.assignees[0].clone()];
         store.upsert_tasks(vec![assigned, again]).await.unwrap();
         assert_eq!(store.usernames().await.unwrap(), vec!["Alice", "bob"]);
+        // The same people, carrying the ids an assignment needs (BUG-34).
+        let users = store.users().await.unwrap();
+        let pairs: Vec<(i64, &str)> = users
+            .iter()
+            .map(|user| (user.id.get(), user.username.as_str()))
+            .collect();
+        assert_eq!(pairs, vec![(2, "Alice"), (1, "bob")]);
     }
 
     #[tokio::test]
