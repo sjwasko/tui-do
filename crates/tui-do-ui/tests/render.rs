@@ -1175,3 +1175,131 @@ fn a_short_sidebar_draws_the_window_the_selection_is_in() {
     // seventeen, so the window has to have moved for this to be drawable at all.
     golden("120x12-sidebar-scrolled.txt", &draw(&model));
 }
+
+/// Draw, and say where the terminal's caret was left, if it was shown at all.
+fn draw_with_caret(model: &Model) -> (String, Option<(u16, u16)>) {
+    let (width, height) = model.size;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| view(model, frame)).unwrap();
+    let backend = terminal.backend();
+    let caret = backend.cursor_visible().then(|| {
+        let at = backend.cursor_position();
+        (at.x, at.y)
+    });
+    (draw(model), caret)
+}
+
+fn press(model: &mut Model, code: KeyCode) {
+    update(model, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+}
+
+/// The column, in cells, at which `needle` starts on `row`. Every glyph on these rows is
+/// one cell wide, so a count of chars is a count of cells.
+fn column_of(row: &str, needle: &str) -> Option<u16> {
+    let at = row.find(needle)?;
+    u16::try_from(row[..at].chars().count()).ok()
+}
+
+#[test]
+fn a_long_title_in_the_edit_form_scrolls_to_the_caret() {
+    // BUG-32, as the user reported it: `e` on a task whose title is longer than the field
+    // showed the start cut with `…`, and moving the caret right scrolled nothing.
+    let title = format!("BEGIN{}FINAL", "x".repeat(110));
+    assert_eq!(title.len(), 120);
+    let mut model = fixture((60, 24));
+    let id = model.query_id;
+    update(
+        &mut model,
+        Msg::TasksLoaded {
+            id,
+            tasks: vec![Task {
+                id: TaskId(21),
+                project_id: ProjectId(1),
+                title: title.clone(),
+                ..Task::default()
+            }],
+        },
+    );
+    press(&mut model, KeyCode::Char('e'));
+    let title_row = |drawn: &str| -> (usize, String) {
+        drawn
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("│ Title"))
+            .map(|(y, line)| (y, line.to_string()))
+            .expect("the title field is drawn")
+    };
+
+    // The field opens with the caret at the end, and End keeps it there.
+    press(&mut model, KeyCode::End);
+    let (drawn, caret) = draw_with_caret(&model);
+    let (y, row) = title_row(&drawn);
+    let field = &row[row.find("Title").unwrap()..];
+    assert!(field.contains("FINAL"), "the end is not visible:\n{drawn}");
+    assert!(!field.contains("BEGIN"), "{row}");
+    let after = column_of(&row, "FINAL").unwrap() + 5;
+    assert_eq!(
+        caret,
+        Some((after, u16::try_from(y).unwrap())),
+        "the caret sits after the last glyph:\n{drawn}"
+    );
+
+    // Home brings the start back, with the caret on its first glyph.
+    press(&mut model, KeyCode::Home);
+    let (drawn, caret) = draw_with_caret(&model);
+    let (y, row) = title_row(&drawn);
+    let field = &row[row.find("Title").unwrap()..];
+    assert!(
+        field.contains("BEGIN"),
+        "the start is not visible:\n{drawn}"
+    );
+    assert!(!field.contains("FINAL"), "{row}");
+    assert_eq!(
+        caret,
+        Some((column_of(&row, "BEGIN").unwrap(), u16::try_from(y).unwrap()))
+    );
+
+    // Right from the start walks the caret to the edge and then scrolls, never past it.
+    for _ in 0..title.len() {
+        press(&mut model, KeyCode::Right);
+        let (drawn, caret) = draw_with_caret(&model);
+        let (y, _) = title_row(&drawn);
+        let (x, caret_y) = caret.expect("the caret is always shown");
+        assert_eq!(usize::from(caret_y), y);
+        assert!(x < 60, "the caret left the screen:\n{drawn}");
+    }
+    let (drawn, _) = draw_with_caret(&model);
+    assert!(title_row(&drawn).1.contains("FINAL"), "{drawn}");
+}
+
+#[test]
+fn a_long_search_scrolls_to_the_caret() {
+    // BUG-32 on the status line: the whole query was drawn, cut at the count on the
+    // right, and a caret past that point was simply not placed.
+    let mut model = fixture((60, 24));
+    press(&mut model, KeyCode::Char('/'));
+    let query = format!("begin{}final", "q".repeat(70));
+    for c in query.chars() {
+        press(&mut model, KeyCode::Char(c));
+        // The caret must be on screen after every key, not only at the end.
+        let (_, caret) = draw_with_caret(&model);
+        assert!(caret.is_some(), "the caret vanished");
+    }
+    let (drawn, caret) = draw_with_caret(&model);
+    let status = drawn.lines().last().unwrap_or_default().to_string();
+    let y = u16::try_from(drawn.lines().count() - 1).unwrap();
+    assert!(status.starts_with("/…"), "{status}");
+    assert!(status.contains("final"), "the end is not visible: {status}");
+    assert!(status.contains("Esc:cancel"), "{status}");
+    assert_eq!(caret, Some((column_of(&status, "final").unwrap() + 5, y)));
+
+    press(&mut model, KeyCode::Home);
+    let (drawn, caret) = draw_with_caret(&model);
+    let status = drawn.lines().last().unwrap_or_default().to_string();
+    assert!(
+        status.starts_with("/begin"),
+        "the start is not visible: {status}"
+    );
+    assert!(!status.contains("final"), "{status}");
+    assert_eq!(caret, Some((1, y)));
+}

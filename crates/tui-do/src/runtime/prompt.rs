@@ -171,12 +171,15 @@ fn render(frame: &mut Frame<'_>, prompt: &Prompt) {
         height: 1,
     };
     let value = prompt.line.value();
+    // Windowed to the caret, so a line longer than the terminal scrolls (BUG-32).
+    let prefix = tui_do_ui::rows::display_width(prompt.prefix());
+    let field = prompt.line.input.window(area.width.saturating_sub(prefix));
 
     let shown = match &prompt.placeholder {
         Some(example) if value.is_empty() => {
             Span::styled(example.clone(), theme.muted().add_modifier(Modifier::DIM))
         }
-        _ => Span::styled(value.to_string(), theme.text()),
+        _ => Span::styled(field.text, theme.text()),
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -185,8 +188,7 @@ fn render(frame: &mut Frame<'_>, prompt: &Prompt) {
         ])),
         row(0),
     );
-    let prefix = tui_do_ui::rows::display_width(prompt.prefix());
-    let x = area.x + prefix + prompt.line.input.caret_column();
+    let x = area.x + prefix + field.caret_x;
     if x < area.right() {
         frame.set_cursor_position((x, area.y));
     }
@@ -369,6 +371,31 @@ mod tests {
             drive(events).0.unwrap(),
             Answer::Add("Fix the door +[Home Improvement] ".to_string())
         );
+    }
+
+    #[test]
+    fn a_line_longer_than_the_terminal_scrolls_to_the_caret() {
+        // BUG-32: the whole line was drawn and the caret dropped once it passed the edge.
+        let long = format!("BEGIN{}FINAL", "x".repeat(90));
+        let mut terminal = terminal();
+        let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None), false);
+        let _ = resume(&mut terminal, &mut prompt, typing(&long));
+        let drawn = screen(&terminal);
+        let (y, row) = drawn
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("FINAL"))
+            .unwrap_or_else(|| panic!("the end is not visible:\n{drawn}"));
+        assert!(!row.contains("BEGIN"), "{row}");
+        let after = row[..row.find("FINAL").unwrap()].chars().count() + 5;
+        let caret = terminal.backend().cursor_position();
+        assert!(terminal.backend().cursor_visible());
+        assert_eq!((usize::from(caret.x), usize::from(caret.y)), (after, y));
+
+        let _ = resume(&mut terminal, &mut prompt, vec![key(KeyCode::Home)]);
+        let drawn = screen(&terminal);
+        let row = drawn.lines().nth(y).unwrap();
+        assert!(row.contains("BEGIN") && !row.contains("FINAL"), "{row}");
     }
 
     #[test]

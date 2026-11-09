@@ -46,6 +46,7 @@ throughout, both learned the hard way in this pass:
 |---|---|---|
 | ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
 | ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
+| ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
 | ~~BUG-6~~ | FIXED — two table tests, both directions | yes |
@@ -69,6 +70,7 @@ throughout, both learned the hard way in this pass:
 | | |
 |---|---|
 | **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
+| **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~ and ~~BUG-22~~ are fixed. BUG-23 is partly fixed — the drain, the backlog at key-up and the quit wording — and what it leaves is filed as **BUG-28**: while a key is held the push still gets ~1.4 sends/s, because a task-list read is always running |
@@ -2025,6 +2027,69 @@ the terminal is gone, so writing escape sequences to it can fail and must not bl
 `script`), send SIGTERM, and assert the process exits within a bound and the pty's termios
 has `ECHO` and `ICANON` restored. The quit-on-signal wiring itself is a unit test on the
 runtime's event loop with an injected signal stream.
+
+### ~~BUG-32~~ — FIXED — a single-line field longer than its box cannot be scrolled
+
+Reported by the user in real use, 2026-11-08: pressing `e` on a task whose title is longer
+than the field showed the title cut with `…`, and moving the caret right did not scroll.
+What lay past the edge could be neither read nor edited where it was.
+
+**No single-line field scrolled.** Two shapes, eight sites, seven of them in
+`crates/tui-do-ui/src/view.rs`:
+
+- **Cut and clamped.** `edit_body` drew `rows::truncate(input.value(), width)` and put the
+  caret at `input.caret_column().min(width)`, so past the edge the caret sat on the `…`
+  and stayed there however far it moved. `label_edit_body` (the label rename form, `C-e`)
+  was the same code.
+- **Drawn whole, caret dropped.** `input_line` and `place_cursor` drew the whole value and
+  placed the caret only if it was left of the area's right edge. On the status line that
+  is the search `/`, the due prompt `D` and the quick-add prompt `a`, where `fit` cut the
+  value at the right-hand hints and a caret past them vanished. In a box it is the label
+  form's query and the fuzzy picker's query, where the value ran into the border. The
+  eighth is the interactive `tui-do add` line from item 12 (`runtime/prompt.rs` `render`),
+  which arrived while this was being fixed and had the same code.
+
+The priority field (`p`) draws `typed` the old way and was left alone: it only ever holds
+one digit. The description is multi-line and already windowed: `edit_layout` keeps the
+caret's row among the four it shows, and its column never passes the box.
+
+**The fix.** One pure helper, `rows::input_window(value, cursor, width)`, returns the text
+to draw and the caret's column. The whole value is shown when it fits. Otherwise a window
+is shown that always holds the caret, with a `…` on each side that hides text, the markers
+counted in the width. It goes per grapheme with `UnicodeWidthStr`, so a flag or a ZWJ
+sequence is never cut, and a wide glyph that does not fit at the right edge leaves its
+column blank rather than half drawn. Below about four columns there is no room for markers
+and the caret's glyph together, so the markers go.
+
+**The window is caret-anchored and stateless, by the user's choice, to keep Rule 1.** It
+starts at the beginning while the caret fits there, and otherwise ends at the caret, which
+sits on the last text column. It is worked out from the cursor alone on every frame. A
+stable window, one that holds still while the caret moves back through it, was built
+first. It needed the last start remembered, and since the width is known only while
+drawing, the view wrote it into a `Cell` in `TextInput`. Review flagged that as a view
+changing state, which Rule 1 gives to `update` alone, and the user chose the stateless
+window over it. The cost is that walking left from the end moves the text one column at a
+time instead of moving the caret. One rule keeps the jitter down: a scrolled window keeps
+the cell after the text for the caret, so the first step back from the end does not shift
+the text.
+
+All eight sites go through it, the three status-line prompts through one `prompt_line`
+helper. The task form and the label rename form use it for the focused field only; an
+unfocused one still shows its start, cut with `…`.
+
+**Tests.** Nine table tests in `rows.rs` (`input_window_tests`): a value that fits,
+including one exactly as wide as the field; the caret at the end, start and middle of a
+120-character value; the caret walked across it, and the step back from the end; typing at
+the end; a CJK value at every width from 0 to 12 and every caret position; a flag and a ZWJ
+family at the edge, at every width and caret; and widths 0 to 3. Every case asserts the
+shown width is within the field, the caret is inside the window on the cell its offset
+says, both cuts fall on grapheme boundaries, and the markers match what is hidden. Two
+render tests in `tests/render.rs` drive it through `update` and a `TestBackend`: `e` on a
+120-character title in a 60-column terminal, End, Home and a full walk right, and a long `/`
+query with the caret checked after every key. A third, in `runtime/prompt.rs`, types a
+100-character line into the 70-column `tui-do add` prompt and checks End and Home. All
+three failed on the old code: the title test and the add test could not see the end of the
+line, and the search test lost the caret.
 
 ## Minor
 
