@@ -4,6 +4,7 @@
 // output, and fatal errors printed after the terminal has been restored.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
@@ -315,12 +316,46 @@ fn config_problem(path: &Path) -> String {
 fn start(cli: Cli) -> anyhow::Result<()> {
     let path = Config::resolve_path(cli.config.as_deref())?;
     let config = Config::load(&path).with_context(|| config_problem(&path))?;
+    // After the config, so a first run without one is still told how to write one,
+    // whatever it is attached to. Before the store, the runtime and the terminal, so a
+    // refusal leaves nothing behind.
+    interactive(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    )
+    .map_err(anyhow::Error::msg)?;
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("could not start the async runtime")?
         .block_on(runtime::run(config, path))
+}
+
+/// A refusal to start without a terminal: what is missing, then what to do instead.
+macro_rules! no_terminal {
+    ($what:literal) => {
+        concat!(
+            $what,
+            ", and the interface needs one to read keys from and draw on. ",
+            "To add a task from a script, use `tui-do add` (see `tui-do add --help`)."
+        )
+    };
+}
+
+/// Whether the interface can start, given which of stdin and stdout are terminals.
+///
+/// Both have to be. Raw mode and the alternate screen only need stdout, so with stdin
+/// redirected the interface used to come up anyway and wait for a key that could never
+/// arrive -- and raw mode turns Ctrl-C into a byte, so nothing but a `kill` from another
+/// terminal ended it (BUG-25). A stdout that is not a terminal has nowhere to draw.
+fn interactive(stdin_tty: bool, stdout_tty: bool) -> Result<(), &'static str> {
+    match (stdin_tty, stdout_tty) {
+        (true, true) => Ok(()),
+        (false, true) => Err(no_terminal!("stdin is not a terminal")),
+        (true, false) => Err(no_terminal!("stdout is not a terminal")),
+        (false, false) => Err(no_terminal!("neither stdin nor stdout is a terminal")),
+    }
 }
 
 /// Write a completion script for `shell` to stdout.
@@ -504,6 +539,20 @@ mod tests {
         // `--config` legitimately takes a path; nothing else in the arm may.
         let paths = arm.matches("compgen -f").count();
         assert_eq!(paths, 1, "only --config completes a path:\n{arm}");
+    }
+
+    #[test]
+    fn the_interface_starts_only_with_a_terminal_at_both_ends() {
+        assert_eq!(interactive(true, true), Ok(()));
+        for (stdin, stdout, named) in [
+            (false, true, "stdin is not a terminal"),
+            (true, false, "stdout is not a terminal"),
+            (false, false, "neither stdin nor stdout is a terminal"),
+        ] {
+            let why = interactive(stdin, stdout).expect_err("no terminal, no interface");
+            assert!(why.starts_with(named), "{stdin}/{stdout} said: {why}");
+            assert!(why.contains("`tui-do add`"), "no pointer to add: {why}");
+        }
     }
 
     fn scratch(name: &str) -> PathBuf {

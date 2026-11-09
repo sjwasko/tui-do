@@ -137,9 +137,9 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     // The terminal goes back to the user before anything is printed to it. After a
     // panic the hook has done this already, and the drop is a no-op.
     drop(guard);
-    // A panicked task ends the session here too, rather than in the panic hook, so the
-    // last push still gets its chance: the edit made before the panic is usually the one
-    // the user most wants to have landed.
+    // A panicked task or lost input ends the session here too, rather than in the panic
+    // hook or the input thread, so the last push still gets its chance: the edit made
+    // just before is usually the one the user most wants to have landed.
     if let Some(sync) = &sync {
         flush_on_exit(&store, sync).await;
     }
@@ -147,9 +147,7 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         Exit::Quit => Ok(()),
         // Returned rather than printed, so `main` reports it on stderr and exits
         // non-zero, the way every other failure to keep running does.
-        Exit::Fatal(why) => Err(anyhow::anyhow!(
-            "tui-do stopped because a background task panicked: {why}"
-        )),
+        Exit::Fatal(why) => Err(anyhow::anyhow!("tui-do stopped because {why}")),
     }
 }
 
@@ -158,14 +156,33 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
 enum Exit {
     /// The user quit, or every sender went away.
     Quit,
-    /// A spawned task panicked. Carries what it said.
-    Fatal(String),
+    /// Something happened that the session cannot carry on from.
+    Fatal(Fatal),
+}
+
+/// Why the session cannot carry on.
+#[derive(Debug, PartialEq, Eq)]
+enum Fatal {
+    /// A spawned task or thread panicked. Carries what it said.
+    Panicked(String),
+    /// The terminal stopped delivering input. Carries the error it gave. An interface
+    /// that cannot be typed at cannot be quit either, so this ends it.
+    InputLost(String),
+}
+
+impl std::fmt::Display for Fatal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Panicked(why) => write!(f, "a background task panicked: {why}"),
+            Self::InputLost(why) => write!(f, "input from the terminal was lost: {why}"),
+        }
+    }
 }
 
 /// How anything off the render loop talks back to it: a [`Msg`] for `update`, or the
-/// news that a task panicked.
+/// news that the session has to end.
 ///
-/// The panic goes on its own channel rather than as a `Msg` variant. `Msg` belongs to
+/// The fatal side goes on its own channel rather than as a `Msg` variant. `Msg` belongs to
 /// `tui-do-ui`, which is pure, and there is nothing for `update` to decide here: the
 /// process is no longer in a state anyone can reason about, the panic hook has already
 /// handed the terminal back, and the only correct answer is to stop -- which is the
@@ -174,13 +191,13 @@ enum Exit {
 #[derive(Debug, Clone)]
 struct LoopTx {
     msg: UnboundedSender<Msg>,
-    fatal: UnboundedSender<String>,
+    fatal: UnboundedSender<Fatal>,
 }
 
 /// The loop's end of [`LoopTx`].
 struct LoopRx {
     msg: UnboundedReceiver<Msg>,
-    fatal: UnboundedReceiver<String>,
+    fatal: UnboundedReceiver<Fatal>,
 }
 
 impl LoopTx {
@@ -201,6 +218,12 @@ impl LoopTx {
         self.msg.send(msg)
     }
 
+    /// Tell the loop the session has to end. A loop that has already gone has nothing
+    /// left to stop, so a failed send is dropped.
+    fn fatal(&self, why: Fatal) {
+        let _ = self.fatal.send(why);
+    }
+
     /// Run `work`, and if it panics, tell the loop to stop and answer `None`.
     ///
     /// The one place a panic is caught. `AssertUnwindSafe` is sound because nothing that
@@ -211,8 +234,7 @@ impl LoopTx {
         match std::panic::catch_unwind(AssertUnwindSafe(work)) {
             Ok(value) => Some(value),
             Err(payload) => {
-                // A loop that has already gone has nothing left to stop.
-                let _ = self.fatal.send(describe_panic(payload.as_ref()));
+                self.fatal(Fatal::Panicked(describe_panic(payload.as_ref())));
                 None
             }
         }
@@ -847,31 +869,46 @@ fn longer_project(projects: &[tui_do_core::models::Project], name: &str) -> Opti
 ///
 /// A panic on a plain thread is as silent as one in a task: the thread ends, the hook
 /// restores the terminal, and the interface carries on with no keyboard, so `q` can no
-/// longer reach it. So this thread reports its panic the way a task does.
+/// longer reach it. So this thread reports its panic the way a task does, and a terminal
+/// that stops answering ends the session through the same exit.
 fn spawn_input(tx: LoopTx, stop: Arc<AtomicBool>) {
-    std::thread::spawn(move || tx.guarded(|| read_input(&tx, &stop)));
+    std::thread::spawn(move || tx.guarded(|| read_input(&tx, &stop, next_event)));
+}
+
+/// The next terminal event, or `None` if none arrived within `timeout`.
+fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
+    if crossterm::event::poll(timeout)? {
+        crossterm::event::read().map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 /// The input thread's body: forward keys and resizes until told to stop.
-fn read_input(tx: &LoopTx, stop: &AtomicBool) {
+///
+/// `events` is [`next_event`] everywhere but the tests. crossterm's reader is global and
+/// reads the process's real terminal, so without it the error path could only be reached
+/// by breaking the terminal under the test runner.
+fn read_input(
+    tx: &LoopTx,
+    stop: &AtomicBool,
+    mut events: impl FnMut(Duration) -> io::Result<Option<crossterm::event::Event>>,
+) {
     while !stop.load(Ordering::SeqCst) {
-        match crossterm::event::poll(INPUT_POLL) {
-            Ok(true) => match crossterm::event::read() {
-                Ok(crossterm::event::Event::Key(key)) => {
-                    if tx.send(Msg::Key(key)).is_err() {
-                        return;
-                    }
-                }
-                Ok(crossterm::event::Event::Resize(width, height)) => {
-                    if tx.send(Msg::Resize(width, height)).is_err() {
-                        return;
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => return,
-            },
-            Ok(false) => {}
-            Err(_) => return,
+        let msg = match events(INPUT_POLL) {
+            Ok(Some(crossterm::event::Event::Key(key))) => Msg::Key(key),
+            Ok(Some(crossterm::event::Event::Resize(width, height))) => Msg::Resize(width, height),
+            Ok(_) => continue,
+            // Returning quietly here was BUG-25: input gone for good, and the interface
+            // drawing on with no way to quit it.
+            Err(error) => {
+                tx.fatal(Fatal::InputLost(error.to_string()));
+                return;
+            }
+        };
+        // The loop has gone, so there is nobody left to type at.
+        if tx.send(msg).is_err() {
+            return;
         }
     }
 }
@@ -1512,7 +1549,7 @@ mod tests {
             .await
             .expect("a panicking task must report something")
             .expect("the fatal channel is still open");
-        assert_eq!(why, "an effect fell over: 7");
+        assert_eq!(why, Fatal::Panicked("an effect fell over: 7".to_string()));
 
         // A literal payload, from the blocking side.
         spawn_blocking_effect(tx, || panic!("blocking work fell over"));
@@ -1520,7 +1557,7 @@ mod tests {
             .await
             .expect("a panicking blocking task must report something")
             .expect("the fatal channel is still open");
-        assert_eq!(why, "blocking work fell over");
+        assert_eq!(why, Fatal::Panicked("blocking work fell over".to_string()));
     }
 
     #[tokio::test]
@@ -1573,7 +1610,10 @@ mod tests {
         .expect("the loop kept running after a task panicked")
         .unwrap();
 
-        assert_eq!(exit, Exit::Fatal("the sync pass fell over".to_string()));
+        assert_eq!(
+            exit,
+            Exit::Fatal(Fatal::Panicked("the sync pass fell over".to_string()))
+        );
         let blank = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 5));
         assert_eq!(
             guard.backend().buffer(),
@@ -1584,6 +1624,76 @@ mod tests {
             model.running,
             "the loop left on the fatal report, not because update was told to quit"
         );
+    }
+
+    /// BUG-25's second half: a failed read used to end the input thread with a bare
+    /// `return`, telling nobody, and the loop went on drawing on ticks for an interface
+    /// nobody could type at or quit. It must end the session the way a panic does.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn an_input_error_ends_the_loop_through_the_normal_exit() {
+        let _terminal = terminal::lock_for_test();
+        let store = scratch_store();
+        let config = Config::example();
+        let mut model = Model::new(&config, tui_do_ui::Scope::All, now(), (120, 40));
+        let (tx, rx) = LoopTx::channel();
+        let mut guard = TerminalGuard::over(TestBackend::new(40, 5)).unwrap();
+
+        // One key, then the terminal fails. The key still arrives, and the reader stops
+        // asking: a second call would mean it went round again on a dead terminal.
+        let mut calls = 0;
+        let stop = AtomicBool::new(false);
+        read_input(&tx, &stop, |_| {
+            calls += 1;
+            match calls {
+                1 => Ok(Some(crossterm::event::Event::Key(
+                    crossterm::event::KeyCode::Down.into(),
+                ))),
+                2 => Err(io::Error::other("the tty went away")),
+                _ => panic!("read again after the terminal failed"),
+            }
+        });
+        // A tick the loop would otherwise go on drawing for.
+        tx.send(Msg::Tick(now())).unwrap();
+
+        let exit = tokio::time::timeout(
+            REPORTED_WITHIN,
+            event_loop(&mut model, &mut guard, &tx, rx, &store, None),
+        )
+        .await
+        .expect("the loop kept running after input was lost")
+        .unwrap();
+
+        let lost = Fatal::InputLost("the tty went away".to_string());
+        assert_eq!(
+            lost.to_string(),
+            "input from the terminal was lost: the tty went away"
+        );
+        assert_eq!(exit, Exit::Fatal(lost));
+        assert!(model.running, "the loop left on the fatal report");
+    }
+
+    #[test]
+    fn a_closed_loop_ends_the_input_thread_quietly() {
+        // Nobody left to send to is not a failure worth reporting -- the session is
+        // already over.
+        // On its own thread, so a reader that ignored the failed send fails this test
+        // rather than hanging the run.
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (tx, rx) = LoopTx::channel();
+            drop(rx);
+            let stop = AtomicBool::new(false);
+            read_input(&tx, &stop, |_| {
+                Ok(Some(crossterm::event::Event::Key(
+                    crossterm::event::KeyCode::Down.into(),
+                )))
+            });
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(REPORTED_WITHIN)
+            .expect("the input thread kept reading after the loop had gone");
     }
 
     /// A push that panics unwinds through `Pushing`'s `Drop`, so `is_pushing` reads false
