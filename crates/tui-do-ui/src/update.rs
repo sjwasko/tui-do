@@ -1894,10 +1894,11 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // Read before `after` is moved into the mutation. Only when the form *moved* the
     // date: a task that was already overdue and had some other field edited is not
     // something the user just backdated, and warning on every save would train them to
-    // ignore the warning that matters.
-    // By day, not by instant: the field shows a date and the parser gives it a time, so
-    // retyping the same day moves 09:00 to 23:59 and an instant comparison would call
-    // that a backdate.
+    // ignore the warning that matters. An untouched Due field keeps the instant, so it
+    // can never trip this.
+    // By day, not by instant, for a retyped field: `2027-03-10` typed over
+    // `2027-03-10 at 09:00` moves 09:00 to 23:59 on the same day, which is a change of
+    // time and not a backdate.
     // In the user's zone before asking what day it is, the same as
     // [`crate::rows::relative_date`]. "The day changed" is a claim about the calendar the
     // user is living in: for a reader at UTC+10, moving a due date from the 27th to the
