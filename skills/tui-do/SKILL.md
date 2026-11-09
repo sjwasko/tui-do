@@ -29,10 +29,12 @@ is a second writer with none of that.
 
 ## The tokens
 
-Tokens may appear anywhere in the line. Every token but a date is removed from the title. A
-date is always read, but removed only when nothing but punctuation and other tokens follow
-it: `call mom tomorrow` is titled `call mom`, `tomorrow buy milk` keeps its title and is
-still due tomorrow. So put the date last when it should not be part of the title.
+Tokens may appear anywhere in the line. Labels, projects, users, priorities and repeats
+leave the title wherever they are. A date is always read, but leaves the title only when
+nothing follows it except whitespace, punctuation and other tokens; anywhere else it stays
+exactly as typed. So `call mom tomorrow` is titled `call mom`, while `tomorrow buy milk`
+keeps its title and is still due tomorrow: put the date last when it should not be part of
+the title.
 
 | token | meaning |
 |---|---|

@@ -10,8 +10,10 @@
 //! phrases (`due friday`, `start monday`, `in 3 days`, `eom`); `every N units` repeats.
 //! Values with spaces are quoted or bracketed: `*"needs review"`, `+[Home Renovation]`.
 //!
-//! Every token leaves the title except a date with something after it: a date is always
-//! read, but cut from the title only at the end of the line (see `ends_the_line`).
+//! Tokens may appear anywhere in the line. Labels, projects, users, priorities and repeats
+//! leave the title wherever they are. A date is always read, but leaves the title only
+//! when nothing follows it except whitespace, punctuation and other tokens; anywhere else
+//! it stays exactly as typed. The rule is `ends_the_line`.
 //!
 //! Written against Vikunja's documented syntax rather than ported from cria, whose
 //! version has three problems worth not reproducing: it prints debug output on `stdout`
@@ -182,8 +184,8 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
         remaining.retain(|w| !used.contains(&w.range.start));
     }
 
-    let found = dates::find(&remaining, now, dates::Keyword::Absent);
-    for date in &found {
+    let dates = dates::find(&remaining, now, dates::Keyword::Absent);
+    for date in &dates {
         match date.field {
             DateField::Due => parsed.due_date = Some(date.at),
             DateField::Start => parsed.start_date = Some(date.at),
@@ -199,7 +201,7 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
 
     // A date leaves the title only from the end (BUG-29). Judged last to first, so that
     // of two dates at the end, the later one being removed lets the earlier one go too.
-    for date in found.iter().rev() {
+    for date in dates.iter().rev() {
         if ends_the_line(input, date.range.end, &consumed) {
             consumed.push(date.range.clone());
         }
@@ -215,8 +217,8 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
 ///
 /// What may follow: whitespace, punctuation, and text inside `removed` -- the tokens that
 /// leave the title wherever they are (`*label`, `+project`, `@user`, `!N`, a repeat) and
-/// any later date that already qualified. A letter or a digit anywhere else means the date
-/// is part of a sentence, and it stays in the title exactly as typed, keyword and all:
+/// any later date that already qualified. Anything else -- a letter, a digit, an emoji --
+/// means the date is part of a sentence, and it stays in the title exactly as typed, keyword and all:
 /// cutting it out of the middle left `goto the Azores on Is that the date?` (BUG-29).
 ///
 /// Only what *follows* is looked at. Punctuation the date's own last word carries
@@ -231,6 +233,9 @@ fn ends_the_line(input: &str, from: usize, removed: &[Range<usize>]) -> bool {
 
 /// Punctuation that can end a line without being something the user meant to keep a date
 /// in front of.
+///
+/// Beyond ASCII: closing quotes, an ellipsis and dashes, which end a phrase. Opening marks
+/// (`“`, `«`, `¿`) are deliberately not, since they start text that follows.
 fn is_trailing(ch: char) -> bool {
     ch.is_ascii_punctuation() || matches!(ch, '…' | '–' | '—' | '’' | '”' | '»')
 }
@@ -730,10 +735,28 @@ mod tests {
         assert_eq!(parsed.title, "water plants");
         assert_eq!(local(parsed.due_date), "2026-08-27 23:59");
 
-        // A word that is not a token does count, even one that only looks like one.
-        let parsed = p("fix it tomorrow !9");
-        assert_eq!(parsed.title, "fix it tomorrow !9");
-        assert_eq!(local(parsed.due_date), "2026-08-27 23:59");
+        // A quoted or bracketed project is one removed token, spaces and all.
+        for input in [
+            r#"pay rent due friday +"Home Improvement""#,
+            "pay rent due friday +[Home Improvement]",
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, "pay rent", "{input:?}");
+            assert_eq!(local(parsed.due_date), "2026-08-28 23:59", "{input:?}");
+            assert_eq!(
+                parsed.project.as_deref(),
+                Some("Home Improvement"),
+                "{input:?}"
+            );
+        }
+
+        // A word that is not a token does count, even one that only looks like one, and
+        // so does a non-ASCII letter or an emoji: those are text, not punctuation.
+        for input in ["fix it tomorrow !9", "tomorrow café", "tomorrow 🎉"] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, input, "{input:?}");
+            assert_eq!(local(parsed.due_date), "2026-08-27 23:59", "{input:?}");
+        }
     }
 
     #[test]

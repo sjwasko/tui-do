@@ -1901,12 +1901,20 @@ tomorrow !9` keeps `tomorrow`, since `!9` is not a priority and stays in the tit
   there and the user can see it was read.
 - Fields that hold only a date (`parse_due`: the edit form's Due, the `d` prompt) do not
   go through this and are unchanged.
+- **Emoji count as text.** Only whitespace and the punctuation above may follow, so
+  `tomorrow 🎉` keeps the date in the title, as `tomorrow café` does.
+
+**Known limitation, accepted.** Text *before* a stripped date is never touched, so
+`see you on March 10, 2027.` becomes `see you on`. Dropping a trailing preposition
+automatically would break titles where it is part of the phrase, such as
+`turn the heating on tomorrow`, which would become `turn the heating`.
 
 **Tests.** `a_date_mid_sentence_stays_in_the_title` (the user's sentence, `tomorrow buy
 milk`, `meet on aug 27 at the cafe`, `Call Bob due tomorrow about the invoice`) and
 `two_dates_are_each_judged_by_what_follows_them` failed on the old code;
-`a_date_at_the_end_still_comes_out` failed on its `!9` row and passed the rest, which pin
-what must not change. `the_add_prompt_still_shows_a_date_kept_in_the_title` in
+`a_date_at_the_end_still_comes_out` failed on its `!9`, `café` and `🎉` rows and passed
+the rest, which pin what must not change, including a quoted and a bracketed project
+after the date (`+"Home Improvement"`, `+[Home Improvement]`). `the_add_prompt_still_shows_a_date_kept_in_the_title` in
 `tui-do-ui/tests/render.rs` guards the summary. Two older tests relied on mid-line
 stripping and were changed: `dates_come_out_of_the_title` is now
 `a_date_at_the_end_comes_out_of_the_title` with the date moved to the end, and
