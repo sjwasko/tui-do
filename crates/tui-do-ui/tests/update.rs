@@ -4997,3 +4997,43 @@ fn a_due_time_that_is_not_the_default_is_shown_in_the_form() {
     let state = open_edit(&mut model);
     assert_eq!(state.due.value(), "2027-03-10 at 14:00");
 }
+
+/// `hour:minute` on `day` November 2026, at `hours` behind UTC.
+fn pinned_at(hours: i32, day: u32, hour: u32, minute: u32) -> tui_do_core::ZonedTime {
+    tui_do_core::zone::pinned(
+        chrono::FixedOffset::west_opt(hours * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 11, day, hour, minute, 0)
+            .unwrap(),
+    )
+}
+
+#[test]
+fn a_tick_while_the_edit_form_is_open_leaves_the_due_date_alone() {
+    // The prefill is text made from the clock at opening; the save must not re-read it
+    // against a later clock. Across midnight, and across an offset change, both.
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    for later in [pinned_at(5, 9, 0, 10), pinned_at(4, 9, 1, 10)] {
+        let mut model = due_in_new_york(due);
+        model.now = pinned_at(5, 8, 23, 50);
+        let state = open_edit(&mut model);
+        type_into(state, " renamed");
+        update(&mut model, Msg::Tick(later));
+        let (_, after) = the_update(&save(&mut model));
+        assert_eq!(after.due_date.get(), Some(due), "after a tick to {later}");
+    }
+}
+
+#[test]
+fn a_tick_while_the_due_prompt_is_open_leaves_the_due_date_alone() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    for later in [pinned_at(5, 9, 0, 10), pinned_at(4, 9, 1, 10)] {
+        let mut model = due_in_new_york(due);
+        model.now = pinned_at(5, 8, 23, 50);
+        press_code(&mut model, KeyCode::Char('D'));
+        update(&mut model, Msg::Tick(later));
+        let effects = press_code(&mut model, KeyCode::Enter);
+        assert!(applied(&effects).is_none(), "after a tick to {later}");
+        assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
+    }
+}
