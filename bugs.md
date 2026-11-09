@@ -47,6 +47,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-1~~ | FIXED — three tests, none ignored | yes |
 | ~~BUG-30~~ | FIXED — eleven `update` tests pinned at -05:00, the user's case failing on the old code with the reported `2027-03-12T04:59Z` | yes |
 | ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
+| BUG-33 | abort a push once a held mock has received the create, then push again: one `PUT` must reach the server, or the second must adopt | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
@@ -73,6 +74,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-30~~ — FIXED 2026-11-08, Critical: saving the edit form moved a due date a day later. Tasks edited with `e` or `D` since 2026-08-25 may have drifted, and nothing on the server records which |
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
+| **Found fixing BUG-31** | **BUG-33** — open, Important: a create whose request reached the server before the process ended is sent again on the next launch, and makes a second task. The read-before-retry BUG-19 added only runs for an entry with a recorded failure, and a killed process records nothing |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read. Fixed against the ~30 sends/s threshold decided when BUG-28 was filed: a held key still costs the push most of its throughput, now 97-182/s against 624/s idle |
@@ -92,14 +94,14 @@ the code. Neither is a decision waiting to be taken; they are work waiting to be
 | area | Critical | Important | Minor |
 |---|---|---|---|
 | UI state machine | **1** | 2 → 1 | 2 |
-| Sync engine | 0 | 5 | 7 → 5 |
+| Sync engine | 0 | 6 | 7 → 5 |
 | Outbox and schema | 0 | 2 → 1 | 0 |
 | Rendering | 0 | 3 → 1 | 2 |
 | Runtime and CLI | 0 | 6 → 3 | 3 |
 | API client | 0 | 1 → 0 | 1 |
-| **found** | **1** | **19** | **15** |
+| **found** | **1** | **20** | **15** |
 | **fixed** | **1** | **10** | **2** |
-| **open** | **0** | **9** | **13** |
+| **open** | **0** | **10** | **13** |
 
 Plus two of the four structural items, leaving three.
 
@@ -2219,6 +2221,72 @@ query with the caret checked after every key. A third, in `runtime/prompt.rs`, t
 100-character line into the 70-column `tui-do add` prompt and checks End and Home. All
 three failed on the old code: the title test and the add test could not see the end of the
 line, and the search test lost the caret.
+
+### BUG-33 — a create cut off mid-request is sent again on the next launch, and can make a second task
+
+`crates/tui-do-core/src/sync/mod.rs`: `Sync::create_or_adopt` (~812) and its gate,
+`OutboxEntry::is_failing` in `store/outbox.rs` (~496). The `CreateLabel` arm (~889) has the
+same gate.
+
+Found 2026-11-08 reviewing the BUG-31 fix. Diagnosis only; nothing here is fixed.
+
+**The mechanism.** Vikunja has no idempotency key, and `PUT /projects/{id}/tasks` answers
+`201` and a second task to a body it has already seen. Since BUG-19, a `CreateTask` reads
+before it writes: `create_or_adopt` asks `GET /tasks?s=<title>` and adopts an exact match in
+the same project that the local store has never heard of. That is the same defence
+`CreateLabel` has (CLAUDE.md, "A `CreateLabel` that has already failed reads before it
+writes"). **But both are gated on `entry.is_failing()`, which is `attempts > 0`**, and
+`attempts` only goes up when a failure is *recorded* (`outbox.rs` ~1135, after the request
+has answered or timed out). A process that ends mid-request records nothing. On the next
+launch the entry still has `attempts = 0`, looks exactly like a create that was never
+tried, skips the read, and creates the task a second time.
+
+The comment on `Sync::pushing` (~323) still says "`CreateTask` has no read-before-retry the
+way `CreateLabel` does". That was true before BUG-19 and is stale now. What is missing is
+not the read; it is the record that the request may have gone out.
+
+**What reaches it.** Anything that ends the process between the request leaving and its
+answer being stored:
+
+- `kill -9`, an OOM kill, or anything else that cannot be caught;
+- power loss or a kernel panic mid-push;
+- BUG-31's second signal during `flush_on_exit` (or one signal during the flush after `q`),
+  which the fix deliberately lets end the process at once;
+- a signal during `tui-do add`'s own push after its inline prompt has returned, where the
+  listener exits on the spot; and `tui-do add 'text'`, which installs no handler, so any
+  SIGTERM or SIGHUP during its push.
+
+The window is one round trip, so the usual cause is a slow or stalled server. BUG-3 and
+BUG-19 were both reproduced that way, with dev's container paused. Labels have the same
+gap: a `CreateLabel` cut off the same way comes back with `attempts = 0` and makes a second
+label.
+
+**The fix space, not yet decided.** Make "may have been sent" a fact the store holds before
+the request goes out, not one inferred afterwards from a failure:
+
+1. Before sending a create, mark its entry **sent, unconfirmed** in the same store (a new
+   column, or `attempts` bumped before the request instead of after the failure; the
+   column is cleaner, because `attempts` also drives the backoff and the status line's
+   failing count).
+2. Gate `create_or_adopt`, and the `CreateLabel` read, on that mark as well as on
+   `is_failing()`. The adoption's three checks already rule out stealing another task:
+   exact title, same project, and no local row. A **created window** could be added as a
+   fourth, matching only tasks the server created after the mark was set (with the same
+   two-minute allowance `LAST_PULL` uses for clock skew), which narrows the case of another
+   box creating the same title at the same moment.
+3. Clear the mark when the answer is stored.
+
+The cost is one store write per create before every send, and a search request on the
+first retry of anything that was cut off. Neither is on the render thread.
+
+**Suggested test, deterministic.** In `tui-do-core`'s sync tests, against wiremock: queue a
+`CreateTask`; mount `PUT /projects/1/tasks` with a long delay; start `push` and wait until
+`received_requests()` shows the `PUT` (the request has reached the server); then drop the
+push future, which is what a kill leaves behind in the store. Mount a second answer, a
+`201`, plus `GET /tasks` with `s=<title>` returning the task the first request "created",
+and push again. Today the second push sends a second `PUT` and nothing calls the search;
+the fix must send no second `PUT` and adopt the found task's id. A second case with no
+match on the server must still create, so the gate does not turn into "never retry".
 
 ## Minor
 
