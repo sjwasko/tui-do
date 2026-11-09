@@ -34,6 +34,9 @@ pub enum Effect {
     /// Read the label list.
     LoadLabels,
 
+    /// Read the usernames the store has seen, for `@` completion in the add prompt.
+    LoadUsers,
+
     /// Read per-project task counts for the sidebar.
     LoadCounts,
 

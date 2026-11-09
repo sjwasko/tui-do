@@ -84,6 +84,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             effects
         }
         Msg::LabelsLoaded(labels) => absorb_labels(model, labels),
+        Msg::UsersLoaded(users) => {
+            model.data.users = users;
+            Vec::new()
+        }
         Msg::CountsLoaded(counts) => {
             model.data.counts = counts;
             Vec::new()
@@ -664,16 +668,13 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::AddTask => {
-            // What `a` can complete, from what the interface already holds. Users come
-            // from the tasks on screen: the store keeps no other list the model sees.
-            let users = model
-                .data
-                .tasks
-                .iter()
-                .flat_map(|task| &task.assignees)
-                .map(|user| user.username.clone());
-            let vocabulary =
-                crate::assist::Vocabulary::new(&model.data.projects, &model.data.labels, users);
+            // What `a` can complete, from what the interface already holds: the same
+            // three lists `tui-do add`'s prompt reads from the store.
+            let vocabulary = crate::assist::Vocabulary::new(
+                &model.data.projects,
+                &model.data.labels,
+                model.data.users.iter().cloned(),
+            );
             model
                 .modals
                 .push(Modal::Add(crate::assist::QuickAddInput::new(vocabulary)));
@@ -1160,6 +1161,7 @@ pub fn reload_everything(model: &mut Model) -> Vec<Effect> {
     let mut effects = reload_tasks(model);
     effects.push(Effect::LoadProjects);
     effects.push(Effect::LoadLabels);
+    effects.push(Effect::LoadUsers);
     effects.push(Effect::LoadCounts);
     effects.push(Effect::LoadPending);
     effects

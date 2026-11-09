@@ -409,6 +409,19 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
                 }
             });
         }
+        Effect::LoadUsers => {
+            let (store, answer) = (store.clone(), tx.clone());
+            coalesce::coalesced(&tx.reads.users, tx, (), move |()| {
+                let (store, tx) = (store.clone(), answer.clone());
+                async move {
+                    let msg = match store.usernames().await {
+                        Ok(users) => Msg::UsersLoaded(users),
+                        Err(error) => Msg::StoreFailed(error.to_string()),
+                    };
+                    let _ = tx.send(msg);
+                }
+            });
+        }
         Effect::LoadCounts => {
             let (store, answer) = (store.clone(), tx.clone());
             coalesce::coalesced(&tx.reads.counts, tx, (), move |()| {

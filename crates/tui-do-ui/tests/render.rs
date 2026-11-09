@@ -742,6 +742,28 @@ fn the_add_prompt_completes_a_project_and_lists_on_a_second_tab() {
 }
 
 #[test]
+fn the_add_prompt_completes_users_from_the_list_the_store_sent() {
+    // Item 12: one user list for both prompts, loaded like the labels, rather than
+    // whatever assignees happen to be on screen.
+    let mut model = fixture((110, 40));
+    let effects = reload_everything(&mut model);
+    assert!(
+        effects.contains(&tui_do_ui::Effect::LoadUsers),
+        "{effects:?}"
+    );
+    update(
+        &mut model,
+        Msg::UsersLoaded(vec!["ada".into(), "admin".into()]),
+    );
+    let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+    press_all(&mut model, &chars("aShip it @adm"));
+    press_all(&mut model, &[tab]);
+    let screen = draw(&model);
+    let status = screen.lines().last().unwrap_or_default();
+    assert!(status.starts_with("+ Ship it @admin "), "{status}");
+}
+
+#[test]
 fn the_add_prompt_will_not_add_a_line_with_an_open_bracket() {
     let mut model = fixture((110, 40));
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);

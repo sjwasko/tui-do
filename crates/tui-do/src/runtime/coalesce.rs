@@ -147,6 +147,7 @@ pub(super) struct Reads {
     pub(super) tasks: Arc<Coalesce<TaskRequest>>,
     pub(super) projects: Arc<Coalesce<()>>,
     pub(super) labels: Arc<Coalesce<()>>,
+    pub(super) users: Arc<Coalesce<()>>,
     pub(super) counts: Arc<Coalesce<()>>,
     pub(super) pending: Arc<Coalesce<()>>,
 }
