@@ -18,9 +18,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
-    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, PriorityState,
-    QuickActionsState, SearchState, Submission, TextInput,
+    due_field_text, Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState,
+    LabelEditState, LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState,
+    PriorityState, QuickActionsState, SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -694,9 +694,9 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 let project = model
                     .project(task.project_id)
                     .map_or_else(String::new, |project| project.title.clone());
-                model
-                    .modals
-                    .push(Modal::Edit(Box::new(EditState::new(task, &project))));
+                model.modals.push(Modal::Edit(Box::new(EditState::new(
+                    task, &project, &model.now,
+                ))));
                 Vec::new()
             }
             None => nothing_selected(model),
@@ -735,11 +735,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         },
         Action::SetDue => match model.selected_task() {
             Some(task) => {
-                let current = task
-                    .due_date
-                    .get()
-                    .map(|due| due.format("%d/%m/%Y").to_string())
-                    .unwrap_or_default();
+                let current = due_field_text(task.due_date.get(), &model.now);
                 model.modals.push(Modal::Due(DueState::new(&current)));
                 Vec::new()
             }
