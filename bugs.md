@@ -61,6 +61,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-22~~ | FIXED — ten `update` tests that place the stale load by hand, and one smoke test that holds writes back | yes |
 | BUG-23 | PARTLY FIXED — a parse count per drain, a held-mock mid-drain append, a held-read coalescing test, a panicking-read gate reset | yes |
 | BUG-28 | hold a store read on a barrier while a loop of presses runs; assert the push still sends | yes |
+| ~~BUG-29~~ | FIXED — the user's sentence plus mid-sentence, end-of-line and two-date tables, title and dates both asserted | yes |
 
 ## What is left, at a glance
 
@@ -69,6 +70,7 @@ throughout, both learned the hard way in this pass:
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~ and ~~BUG-22~~ are fixed. BUG-23 is partly fixed — the drain, the backlog at key-up and the quit wording — and what it leaves is filed as **BUG-28**: while a key is held the push still gets ~1.4 sends/s, because a task-list read is always running |
+| **Found in real use** | ~~BUG-29~~ — FIXED 2026-11-08: a quick-add date leaves the title only from the end of the line; mid-sentence it is still set and stays as typed |
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
@@ -1861,6 +1863,63 @@ push sends its entry while a reload is still waiting — today it can only get t
 between two reads. For the first fix the store-level version is enough: count the
 statements one `Store::tasks` call prepares (a hook like `payload_decodes`, behind
 `test-hooks`) and assert it does not grow with the number of tasks.
+
+### ~~BUG-29~~ — FIXED — a date mid-sentence is cut out of the title, leaving it unreadable
+
+`crates/tui-do-core/src/quickadd/mod.rs` (`parse`), reached from `tui-do add` and from `a`
+in the interface.
+
+**Found by the user in real use, 2026-11-08**, on the freshly installed build. `a`, then:
+
+| typed | title stored | due set |
+|---|---|---|
+| `I can't wait to goto the Azores on March 10, 2027. Is that the date?` | `I can't wait to goto the Azores on Is that the date?` | 2027-03-10 23:59, correct |
+
+Quick-add removed every recognised date phrase from the title wherever it stood. Here it
+stood mid-sentence, so the title kept a dangling `on`, and the sentence's full stop went
+with it, because `dates::find` matches whole words and `2027.` is one. It predates BUG-24
+and the other fixes of that day: `parse` pushed every date range into `consumed`, and
+`words::remove_ranges` cut them all.
+
+**Decided by the user: strip only at the end.** A date is still read and set wherever it
+is, and still produces its token. It leaves the title only when nothing meaningful follows
+it; otherwise it stays exactly as typed, with its `due` or `start` and its punctuation.
+The rule is one helper, `quickadd::ends_the_line`: after the date's last byte there may be
+whitespace, ASCII punctuation (and `… – — ’ ” »`), and text inside a range that is being
+removed anyway — a `*label`, `+project`, `@user`, valid `!N`, a repeat phrase, or a later
+date that itself qualified. A letter or digit anywhere else keeps the date, so `fix it
+tomorrow !9` keeps `tomorrow`, since `!9` is not a priority and stays in the title.
+
+- **Punctuation.** What the date's own last word carries goes with it, as before:
+  `call mom tomorrow.` becomes `call mom`. Punctuation before the date belongs to the
+  text before it and stays: `Is it booked? tomorrow` becomes `Is it booked?`.
+- **Two dates.** Judged last to first, so `start monday due friday` at the end loses both
+  (each is followed only by the other), and `start monday on the report due friday` keeps
+  the first, loses the second, and sets both.
+- **Highlighting.** The interface's `a` prompt does not colour spans; it shows a summary
+  built from the same `Parsed` (`due Tomorrow`), so a date kept in the title is still named
+  there and the user can see it was read.
+- Fields that hold only a date (`parse_due`: the edit form's Due, the `d` prompt) do not
+  go through this and are unchanged.
+- **Emoji count as text.** Only whitespace and the punctuation above may follow, so
+  `tomorrow 🎉` keeps the date in the title, as `tomorrow café` does.
+
+**Known limitation, accepted.** Text *before* a stripped date is never touched, so
+`see you on March 10, 2027.` becomes `see you on`. Dropping a trailing preposition
+automatically would break titles where it is part of the phrase, such as
+`turn the heating on tomorrow`, which would become `turn the heating`.
+
+**Tests.** `a_date_mid_sentence_stays_in_the_title` (the user's sentence, `tomorrow buy
+milk`, `meet on aug 27 at the cafe`, `Call Bob due tomorrow about the invoice`) and
+`two_dates_are_each_judged_by_what_follows_them` failed on the old code;
+`a_date_at_the_end_still_comes_out` failed on its `!9`, `café` and `🎉` rows and passed
+the rest, which pin what must not change, including a quoted and a bracketed project
+after the date (`+"Home Improvement"`, `+[Home Improvement]`). `the_add_prompt_still_shows_a_date_kept_in_the_title` in
+`tui-do-ui/tests/render.rs` guards the summary. Two older tests relied on mid-line
+stripping and were changed: `dates_come_out_of_the_title` is now
+`a_date_at_the_end_comes_out_of_the_title` with the date moved to the end, and
+`the_keyword_is_decisive_even_before_a_decimal` now expects `due 2.5 hours` to keep its
+title, with `hours due 2.5` added for the stripped half. Both still assert the date.
 
 ## Minor
 

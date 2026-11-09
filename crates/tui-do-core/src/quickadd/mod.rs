@@ -10,6 +10,11 @@
 //! phrases (`due friday`, `start monday`, `in 3 days`, `eom`); `every N units` repeats.
 //! Values with spaces are quoted or bracketed: `*"needs review"`, `+[Home Renovation]`.
 //!
+//! Tokens may appear anywhere in the line. Labels, projects, users, priorities and repeats
+//! leave the title wherever they are. A date is always read, but leaves the title only
+//! when nothing follows it except whitespace, punctuation and other tokens; anywhere else
+//! it stays exactly as typed. The rule is `ends_the_line`.
+//!
 //! Written against Vikunja's documented syntax rather than ported from cria, whose
 //! version has three problems worth not reproducing: it prints debug output on `stdout`
 //! from inside a TUI, it scrapes dates with a regex that swallows the rest of the title,
@@ -85,7 +90,8 @@ pub struct Token {
 /// The result of reading one line of quick-add input.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Parsed {
-    /// The title, with every recognised token removed.
+    /// The title, with every recognised token removed -- except a date that something
+    /// else follows, which stays where it was typed. See [`ends_the_line`].
     pub title: String,
 
     /// Label titles, in the order given.
@@ -178,24 +184,60 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
         remaining.retain(|w| !used.contains(&w.range.start));
     }
 
-    for found in dates::find(&remaining, now, dates::Keyword::Absent) {
-        match found.field {
-            DateField::Due => parsed.due_date = Some(found.at),
-            DateField::Start => parsed.start_date = Some(found.at),
+    let dates = dates::find(&remaining, now, dates::Keyword::Absent);
+    for date in &dates {
+        match date.field {
+            DateField::Due => parsed.due_date = Some(date.at),
+            DateField::Start => parsed.start_date = Some(date.at),
         }
         parsed.tokens.push(Token {
-            kind: match found.field {
+            kind: match date.field {
                 DateField::Due => TokenKind::DueDate,
                 DateField::Start => TokenKind::StartDate,
             },
-            range: found.range.clone(),
+            range: date.range.clone(),
         });
-        consumed.push(found.range);
+    }
+
+    // A date leaves the title only from the end (BUG-29). Judged last to first, so that
+    // of two dates at the end, the later one being removed lets the earlier one go too.
+    for date in dates.iter().rev() {
+        if ends_the_line(input, date.range.end, &consumed) {
+            consumed.push(date.range.clone());
+        }
     }
 
     parsed.tokens.sort_by_key(|t| t.range.start);
     parsed.title = words::remove_ranges(input, &consumed);
     parsed
+}
+
+/// Whether nothing meaningful follows byte `from` of `input`, so a date ending there may
+/// be taken out of the title.
+///
+/// What may follow: whitespace, punctuation, and text inside `removed` -- the tokens that
+/// leave the title wherever they are (`*label`, `+project`, `@user`, `!N`, a repeat) and
+/// any later date that already qualified. Anything else -- a letter, a digit, an emoji --
+/// means the date is part of a sentence, and it stays in the title exactly as typed, keyword and all:
+/// cutting it out of the middle left `goto the Azores on Is that the date?` (BUG-29).
+///
+/// Only what *follows* is looked at. Punctuation the date's own last word carries
+/// (`tomorrow.`) is inside its range and goes with it; punctuation before it belongs to
+/// the text before it, and stays.
+fn ends_the_line(input: &str, from: usize, removed: &[Range<usize>]) -> bool {
+    input[from..].char_indices().all(|(offset, ch)| {
+        let at = from + offset;
+        removed.iter().any(|range| range.contains(&at)) || ch.is_whitespace() || is_trailing(ch)
+    })
+}
+
+/// Punctuation that can end a line without being something the user meant to keep a date
+/// in front of.
+///
+/// Beyond ASCII: closing quotes, an ellipsis and dashes, which end a phrase. Opening marks
+/// (`“`, `«`, `¿`) are deliberately not, since they start text that follows.
+fn is_trailing(ch: char) -> bool {
+    ch.is_ascii_punctuation() || matches!(ch, '…' | '–' | '—' | '’' | '”' | '»')
 }
 
 /// Read a field that holds nothing but a due date, such as the edit form's Due.
@@ -393,8 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn dates_come_out_of_the_title() {
-        let parsed = p("Call Bob due tomorrow about the invoice");
+    fn a_date_at_the_end_comes_out_of_the_title() {
+        // This read "Call Bob due tomorrow about the invoice" until BUG-29: mid-sentence,
+        // the date now stays, which `a_date_mid_sentence_stays_in_the_title` asserts.
+        let parsed = p("Call Bob about the invoice due tomorrow");
         assert_eq!(parsed.title, "Call Bob about the invoice");
         assert_eq!(local(parsed.due_date), "2026-08-27 23:59");
     }
@@ -590,8 +634,12 @@ mod tests {
     #[test]
     fn the_keyword_is_decisive_even_before_a_decimal() {
         // The rule is the keyword, not a guess at what follows it: `due 2.5 hours` is a
-        // date, 2 May, and leaves `hours` in the title. Typing `due` is asking for one.
+        // date, 2 May. Typing `due` is asking for one. Since BUG-29 `hours` following it
+        // keeps the phrase in the title; at the end it comes out.
         let parsed = p("due 2.5 hours");
+        assert_eq!(parsed.title, "due 2.5 hours");
+        assert_eq!(local(parsed.due_date), "2027-05-02 23:59");
+        let parsed = p("hours due 2.5");
         assert_eq!(parsed.title, "hours");
         assert_eq!(local(parsed.due_date), "2027-05-02 23:59");
     }
@@ -632,6 +680,99 @@ mod tests {
         }
         assert_eq!(parse_due("not a date", &now()), None);
         assert_eq!(parse_due("start monday", &now()), None);
+    }
+
+    #[test]
+    fn a_date_mid_sentence_stays_in_the_title() {
+        // BUG-29, the user's own sentence. The date is still set; the title is what they
+        // typed, full stop after the year and all.
+        let input = "I can't wait to goto the Azores on March 10, 2027. Is that the date?";
+        let parsed = p(input);
+        assert_eq!(parsed.title, input);
+        assert_eq!(local(parsed.due_date), "2027-03-10 23:59");
+        assert_eq!(parsed.tokens.len(), 1);
+        assert_eq!(parsed.tokens[0].kind, TokenKind::DueDate);
+        assert_eq!(&input[parsed.tokens[0].range.clone()], "March 10, 2027.");
+
+        for (input, due) in [
+            ("tomorrow buy milk", "2026-08-27 23:59"),
+            ("meet on aug 27 at the cafe", "2026-08-27 23:59"),
+            (
+                "Call Bob due tomorrow about the invoice",
+                "2026-08-27 23:59",
+            ),
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, input, "{input:?}");
+            assert_eq!(local(parsed.due_date), due, "{input:?}");
+            assert!(parsed.has_magic(), "{input:?} would not be highlighted");
+        }
+    }
+
+    #[test]
+    fn a_date_at_the_end_still_comes_out() {
+        for (input, title) in [
+            ("call mom tomorrow", "call mom"),
+            // The full stop is part of the date's word, so it goes with it.
+            ("call mom tomorrow.", "call mom"),
+            ("call mom tomorrow  ", "call mom"),
+            // Punctuation belonging to the text before the date is not the date's.
+            ("Is it booked? tomorrow", "Is it booked?"),
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, title, "{input:?}");
+            assert_eq!(local(parsed.due_date), "2026-08-27 23:59", "{input:?}");
+        }
+
+        // Tokens that are removed themselves do not count as something following it.
+        let parsed = p("pay rent due friday *bills !3");
+        assert_eq!(parsed.title, "pay rent");
+        assert_eq!(local(parsed.due_date), "2026-08-28 23:59");
+        assert_eq!(parsed.labels, vec!["bills"]);
+        assert_eq!(parsed.priority, Some(3));
+
+        let parsed = p("water plants tomorrow every week +Home");
+        assert_eq!(parsed.title, "water plants");
+        assert_eq!(local(parsed.due_date), "2026-08-27 23:59");
+
+        // A quoted or bracketed project is one removed token, spaces and all.
+        for input in [
+            r#"pay rent due friday +"Home Improvement""#,
+            "pay rent due friday +[Home Improvement]",
+        ] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, "pay rent", "{input:?}");
+            assert_eq!(local(parsed.due_date), "2026-08-28 23:59", "{input:?}");
+            assert_eq!(
+                parsed.project.as_deref(),
+                Some("Home Improvement"),
+                "{input:?}"
+            );
+        }
+
+        // A word that is not a token does count, even one that only looks like one, and
+        // so does a non-ASCII letter or an emoji: those are text, not punctuation.
+        for input in ["fix it tomorrow !9", "tomorrow café", "tomorrow 🎉"] {
+            let parsed = p(input);
+            assert_eq!(parsed.title, input, "{input:?}");
+            assert_eq!(local(parsed.due_date), "2026-08-27 23:59", "{input:?}");
+        }
+    }
+
+    #[test]
+    fn two_dates_are_each_judged_by_what_follows_them() {
+        // Both at the end: each is followed only by the other, which is itself removed.
+        let parsed = p("Migrate the database start monday due friday.");
+        assert_eq!(parsed.title, "Migrate the database");
+        assert_eq!(local(parsed.start_date), "2026-08-31 00:00");
+        assert_eq!(local(parsed.due_date), "2026-08-28 23:59");
+
+        // One mid-sentence, one at the end: only the last comes out, both are set.
+        let parsed = p("start monday on the report due friday");
+        assert_eq!(parsed.title, "start monday on the report");
+        assert_eq!(local(parsed.start_date), "2026-08-31 00:00");
+        assert_eq!(local(parsed.due_date), "2026-08-28 23:59");
+        assert_eq!(parsed.tokens.len(), 2);
     }
 
     #[test]

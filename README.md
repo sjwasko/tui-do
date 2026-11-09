@@ -366,7 +366,16 @@ rule applies there -- over SSH into a Mac, `o` still copies.
 
 ## Quick-add syntax
 
-Tokens may appear anywhere in the line and are taken out of the title.
+Tokens may appear anywhere in the line. Labels, projects, users, priorities and repeats
+leave the title wherever they are. **A date is always read, but leaves the title only when
+nothing follows it except whitespace, punctuation and other tokens; anywhere else it stays
+exactly as typed.**
+
+So `call mom tomorrow.` becomes `call mom`, and `pay rent due friday *bills !3` becomes
+`pay rent`, but `tomorrow buy milk` keeps that title, with any `due` or `start` it was typed
+with, and is still due tomorrow.
+Two dates at the end (`start monday due friday`) both come out; a date mid-sentence stays
+while one at the end still comes out.
 
 | | |
 |---|---|
