@@ -255,10 +255,11 @@ struct AddArgs {
     )]
     description: Option<String>,
 
-    /// Read the task's description from a file.
+    /// Read the task's description from a file, or from stdin if PATH is `-`.
     ///
     /// Stored exactly as given, but for one trailing newline. It must be UTF-8 text of
-    /// 64 KiB or less.
+    /// 64 KiB or less. With `-`, pipe it in or use a quoted heredoc, and give the task's
+    /// text as an argument.
     #[arg(
         long,
         value_name = "PATH",
@@ -276,6 +277,15 @@ fn read_description(args: &AddArgs) -> anyhow::Result<runtime::Description> {
     use tui_do_core::description;
     let bytes = match (&args.description, &args.description_file) {
         (Some(text), _) => text.clone().into_bytes(),
+        (None, Some(path)) if path.as_os_str() == STDIN => {
+            let stdin = std::io::stdin();
+            // `-` at a terminal waits for typing, as `git commit -F -` does. Say so, or it
+            // looks like a hang.
+            if stdin.is_terminal() {
+                eprintln!("Reading the description from stdin; end it with Ctrl-D.");
+            }
+            read_capped(stdin.lock()).context("could not read the description from stdin")?
+        }
         (None, Some(path)) => {
             let file = std::fs::File::open(path).with_context(|| {
                 format!("could not open the description file {}", path.display())
@@ -287,6 +297,28 @@ fn read_description(args: &AddArgs) -> anyhow::Result<runtime::Description> {
         (None, None) => return Ok(runtime::Description::None),
     };
     Ok(runtime::Description::Given(description::normalise(bytes)?))
+}
+
+/// What `--description-file` takes to mean stdin.
+const STDIN: &str = "-";
+
+/// Refuse `--description-file -` without the task's text.
+///
+/// Stdin is then the description, so it cannot also be the terminal a prompt for the
+/// task would read from. Said here, in words, rather than left to a prompt that would
+/// find its input already spent.
+fn stdin_is_free(args: &AddArgs) -> anyhow::Result<()> {
+    let reads_stdin = args
+        .description_file
+        .as_deref()
+        .is_some_and(|path| path.as_os_str() == STDIN);
+    if reads_stdin && args.text.is_empty() {
+        bail!(
+            "--description-file - reads the description from stdin, so give the task's \
+             text as an argument: tui-do add 'Write the plan' --description-file -"
+        );
+    }
+    Ok(())
 }
 
 /// Everything `reader` has, up to one byte past the size cap.
@@ -506,6 +538,9 @@ fn report_exposed_credentials(config: &Config, config_path: &Path, out: &mut imp
 
 /// Add a task from the command line, or, given no text at a terminal, ask for one.
 fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()> {
+    // First, so a script piping a description in without the text is told exactly that,
+    // rather than clap's generic "TEXT is required".
+    stdin_is_free(args)?;
     // Before the config, as clap's own refusal was: a script that forgot the text is told
     // so whatever state its config is in.
     if args.text.is_empty()
@@ -743,6 +778,25 @@ mod tests {
             format!("{error:#}").contains("/nonexistent/plan.md"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn a_description_on_stdin_needs_the_text_as_an_argument() {
+        let mut args = add_args(&["title", "--description-file", "-"]).unwrap();
+        assert!(stdin_is_free(&args).is_ok());
+        // No text means "ask for it" at a terminal, and stdin cannot be both the
+        // description and the prompt's keyboard.
+        args.text.clear();
+        let error = stdin_is_free(&args).unwrap_err();
+        assert!(
+            error.to_string().contains("give the task's text"),
+            "{error}"
+        );
+
+        let file = add_args(&["title", "--description-file", "plan.md"]).unwrap();
+        let mut file = file;
+        file.text.clear();
+        assert!(stdin_is_free(&file).is_ok(), "only `-` reads stdin");
     }
 
     #[test]

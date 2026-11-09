@@ -247,3 +247,90 @@ async fn the_description_flags_conflict() {
     assert!(queued(&dir).await.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn a_description_on_stdin_is_stored_exactly() {
+    use std::io::Write as _;
+    let dir = scratch("stdin").await;
+    // What `tui-do add 'Write the plan' --description-file - <<'EOF'` hands over: a
+    // quoted heredoc, so `$HOME` and backticks arrive unexpanded, and a final newline.
+    let heredoc = "## Context\n\nThe sync drops `$HOME` paths.\nSeen on sw-x1 and arm-host-1.\n\n## Tried\n\n1. Restarting\n2. `rm -rf ~/.cache/tui-do`\n\nNeither helped.\n";
+    let mut child = command(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "Write the plan +Personal",
+            "--description-file",
+            "-",
+        ],
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(heredoc.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let out = stdout(&output);
+    assert!(
+        out.starts_with("Added \"Write the plan\" to Personal, with a description (5 paragraphs, "),
+        "{out}"
+    );
+    // A pipe is not a terminal, so there is no Ctrl-D hint to clutter a script's stderr.
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("Ctrl-D"),
+        "{output:?}"
+    );
+
+    let tasks = queued(&dir).await;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0].description, heredoc.strip_suffix('\n').unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_empty_stdin_adds_no_description() {
+    let dir = scratch("stdin-empty").await;
+    let output = tui_do(
+        &dir,
+        &[
+            "add",
+            "--offline",
+            "Nothing to say +Personal",
+            "--description-file",
+            "-",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !stdout(&output).contains("with a description"),
+        "{output:?}"
+    );
+    assert_eq!(queued(&dir).await[0].description, "");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_description_on_stdin_needs_the_text_as_an_argument() {
+    let dir = scratch("stdin-no-text").await;
+    let output = tui_do(&dir, &["add", "--offline", "--description-file", "-"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr.contains("--description-file - reads the description from stdin"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("give the task's text as an argument"),
+        "{stderr}"
+    );
+    assert!(queued(&dir).await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
