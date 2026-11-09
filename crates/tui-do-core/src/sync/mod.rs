@@ -334,6 +334,10 @@ pub struct Sync {
     /// The least time between two [`SyncEvent::Sending`]s. [`PROGRESS_EVERY`] unless a
     /// test asks for less.
     progress_every: Duration,
+    /// Whether a request is on the wire right now, as opposed to the push reading or
+    /// writing the store between two of them. Read by the runtime only to word what it
+    /// prints when it gives up waiting at quit (BUG-23).
+    requesting: Arc<AtomicBool>,
 }
 
 /// How often a push reports what is left.
@@ -374,6 +378,22 @@ impl Drop for Pushing<'_> {
     }
 }
 
+/// Holds a flag true for as long as it lives.
+struct Flag<'a>(&'a AtomicBool);
+
+impl<'a> Flag<'a> {
+    fn raised(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self(flag)
+    }
+}
+
+impl Drop for Flag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Sync {
     /// Whether a push is mid-flight right now.
     ///
@@ -382,6 +402,13 @@ impl Sync {
     #[must_use]
     pub fn is_pushing(&self) -> bool {
         self.pushing.load(Ordering::SeqCst)
+    }
+
+    /// Whether a push has a request on the wire right now, rather than being between
+    /// two of them. See [`Sync::requesting`].
+    #[must_use]
+    pub fn is_requesting(&self) -> bool {
+        self.requesting.load(Ordering::SeqCst)
     }
 
     /// Whether a push has ended by panicking, so its last request may have been sent
@@ -401,6 +428,7 @@ impl Sync {
             pushing: Arc::new(AtomicBool::new(false)),
             interrupted: Arc::new(AtomicBool::new(false)),
             progress_every: PROGRESS_EVERY,
+            requesting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -715,7 +743,12 @@ impl Sync {
     /// store failure, which is a real error and ends the pass, while the inner one is
     /// the server's answer, which the caller weighs against [`is_permanent`].
     async fn deliver(&self, entry: &OutboxEntry) -> Result<std::result::Result<(), ApiError>> {
-        let outcome = match self.transmit(entry).await {
+        let sent = {
+            // Cleared by `Drop`, so an aborted push does not leave it set.
+            let _requesting = Flag::raised(&self.requesting);
+            self.transmit(entry).await
+        };
+        let outcome = match sent {
             Ok(outcome) => outcome,
             Err(error) => return Ok(Err(error)),
         };

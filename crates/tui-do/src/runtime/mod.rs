@@ -752,9 +752,17 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>) {
         let handle = in_flight().lock().ok().and_then(|mut slot| slot.take());
         if let Some(handle) = handle {
             if tokio::time::timeout(deadline, handle).await.is_err() {
-                // Still sending when the grace ran out. Walk away without pushing: what is
+                // Still pushing when the grace ran out. Walk away without pushing: what is
                 // queued is safe, and re-sending it is what creates the duplicate.
-                println!("Still sending; leaving the rest queued for next time.");
+                //
+                // BUG-23: this always said "Still sending", including the time it was
+                // printed after five seconds with no request on the wire at all. Say
+                // which it is.
+                if sync.is_requesting() {
+                    println!("Still sending; leaving the rest queued for next time.");
+                } else {
+                    println!("Waiting to send; leaving the rest queued for next time.");
+                }
                 return;
             }
         }
