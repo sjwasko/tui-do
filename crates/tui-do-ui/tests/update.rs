@@ -4997,21 +4997,3 @@ fn a_due_time_that_is_not_the_default_is_shown_in_the_form() {
     let state = open_edit(&mut model);
     assert_eq!(state.due.value(), "2027-03-10 at 14:00");
 }
-
-#[test]
-fn the_prefilled_due_text_reads_back_to_the_same_instant() {
-    // An edited field goes through the parser, so the prefill has to be text it reads
-    // back to the minute: retyping only the day of `2027-03-10 at 14:00` keeps 14:00.
-    for due in [
-        Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap(),
-        Utc.with_ymd_and_hms(2027, 3, 10, 19, 0, 0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 12, 1, 5, 30, 0).unwrap(),
-    ] {
-        let text = tui_do_ui::modal::due_field_text(Some(due), &in_new_york());
-        assert_eq!(
-            tui_do_core::quickadd::parse_due(&text, &in_new_york()),
-            Some(due),
-            "{text:?}"
-        );
-    }
-}

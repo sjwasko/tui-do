@@ -9,12 +9,11 @@
 //! resize, with no fall-through to the screen underneath, because "sometimes it leaks" is
 //! how the predecessor's key handling grew to 790 lines.
 
-use chrono::{DateTime, Timelike as _, Utc};
 use crossterm::event::{KeyCode, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use tui_do_core::models::{Label, LabelId, ProjectId, Task};
-use tui_do_core::quickadd::DateField;
+use tui_do_core::quickadd;
 use tui_do_core::ZonedTime;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -621,7 +620,7 @@ impl EditState {
             .map(|label| label.title.clone())
             .collect::<Vec<_>>()
             .join(", ");
-        let due = due_field_text(task.due_date.get(), now);
+        let due = quickadd::due_text(task.due_date.get(), now);
         Self {
             title: TextInput::new(task.title.clone()),
             description: TextInput::multiline(task.description.clone()),
@@ -708,28 +707,6 @@ impl EditState {
             project_was: self.project_was.trim().to_string(),
             labels: self.labels.value().to_string(),
         }
-    }
-}
-
-/// A stored due date as the text a field that edits it starts with: the edit form's Due
-/// and the `D` prompt.
-///
-/// In the user's zone, because the field is read back in it: formatting the UTC instant
-/// showed the next day for a 23:59 due date anywhere west of UTC (BUG-30). ISO
-/// `2027-03-10`, because a four-digit year parses with or without `due` in front and
-/// cannot be read day-first or month-first. A time of day other than the due default is
-/// shown as `2027-03-10 at 14:00`, which [`tui_do_core::quickadd::parse_due`] reads back
-/// to the same minute, so retyping nothing but the day keeps the hour.
-#[must_use]
-pub fn due_field_text(due: Option<DateTime<Utc>>, now: &ZonedTime) -> String {
-    let Some(due) = due else {
-        return String::new();
-    };
-    let local = due.with_timezone(&now.timezone());
-    if (local.hour(), local.minute()) == DateField::Due.default_time() {
-        local.format("%Y-%m-%d").to_string()
-    } else {
-        local.format("%Y-%m-%d at %H:%M").to_string()
     }
 }
 

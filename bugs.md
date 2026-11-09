@@ -215,13 +215,16 @@ is the user's own memory of when things were due.
   included, and is not parsed. Enter on the unchanged `D` prompt queues nothing and says
   "Nothing changed". The same comparison `project_was` already made for the project field.
 - **The prefill is in the user's zone**, through one helper both places use,
-  `modal::due_field_text`, which converts with `.with_timezone(&now.timezone())` first.
-  `EditState::new` takes `now` for it.
+  `quickadd::due_text` beside `parse_due`, which converts with
+  `.with_timezone(&now.timezone())` first. `EditState::new` takes `now` for it.
 - **The format is ISO, `2027-03-10`** — the user's choice. A four-digit year parses with
   or without `due` in front (BUG-24) and cannot be read day-first or month-first. A time
   other than the due default (`DateField::Due.default_time()`, 23:59) is shown as
   `2027-03-10 at 14:00`, which `parse_due` reads back to the same minute, so retyping only
-  the day keeps the hour.
+  the day keeps the hour. The one exception is the second reading of a repeated hour:
+  retyped, `2027-11-07 at 01:30` in New York takes the earlier instant, BUG-20's rule.
+  Carrying the offset in the prefill would need offset syntax the parser does not have,
+  and an untouched field is never parsed, so it is documented rather than handled.
 
 No other place in `tui-do-ui` formats a stored date as input: the edit form has no start
 date field, and display (`rows::relative_date`, `%b %-d` and `%b %-d, %y`) already
@@ -243,8 +246,9 @@ converts into the user's zone since BUG-20.
   `the_due_prompt_shows_the_due_date_on_the_users_own_day` and
   `a_due_time_that_is_not_the_default_is_shown_in_the_form` — all failed on the old code
   (`11/03/2027`, `10/03/2027`).
-- `the_prefilled_due_text_reads_back_to_the_same_instant` — `parse_due` round-trips the
-  prefill to the minute, default time and otherwise.
+- In `tui-do-core`'s `quickadd` tests: `due_text_is_iso_in_the_readers_zone`,
+  `due_text_reads_back_to_the_same_instant`, and
+  `due_text_in_a_repeated_hour_reads_back_as_the_earlier_one`, which pins the exception.
 
 ---
 

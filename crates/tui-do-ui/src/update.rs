@@ -18,9 +18,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    due_field_text, Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState,
-    LabelEditState, LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState,
-    PriorityState, QuickActionsState, SearchState, Submission, TextInput,
+    Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
+    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, PriorityState,
+    QuickActionsState, SearchState, Submission, TextInput,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -735,7 +735,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         },
         Action::SetDue => match model.selected_task() {
             Some(task) => {
-                let current = due_field_text(task.due_date.get(), &model.now);
+                let current = quickadd::due_text(task.due_date.get(), &model.now);
                 model.modals.push(Modal::Due(DueState::new(&current)));
                 Vec::new()
             }
