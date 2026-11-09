@@ -851,7 +851,8 @@ fn project_label(
 /// silent: the only sign of one was an echoed title shorter than what was typed, which
 /// is how `llvm 1.6 GB` came to be due in June 2027 (BUG-24). The time of day is shown
 /// only when it is not the field's default (`DateField::default_time`, the same one the
-/// parser fills in), so a plain date stays short.
+/// parser fills in), so a plain date stays short. The words are `DateField::describe`'s,
+/// which `Parsed::summary` uses too, so the two cannot name a date differently.
 fn dates_suffix<Tz: chrono::TimeZone>(
     due: Option<chrono::DateTime<chrono::Utc>>,
     start: Option<chrono::DateTime<chrono::Utc>>,
@@ -861,26 +862,14 @@ where
     Tz::Offset: std::fmt::Display,
 {
     use tui_do_core::quickadd::DateField;
-    let date_clause = |field: DateField, at: chrono::DateTime<chrono::Utc>| {
-        use chrono::Timelike as _;
-        let word = match field {
-            DateField::Due => "due",
-            DateField::Start => "starts",
-        };
-        let local = at.with_timezone(zone);
-        let day = local.format("%a %-d %b %Y");
-        if (local.hour(), local.minute()) == field.default_time() {
-            format!(", {word} {day}")
-        } else {
-            format!(", {word} {day} at {}", local.format("%H:%M"))
-        }
-    };
     let mut suffix = String::new();
     if let Some(at) = due {
-        suffix.push_str(&date_clause(DateField::Due, at));
+        suffix.push_str(", ");
+        suffix.push_str(&DateField::Due.describe(at, zone));
     }
     if let Some(at) = start {
-        suffix.push_str(&date_clause(DateField::Start, at));
+        suffix.push_str(", ");
+        suffix.push_str(&DateField::Start.describe(at, zone));
     }
     suffix
 }
