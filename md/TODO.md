@@ -544,11 +544,14 @@ to show the best way to have written it *after*, so people and agents both conve
 optimal form. Modelled on Cisco IOS's `?` and Tab, adapted to a line that may itself
 contain a `?`. Four steps, in this order:
 
-1. **`--dry-run`, and a normalised echo.** `tui-do add --dry-run '…'` parses and prints
+1. **Done 2026-11-08.** **`--dry-run`, and a normalised echo.** `tui-do add --dry-run '…'` parses and prints
    exactly what it would create — title, project, labels, assignees, priority, due, start,
    repeat — and queues nothing. Every real add also prints the line rewritten in its
    canonical form (`as typed best: "Call the dentist +Personal *health !3 due 2026-11-12"`),
    so each run shows the optimal phrasing. Small, and useful to agents and people at once.
+   *Shipped as `Parsed::summary` and `Parsed::canonical` in `tui_do_core::quickadd` (pure,
+   for step 2's preview to reuse), `--dry-run`, and an `as typed best:` line printed only
+   when the typed line differs from its canonical form.*
 2. **An interactive `tui-do add`.** With no text and a terminal on both ends, open a one-line
    prompt: a dim placeholder showing the recommended shape that vanishes on the first
    keystroke, and a live preview line that re-parses on every key. **Tab** completes
@@ -564,7 +567,7 @@ contain a `?`. Four steps, in this order:
 4. **`--tokens` (or `--json`) for agents** — the agent's `?`: the real projects, labels and
    users it may name. Belongs with item 3a's `--json` contract rather than ahead of it.
 
-`skills/tui-do/SKILL.md` should point agents at `--dry-run` and the echo once step 1 ships.
+`skills/tui-do/SKILL.md` points agents at `--dry-run` and the echo since step 1 shipped.
 
 ---
 
