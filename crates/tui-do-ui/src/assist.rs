@@ -219,9 +219,19 @@ pub struct Completion {
     pub matches: Vec<String>,
 }
 
-/// What is being typed at the end of `before`, the text before the cursor: which slot,
-/// where its partial name starts, and the quote or bracket it was opened with.
-fn slot_at(before: &str) -> Option<(Slot, usize, Option<char>)> {
+/// The partial token being typed at the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Partial {
+    /// What it is.
+    slot: Slot,
+    /// Where it starts in the line, in bytes: after the sigil, at any quote or bracket.
+    start: usize,
+    /// The quote or bracket it was opened with, if any.
+    open: Option<char>,
+}
+
+/// What is being typed at the end of `before`, the text before the cursor.
+fn slot_at(before: &str) -> Option<Partial> {
     // An opened `+[Home Imp` first, since the name in it may already hold a space.
     if let Some(open) = open_bracket(before) {
         return Some(open);
@@ -237,13 +247,21 @@ fn slot_at(before: &str) -> Option<(Slot, usize, Option<char>)> {
         if slot == Slot::Priority && !rest.chars().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        return Some((slot, word_start + 1, None));
+        return Some(Partial {
+            slot,
+            start: word_start + 1,
+            open: None,
+        });
     }
-    date_at(before).map(|start| (Slot::Date, start, None))
+    date_at(before).map(|start| Partial {
+        slot: Slot::Date,
+        start,
+        open: None,
+    })
 }
 
 /// A sigil opened with a quote or bracket and not closed yet, at a word start.
-fn open_bracket(before: &str) -> Option<(Slot, usize, Option<char>)> {
+fn open_bracket(before: &str) -> Option<Partial> {
     let mut last = None;
     let mut previous: Option<char> = None;
     let mut chars = before.char_indices().peekable();
@@ -258,9 +276,13 @@ fn open_bracket(before: &str) -> Option<(Slot, usize, Option<char>)> {
         }
         previous = Some(c);
     }
-    let (slot, open_at, open) = last?;
-    let inside = &before[open_at + open.len_utf8()..];
-    (!inside.contains(closer(open))).then_some((slot, open_at, Some(open)))
+    let (slot, start, open) = last?;
+    let inside = &before[start + open.len_utf8()..];
+    (!inside.contains(closer(open))).then_some(Partial {
+        slot,
+        start,
+        open: Some(open),
+    })
 }
 
 const fn closer(open: char) -> char {
@@ -321,18 +343,27 @@ fn word_spans(text: &str) -> Vec<(usize, &str)> {
     spans
 }
 
+/// Whether a name written into the line is all of it, and so is closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Extent {
+    /// The whole name: close the bracket or quote.
+    Whole,
+    /// Only the prefix several names share: leave it open for the rest.
+    Prefix,
+}
+
 /// Write `name` as it goes in the line after its sigil: bracketed when it holds a space
 /// (the form the parser takes whole), in whatever quote the user opened, and closed only
-/// when it is the whole name.
-fn written(slot: Slot, name: &str, open: Option<char>, whole: bool) -> String {
+/// when `extent` is [`Extent::Whole`].
+fn written(slot: Slot, name: &str, open: Option<char>, extent: Extent) -> String {
     if slot == Slot::Date {
         return name.to_string();
     }
     let open = open.or_else(|| name.contains(char::is_whitespace).then_some('['));
-    match open {
-        Some(open) if whole => format!("{open}{name}{}", closer(open)),
-        Some(open) => format!("{open}{name}"),
-        None => name.to_string(),
+    match (open, extent) {
+        (Some(open), Extent::Whole) => format!("{open}{name}{}", closer(open)),
+        (Some(open), Extent::Prefix) => format!("{open}{name}"),
+        (None, _) => name.to_string(),
     }
 }
 
@@ -369,7 +400,7 @@ fn common_prefix(names: &[String]) -> String {
 /// second Tab to list.
 #[must_use]
 pub fn complete(before: &str, vocabulary: &Vocabulary) -> Option<Completion> {
-    let (slot, start, open) = slot_at(before)?;
+    let Partial { slot, start, open } = slot_at(before)?;
     let partial = &before[start..];
     let typed = open.map_or(partial, |open| &partial[open.len_utf8()..]);
     let lower = typed.to_lowercase();
@@ -383,14 +414,20 @@ pub fn complete(before: &str, vocabulary: &Vocabulary) -> Option<Completion> {
     }
     let matches = names
         .iter()
-        .map(|name| format!("{}{}", slot.sigil(), written(slot, name, open, true)))
+        .map(|name| {
+            format!(
+                "{}{}",
+                slot.sigil(),
+                written(slot, name, open, Extent::Whole)
+            )
+        })
         .collect();
     let text = if let [only] = names.as_slice() {
-        Some(format!("{} ", written(slot, only, open, true)))
+        Some(format!("{} ", written(slot, only, open, Extent::Whole)))
     } else {
         let prefix = common_prefix(&names);
         (prefix.chars().count() > typed.chars().count())
-            .then(|| written(slot, &prefix, open, false))
+            .then(|| written(slot, &prefix, open, Extent::Prefix))
     };
     Some(Completion {
         range: start..before.len(),
@@ -435,7 +472,13 @@ pub fn help(which: Help, vocabulary: &Vocabulary) -> Aside {
         } else {
             names
                 .iter()
-                .map(|name| format!("{}{}", slot.sigil(), written(slot, name, None, true)))
+                .map(|name| {
+                    format!(
+                        "{}{}",
+                        slot.sigil(),
+                        written(slot, name, None, Extent::Whole)
+                    )
+                })
                 .collect()
         }
     };
