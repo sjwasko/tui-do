@@ -85,11 +85,47 @@ completion and `?` help, but only at a terminal, and it is for people. An agent 
 line as an argument, and checks one it is unsure of with `--dry-run` first. Run with no
 text and no terminal, `tui-do add` is a usage error, exit code 2.
 
+## Adding a description
+
+Put the context — a stack trace, a spec, what you tried — in the description, not the
+title. **Use `--description-file -` with a heredoc whose delimiter is quoted**, so nothing
+in the body is expanded by the shell (`$VAR`, backticks and `!` all arrive as typed):
+
+```sh
+tui-do add 'Fix the flaky sync test +Infra !3' --description-file - <<'EOF'
+## What fails
+
+`a_pull_does_not_delete_a_task_created_offline` fails about 1 run in 20.
+
+## What I tried
+
+1. Re-running with `--test-threads=1`: still fails.
+EOF
+```
+
+- The title line is quick-add; **the description is not**. `+project`, `*label` or a date
+  in the body stays text, so keep every token on the title line.
+- It is stored exactly as given — Markdown is fine — but for one trailing newline. It must be
+  UTF-8 and at most 64 KiB; anything else exits non-zero and queues nothing.
+- With `-`, the task's text must be an argument: stdin is the description.
+- `-d 'text'` is fine for a single short line. Do not use `--edit`; it opens an editor and
+  refuses to run without a terminal.
+
+The confirmation counts the description and never prints it:
+
+```console
+Added "Fix the flaky sync test" to Infra, with a description (4 paragraphs, 157 characters)
+```
+
+`--dry-run` takes the same flags and adds a `Description begins: "…"` line, so you can check
+the right text was read.
+
 ## Flags that matter when nobody is watching
 
 | flag | when to use it |
 |---|---|
 | `--dry-run` | print what the line would add and its best form, and add nothing |
+| `--description-file -` | read the task's description from stdin; see above |
 | `--offline` | queue without attempting to send; use when you know there is no network and do not want the attempt |
 | `--create-labels` | create any label the line names that does not exist yet |
 | `--config <PATH>` | use a specific config, rather than the default lookup |

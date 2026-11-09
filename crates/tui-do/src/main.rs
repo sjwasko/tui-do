@@ -96,6 +96,29 @@ enum Command {
     /// Brackets are usually the easier of the two from a shell, because the shell strips
     /// quotes before tui-do ever sees them.
     ///
+    /// DESCRIPTION
+    ///
+    /// The line above is only the title and its tokens. A description is given one of
+    /// three ways, and only one at a time:
+    ///
+    ///   -d, --description <TEXT>     inline, for a line or two; newlines are kept
+    ///   --description-file <PATH>    read from a file; `-` reads stdin
+    ///   -e, --edit                   write it in $VISUAL, else $EDITOR, else vi
+    ///
+    /// For anything long, move it rather than retype it: a file, a pipe, or a quoted
+    /// heredoc, whose quotes ('EOF') keep the shell from expanding $ and backticks:
+    ///
+    ///   tui-do add 'Write the plan +Work' --description-file - <<'EOF'
+    ///   ## Context
+    ///
+    ///   What was tried, and what is left.
+    ///   EOF
+    ///
+    /// It is stored exactly as given -- Markdown, plain text or HTML -- but for one
+    /// trailing newline, and quick-add tokens in it stay text. It must be UTF-8 and
+    /// at most 64 KiB. The confirmation line counts it rather than printing it:
+    /// `with a description (3 paragraphs, 1,240 characters)`.
+    ///
     /// EXAMPLES
     ///
     ///   tui-do add 'Renew the domain *urgent !3 +Admin tomorrow'

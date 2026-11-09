@@ -475,6 +475,35 @@ missing, when either is redirected. Three flags matter:
   before it gives up, so run it once without `--offline` on a new machine (or start
   `tui-do`, which syncs at launch). After that it works on a plane as advertised.
 
+**A description goes beside the line, never in it.** The quick-add line is the title and
+its tokens; the description is body text, stored exactly as given (Markdown, plain text or
+HTML), with no tokens read out of it. Pick one of three ways:
+
+- **`-d 'text'`** inline, for a line or two. Newlines in the argument are kept.
+- **`--description-file PATH`** reads a file, and **`--description-file -`** reads stdin, for
+  anything longer. A quoted heredoc moves several paragraphs without retyping or expanding
+  them:
+
+  ```sh
+  tui-do add 'Write the plan +Work' --description-file - <<'EOF'
+  ## Context
+
+  What was tried, and what is left.
+  EOF
+  ```
+
+- **`--edit`** (`-e`) opens `$VISUAL`, else `$EDITOR`, else `vi`, the way `git commit` does.
+  Save an empty file for no description, or quit with an error (`:cq` in vim) to add nothing.
+  It needs a terminal.
+
+It must be UTF-8 and at most 64 KiB, and one trailing newline is dropped. The confirmation
+line counts it rather than printing it:
+
+```console
+$ tui-do add 'Write the plan +Work due 2026-11-12' --description-file plan.md
+Added "Write the plan" to Work, due Thu 12 Nov 2026, with a description (5 paragraphs, 114 characters)
+```
+
 Shell completions, including for the quick-add flags:
 
 ```sh
@@ -510,6 +539,11 @@ with the message a real add would give, if the line would fail. Then write them 
 the `as typed best:` line shows: title, then `+project *label @user !N`, then
 `due YYYY-MM-DD`, `start YYYY-MM-DD` and the repeat. That form reads the same way every
 time.
+
+**Put context in the description, through stdin.** A stack trace, a spec or what was tried
+belongs in the description, not the title. Pass it with `--description-file -` and a heredoc
+whose delimiter is quoted (`<<'EOF'`), so nothing in it is shell-expanded, and keep the
+quick-add tokens on the title line, where they are read.
 
 One flag deserves mentioning: **`--create-labels` should usually stay off.**
 Labels are one global pool shared by every project, so a typo in a generated line becomes a
