@@ -44,6 +44,8 @@ pub(super) enum Answer {
     Add(String),
     /// Esc or Ctrl-C.
     Cancelled,
+    /// SIGTERM, SIGHUP or SIGQUIT arrived while the prompt held the terminal (BUG-31).
+    Signalled(super::Signal),
 }
 
 /// The prompt's state: the line, and the example shown until the first key.
@@ -100,12 +102,14 @@ pub(super) fn placeholder(vocabulary: &Vocabulary, now: &ZonedTime) -> String {
     )
 }
 
-/// Ask for a task until Enter, Esc or Ctrl-C.
+/// Ask for a task until Enter, Esc, Ctrl-C or a signal.
 ///
-/// `events` is `super::next_event` everywhere but the tests, which feed keys in. The
-/// viewport is cleared on the way out, with the cursor left at its top, so whatever
-/// the caller prints next starts where the prompt was rather than under nine blank
-/// lines.
+/// `events` is `super::next_event` everywhere but the tests, which feed keys in.
+/// `signalled` answers a signal that has arrived, if one has; it is asked before every
+/// poll, so one is noticed within [`super::INPUT_POLL`]. The viewport is cleared on the
+/// way out, with the cursor left at its top, so whatever the caller prints next starts
+/// where the prompt was rather than under nine blank lines -- except after SIGHUP, when
+/// the terminal has probably gone and a write to it could fail or wait.
 ///
 /// # Errors
 /// A terminal that cannot be drawn on or read from.
@@ -113,6 +117,7 @@ pub(super) fn ask<B: Backend>(
     terminal: &mut Terminal<B>,
     prompt: &mut Prompt,
     mut events: impl FnMut(Duration) -> io::Result<Option<Event>>,
+    mut signalled: impl FnMut() -> Option<super::Signal>,
 ) -> anyhow::Result<Answer>
 where
     B::Error: Send + Sync + 'static,
@@ -121,6 +126,12 @@ where
     // times a second would fill a slow link and anything recording the session.
     let mut stale = true;
     let answer = loop {
+        if let Some(caught) = signalled() {
+            if caught.hung_up() {
+                return Ok(Answer::Signalled(caught));
+            }
+            break Answer::Signalled(caught);
+        }
         if stale {
             terminal.draw(|frame| render(frame, prompt))?;
             stale = false;
@@ -309,12 +320,17 @@ mod tests {
         events: Vec<Event>,
     ) -> anyhow::Result<Answer> {
         let mut queue: VecDeque<Event> = events.into();
-        ask(terminal, prompt, |_| {
-            queue
-                .pop_front()
-                .map(Some)
-                .ok_or_else(|| io::Error::other("no more keys"))
-        })
+        ask(
+            terminal,
+            prompt,
+            |_| {
+                queue
+                    .pop_front()
+                    .map(Some)
+                    .ok_or_else(|| io::Error::other("no more keys"))
+            },
+            || None,
+        )
     }
 
     fn screen(terminal: &Terminal<TestBackend>) -> String {
@@ -410,6 +426,38 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
         assert_eq!(drive(events).0.unwrap(), Answer::Cancelled);
+    }
+
+    /// BUG-31: a signal is noticed between polls, before the next key is read, and ends
+    /// the prompt with the signal. Cleared away like any other answer -- except after
+    /// SIGHUP, when the terminal has probably gone and nothing more is written to it.
+    #[test]
+    fn a_signal_ends_the_prompt_between_keys() {
+        for (signal, cleared) in [
+            (super::super::Signal::Terminate, true),
+            (super::super::Signal::Hangup, false),
+        ] {
+            let mut terminal = terminal();
+            let mut prompt = Prompt::new(vocabulary(), now(), Theme::new(ColorDepth::None), false);
+            let polled = std::cell::Cell::new(0);
+            let answer = ask(
+                &mut terminal,
+                &mut prompt,
+                |_| {
+                    polled.set(polled.get() + 1);
+                    Ok(Some(key(KeyCode::Char('x'))))
+                },
+                || (polled.get() == 3).then_some(signal),
+            );
+            assert_eq!(answer.unwrap(), Answer::Signalled(signal));
+            assert_eq!(polled.get(), 3, "read a key after the signal");
+            assert_eq!(
+                prompts_on(&terminal),
+                usize::from(!cleared),
+                "{signal:?}: {}",
+                screen(&terminal)
+            );
+        }
     }
 
     #[test]

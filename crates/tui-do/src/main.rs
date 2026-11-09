@@ -630,7 +630,7 @@ fn run_add(args: &AddArgs, config_override: Option<&Path>) -> anyhow::Result<()>
     let text = if args.text.is_empty() {
         let vocabulary = runtime.block_on(runtime::vocabulary());
         // `--dry-run` with no text asks, then checks what was typed instead of adding it.
-        match runtime::ask_for_task(vocabulary, mode.dry_run)? {
+        match runtime::ask_for_task(runtime.handle(), vocabulary, mode.dry_run)? {
             Some(text) => text,
             None => bail!("cancelled; nothing was added"),
         }

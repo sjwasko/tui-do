@@ -238,3 +238,25 @@ fn sighup_and_sigquit_end_the_interface_with_their_own_codes() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The inline prompt takes the terminal too. Signalled with its cursor query answered,
+/// so the prompt is up and reading keys when the signal lands, and nothing is added.
+#[test]
+fn sigterm_ends_the_add_prompt_and_gives_the_terminal_back() {
+    let dir = scratch("prompt-term");
+    let then = "sleep 1; kill -TERM $pid";
+    let Some(run) = on_a_pty(&dir, &["add", "--offline"], true, then) else {
+        eprintln!("{SKIPPED}");
+        return;
+    };
+    run.assert_restored(143);
+    assert!(
+        run.transcript.contains("add›"),
+        "the prompt never drew: {run:#?}"
+    );
+    assert!(
+        !dir.join("tui-do.db").exists(),
+        "a signalled prompt opened a store: {run:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

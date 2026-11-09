@@ -1239,18 +1239,41 @@ async fn vocabulary_at(store_path: &std::path::Path) -> tui_do_ui::assist::Vocab
 ///
 /// Synchronous, and called outside the async runtime: there is nothing to await while a
 /// person types. The terminal goes back through `TerminalGuard`'s `Drop` and panic hook,
-/// the same ones the interface uses, on every way out.
+/// the same ones the interface uses, on every way out -- and a SIGTERM, SIGHUP or
+/// SIGQUIT is one of those ways, ending the process with `128 + signal` (BUG-31).
+/// `runtime` is the one `tui-do add` goes on to run on: the signal handlers belong to it,
+/// and its worker threads deliver a signal while this thread waits for keys.
 ///
 /// # Errors
 /// A terminal that refuses raw mode or cannot be drawn on.
 pub fn ask_for_task(
+    runtime: &tokio::runtime::Handle,
     vocabulary: tui_do_ui::assist::Vocabulary,
     dry_run: bool,
 ) -> anyhow::Result<Option<String>> {
     let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
+    // Before raw mode, as in `run` (BUG-31). Spawned plainly rather than through
+    // `spawn_effect`, which reports to an event loop the prompt does not have; the
+    // listener does nothing that could panic. Its receiver goes when this returns, and a
+    // signal after that ends the process with its code as the default action would --
+    // the terminal is no longer raw by then, but `add`'s push may be mid-request
+    // (`signals::listen` says what that costs).
+    let (to, mut caught) = mpsc::unbounded_channel();
+    let listener = {
+        let _context = runtime.enter();
+        signals::listen(to)
+    };
+    if let Some(listener) = listener {
+        runtime.spawn(listener);
+    }
     let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
-    let answer = prompt::ask(guard.terminal(), &mut prompt, next_event);
-    drop(guard);
+    let answer = prompt::ask(guard.terminal(), &mut prompt, next_event, || {
+        caught.try_recv().ok()
+    });
+    guard.release_for(match &answer {
+        Ok(prompt::Answer::Signalled(signal)) => Some(*signal),
+        _ => None,
+    });
     match answer? {
         prompt::Answer::Add(text) => {
             // Left in the scrollback where the prompt was, so the line that was added
@@ -1259,6 +1282,9 @@ pub fn ask_for_task(
             Ok(Some(text))
         }
         prompt::Answer::Cancelled => Ok(None),
+        // Nothing was typed that could be added, nothing is queued, and the terminal is
+        // back: leave with the signal's code, as from the interface.
+        prompt::Answer::Signalled(signal) => std::process::exit(signal.exit_code()),
     }
 }
 

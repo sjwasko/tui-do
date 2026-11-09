@@ -12,6 +12,13 @@
 //! back -- so the listener keeps the old behaviour for whoever is not listening any more:
 //! a signal nobody can receive ends the process at once, with the same exit code the
 //! default action would have given.
+//!
+//! `tui-do add --edit` listens for nothing while the editor runs, on purpose. tui-do
+//! holds no terminal state then -- raw mode is never on around the editor, which owns the
+//! terminal -- and the editor shares tui-do's process group, so a hangup reaches it
+//! directly and it restores its own modes. A signal there ends tui-do as it always did
+//! (or through the exit above, when the inline prompt came first): nothing is queued
+//! yet, and all that is lost is the removal of the editor's temporary file.
 
 use std::future::Future;
 use std::io;
@@ -59,6 +66,14 @@ impl Signal {
 /// comes back. Once `to`'s receiver has gone, a signal ends the process on the spot with
 /// its exit code, as it would have without a handler: tui-do no longer holds the
 /// terminal then, so there is nothing left to give back.
+///
+/// That exit is the third way BUG-31's fix can abandon a push mid-request (the other
+/// two are in `super::flush_unless_signalled`). After the inline prompt has returned,
+/// `tui-do add` goes on to push the task it queued, and a signal during that request
+/// ends the process here, with the request maybe already at the server. It is the BUG-3
+/// class -- the entry stays queued and the next launch may create the task a second
+/// time (BUG-33) -- and it is exactly what the default action did before: `add` given
+/// its text on the command line installs no handler and is still ended that way.
 ///
 /// `None`, with a warning in the log, if the operating system refuses a handler. tui-do
 /// carries on without one: the signals then end it as they always did.
