@@ -168,10 +168,16 @@ fn the_spec_is_the_version_we_target() {
     // call, and one new user field, `pending_email`. Worth knowing: **2.6.0 still has no
     // `oauth` paths**, because the image was published 2026-08-31 and the swagger PR that
     // adds them merged on 2026-09-10. Matching prod did not unblock OAuth.
+    //
+    // v2.6.0 -> v2.8.0 on 2026-11-08: both dev and prod were already on 2.8.0 and the spec
+    // had not followed. The refresh adds `POST /oauth/authorize` and `POST /oauth/token`
+    // (so OAuth is no longer waiting on a release), `Task.positions` and `Task.deleted_by`,
+    // and `Project.deleted_at`/`deleted_by` for the new 30-day trash. Nothing tui-do calls
+    // was removed or moved.
     let spec = spec();
     assert_eq!(
         spec.pointer("/info/version").and_then(Value::as_str),
-        Some("v2.6.0"),
+        Some("v2.8.0"),
         "spec/vikunja.json was captured from a different Vikunja version"
     );
 }

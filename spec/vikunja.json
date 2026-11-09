@@ -247,21 +247,6 @@
       },
       "type": "object"
     },
-    "license.Feature": {
-      "enum": [
-        0,
-        1,
-        2,
-        3
-      ],
-      "type": "integer",
-      "x-enum-varnames": [
-        "FeatureUnknown",
-        "FeatureAdminPanel",
-        "FeatureTimeTracking",
-        "FeatureAuditLogs"
-      ]
-    },
     "license.Info": {
       "properties": {
         "expires_at": {
@@ -295,12 +280,40 @@
       "properties": {
         "code": {
           "type": "string"
+        },
+        "state": {
+          "type": "string"
         }
       },
       "type": "object"
     },
+    "migration.ErrorKind": {
+      "enum": [
+        "reported",
+        "interrupted",
+        "credentials",
+        "queue",
+        "upload",
+        "detail"
+      ],
+      "type": "string",
+      "x-enum-varnames": [
+        "ErrorKindReported",
+        "ErrorKindInterrupted",
+        "ErrorKindCredentials",
+        "ErrorKindQueue",
+        "ErrorKindUpload",
+        "ErrorKindDetail"
+      ]
+    },
     "migration.Status": {
       "properties": {
+        "error_kind": {
+          "$ref": "#/definitions/migration.ErrorKind"
+        },
+        "error_message": {
+          "type": "string"
+        },
         "finished_at": {
           "type": "string"
         },
@@ -706,6 +719,18 @@
         "created": {
           "description": "A timestamp when this project was created. You cannot change this value.",
           "type": "string"
+        },
+        "deleted_at": {
+          "description": "When this project was moved to the trash. Trashed projects are removed permanently 30 days later.",
+          "type": "string"
+        },
+        "deleted_by": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "The user who moved this project to the trash. Only present on trashed projects."
         },
         "description": {
           "description": "The description of the project.",
@@ -1162,6 +1187,14 @@
           "description": "A timestamp when this task was deleted. Soft-deleted tasks are kept for 30 days before they are removed permanently.\nomitzero keeps the field out of the JSON of regular tasks — it only ever appears on soft-deleted ones (the later trash listing).",
           "type": "string"
         },
+        "deleted_by": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "Null for tasks soft-deleted before this was tracked."
+        },
         "description": {
           "description": "The task description.",
           "type": "string"
@@ -1221,12 +1254,18 @@
           "description": "The position of the task - any task project can be sorted as usual by this parameter.\nWhen accessing tasks via views with buckets, this is primarily used to sort them based on a range.\nPositions are always saved per view. They will automatically be set if you request the tasks through a view\nendpoint, otherwise they will always be 0. To update them, take a look at the Task Position endpoint.",
           "type": "number"
         },
+        "positions": {
+          "items": {
+            "$ref": "#/definitions/models.TaskPosition"
+          },
+          "type": "array"
+        },
         "priority": {
           "description": "The task priority. Can be anything you want, it is possible to sort by this later.",
           "type": "integer"
         },
         "project_id": {
-          "description": "The project this task belongs to.",
+          "description": "The project this task belongs to.\nMust precede done/due_date: xorm orders composite index columns by struct field order.",
           "type": "integer"
         },
         "reactions": {
@@ -1616,6 +1655,14 @@
           "description": "Whether the member is an admin of the team. See the docs for more about what a team admin can do",
           "type": "boolean"
         },
+        "bot_owner": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "The user who created this bot. Only set for bot users."
+        },
         "bot_owner_id": {
           "description": "BotOwnerID is the ID of the owning (human) user if this user is a bot.\nA non-zero value means this user is a bot and cannot authenticate via password.",
           "type": "integer"
@@ -1766,6 +1813,14 @@
     },
     "models.UserWithPermission": {
       "properties": {
+        "bot_owner": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "The user who created this bot. Only set for bot users."
+        },
         "bot_owner_id": {
           "description": "BotOwnerID is the ID of the owning (human) user if this user is a bot.\nA non-zero value means this user is a bot and cannot authenticate via password.",
           "type": "integer"
@@ -1882,6 +1937,83 @@
       },
       "type": "object"
     },
+    "oauth2server.AuthorizeRequest": {
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "code_challenge": {
+          "type": "string"
+        },
+        "code_challenge_method": {
+          "type": "string"
+        },
+        "redirect_uri": {
+          "type": "string"
+        },
+        "response_type": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "oauth2server.AuthorizeResponse": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "redirect_uri": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "oauth2server.TokenRequest": {
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "code_verifier": {
+          "type": "string"
+        },
+        "grant_type": {
+          "type": "string"
+        },
+        "redirect_uri": {
+          "type": "string"
+        },
+        "refresh_token": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "oauth2server.TokenResponse": {
+      "properties": {
+        "access_token": {
+          "type": "string"
+        },
+        "expires_in": {
+          "type": "integer"
+        },
+        "refresh_token": {
+          "type": "string"
+        },
+        "token_type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "openid.Callback": {
       "properties": {
         "code": {
@@ -1904,6 +2036,14 @@
       "properties": {
         "auth_provider": {
           "type": "string"
+        },
+        "bot_owner": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "The user who created this bot. Only set for bot users."
         },
         "bot_owner_id": {
           "description": "BotOwnerID is the ID of the owning (human) user if this user is a bot.\nA non-zero value means this user is a bot and cannot authenticate via password.",
@@ -1978,7 +2118,24 @@
         "imprint_url": {
           "type": "string"
         },
+        "links": {
+          "items": {
+            "$ref": "#/definitions/shared.LegalLink"
+          },
+          "type": "array"
+        },
         "privacy_policy_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "shared.LegalLink": {
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "url": {
           "type": "string"
         }
       },
@@ -2044,7 +2201,7 @@
         },
         "enabled_pro_features": {
           "items": {
-            "$ref": "#/definitions/license.Feature"
+            "type": "string"
           },
           "type": "array"
         },
@@ -2094,6 +2251,9 @@
       "properties": {
         "code": {
           "type": "string"
+        },
+        "state": {
+          "type": "string"
         }
       },
       "type": "object"
@@ -2101,6 +2261,9 @@
     "trello.Migration": {
       "properties": {
         "code": {
+          "type": "string"
+        },
+        "state": {
           "type": "string"
         }
       },
@@ -2204,14 +2367,6 @@
       },
       "type": "object"
     },
-    "user.TOTPPasscode": {
-      "properties": {
-        "passcode": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
     "user.Token": {
       "properties": {
         "created": {
@@ -2228,6 +2383,14 @@
     },
     "user.User": {
       "properties": {
+        "bot_owner": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "The user who created this bot. Only set for bot users."
+        },
         "bot_owner_id": {
           "description": "BotOwnerID is the ID of the owning (human) user if this user is a bot.\nA non-zero value means this user is a bot and cannot authenticate via password.",
           "type": "integer"
@@ -2346,10 +2509,31 @@
       },
       "type": "object"
     },
+    "v1.UserTOTPEnableRequest": {
+      "properties": {
+        "passcode": {
+          "description": "A passcode generated from the enrolled secret.",
+          "type": "string"
+        },
+        "password": {
+          "description": "The current user's password.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "v1.UserWithSettings": {
       "properties": {
         "auth_provider": {
           "type": "string"
+        },
+        "bot_owner": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/user.User"
+            }
+          ],
+          "description": "The user who created this bot. Only set for bot users."
         },
         "bot_owner_id": {
           "description": "BotOwnerID is the ID of the owning (human) user if this user is a bot.\nA non-zero value means this user is a bot and cannot authenticate via password.",
@@ -2405,6 +2589,7 @@
         "code": {
           "type": "integer"
         },
+        "details": {},
         "i18n_params": {
           "additionalProperties": {
             "type": "string"
@@ -2432,7 +2617,7 @@
       "url": "https://code.vikunja.io/api/src/branch/main/LICENSE"
     },
     "title": "Vikunja API",
-    "version": "v2.6.0"
+    "version": "v2.8.0"
   },
   "paths": {
     "/admin/overview": {
@@ -4195,7 +4380,7 @@
         ],
         "responses": {
           "200": {
-            "description": "A message telling you everything was migrated successfully.",
+            "description": "A message telling you the migration was started.",
             "schema": {
               "$ref": "#/definitions/models.Message"
             }
@@ -4499,6 +4684,115 @@
         ]
       }
     },
+    "/oauth/authorize": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Creates an authorization code for an OAuth 2.0 client on behalf of the authenticated user. PKCE is required. API tokens cannot be used to authorize a client.",
+        "parameters": [
+          {
+            "description": "The authorization request",
+            "in": "body",
+            "name": "request",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/oauth2server.AuthorizeRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "The authorization code and the redirect URI to return it to.",
+            "schema": {
+              "$ref": "#/definitions/oauth2server.AuthorizeResponse"
+            }
+          },
+          "400": {
+            "description": "response_type is not 'code', the redirect URI is invalid, or the PKCE challenge is missing.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "403": {
+            "description": "An API token was used to authorize an OAuth client.",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
+          }
+        },
+        "security": [
+          {
+            "JWTKeyAuth": []
+          }
+        ],
+        "summary": "OAuth 2.0 authorize endpoint",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/oauth/token": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Exchanges an authorization code for an access token, or a refresh token for a new one. Part of the OAuth 2.0 Authorization Code flow with PKCE. Needs no authentication: the grant itself is the credential.",
+        "parameters": [
+          {
+            "description": "The token request",
+            "in": "body",
+            "name": "grant",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/oauth2server.TokenRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "The access token, its type, lifetime and refresh token.",
+            "schema": {
+              "$ref": "#/definitions/oauth2server.TokenResponse"
+            }
+          },
+          "400": {
+            "description": "Unsupported grant type, or an invalid, expired or already-used authorization code.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "401": {
+            "description": "Invalid or expired refresh token.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
+          }
+        },
+        "summary": "OAuth 2.0 token endpoint",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/projects": {
       "get": {
         "consumes": [
@@ -4631,7 +4925,7 @@
     },
     "/projects/{id}": {
       "delete": {
-        "description": "Delets a project",
+        "description": "Moves a project and all its sub-projects to the trash. They are deleted permanently after 30 days.",
         "parameters": [
           {
             "description": "Project ID",
@@ -5008,6 +5302,12 @@
           },
           "500": {
             "description": "Internal error",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
+          },
+          "503": {
+            "description": "The server is busy decoding other images.",
             "schema": {
               "$ref": "#/definitions/models.Message"
             }
@@ -6407,7 +6707,7 @@
         "consumes": [
           "application/json"
         ],
-        "description": "Share a project via link. The user needs to have write-access to the project to be able do this.",
+        "description": "Share a project via link. The user needs to be admin of the project to be able do this.",
         "parameters": [
           {
             "description": "Project ID",
@@ -6477,7 +6777,7 @@
         "consumes": [
           "application/json"
         ],
-        "description": "Remove a link share. The user needs to have write-access to the project to be able do this.",
+        "description": "Remove a link share. The user needs to be admin of the project to be able do this.",
         "parameters": [
           {
             "description": "Project ID",
@@ -7793,7 +8093,7 @@
             "type": "integer"
           },
           {
-            "description": "The size of the preview image. Can be sm = 100px, md = 200px, lg = 400px or xl = 800px. If provided, a preview image will be returned if the attachment is an image.",
+            "description": "The size of the preview image. Can be sm = 100px, md = 200px, lg = 400px or xl = 800px. If provided, a preview image is returned instead of the attachment: a JPEG, or a PNG when the image has transparency.",
             "in": "query",
             "name": "preview_size",
             "type": "string"
@@ -7804,7 +8104,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The attachment file.",
+            "description": "The attachment file, or its preview when preview_size is provided.",
             "schema": {
               "type": "file"
             }
@@ -7821,8 +8121,20 @@
               "$ref": "#/definitions/models.Message"
             }
           },
+          "422": {
+            "description": "preview_size is invalid (code 4039), or the attachment has no preview (code 4038).",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
+          },
           "500": {
             "description": "Internal error",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
+          },
+          "503": {
+            "description": "Too many previews are being generated, try again later.",
             "schema": {
               "$ref": "#/definitions/models.Message"
             }
@@ -10204,6 +10516,12 @@
             "schema": {
               "$ref": "#/definitions/models.Message"
             }
+          },
+          "503": {
+            "description": "The server is busy decoding other images.",
+            "schema": {
+              "$ref": "#/definitions/models.Message"
+            }
           }
         },
         "security": [
@@ -10510,10 +10828,10 @@
         "consumes": [
           "application/json"
         ],
-        "description": "Disables any totp settings for the current user.",
+        "description": "Disables any totp settings for the current user. Requires the current password and a current totp passcode.",
         "parameters": [
           {
-            "description": "The current user's password (only password is enough).",
+            "description": "The current user's password and a current totp passcode (totp_passcode).",
             "in": "body",
             "name": "totp",
             "required": true,
@@ -10538,8 +10856,26 @@
               "$ref": "#/definitions/web.HTTPError"
             }
           },
+          "403": {
+            "description": "Wrong password.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
           "404": {
             "description": "User does not exist.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "412": {
+            "description": "Invalid totp passcode.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts.",
             "schema": {
               "$ref": "#/definitions/web.HTTPError"
             }
@@ -10567,15 +10903,15 @@
         "consumes": [
           "application/json"
         ],
-        "description": "Enables a previously enrolled totp setting by providing a totp passcode.",
+        "description": "Enables a previously enrolled totp setting by providing a totp passcode and the current password.",
         "parameters": [
           {
-            "description": "The totp passcode.",
+            "description": "The totp passcode and the current password.",
             "in": "body",
             "name": "totp",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/user.TOTPPasscode"
+              "$ref": "#/definitions/v1.UserTOTPEnableRequest"
             }
           }
         ],
@@ -10595,6 +10931,12 @@
               "$ref": "#/definitions/web.HTTPError"
             }
           },
+          "403": {
+            "description": "Wrong password.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
           "404": {
             "description": "User does not exist.",
             "schema": {
@@ -10603,6 +10945,12 @@
           },
           "412": {
             "description": "TOTP is not enrolled.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts.",
             "schema": {
               "$ref": "#/definitions/web.HTTPError"
             }
@@ -10630,7 +10978,18 @@
         "consumes": [
           "application/json"
         ],
-        "description": "Creates an initial setup for the user in the db. After this step, the user needs to verify they have a working totp setup with the \"enable totp\" endpoint.",
+        "description": "Creates an initial setup for the user in the db. After this step, the user needs to verify they have a working totp setup with the \"enable totp\" endpoint. Requires the current password.",
+        "parameters": [
+          {
+            "description": "The current user's password.",
+            "in": "body",
+            "name": "password",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1.UserPasswordConfirmation"
+            }
+          }
+        ],
         "produces": [
           "application/json"
         ],
@@ -10647,8 +11006,20 @@
               "$ref": "#/definitions/web.HTTPError"
             }
           },
+          "403": {
+            "description": "Wrong password.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
           "404": {
             "description": "User does not exist.",
+            "schema": {
+              "$ref": "#/definitions/web.HTTPError"
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts.",
             "schema": {
               "$ref": "#/definitions/web.HTTPError"
             }
@@ -10998,9 +11369,9 @@
             }
           },
           "401": {
-            "description": "Invalid or expired refresh token.",
+            "description": "Invalid, expired or already-used refresh token, or no refresh token cookie sent (codes 16002-16005).",
             "schema": {
-              "$ref": "#/definitions/models.Message"
+              "$ref": "#/definitions/web.HTTPError"
             }
           }
         },
@@ -11297,7 +11668,7 @@
             "type": "string"
           },
           {
-            "description": "The size of the avatar you want to get. If bigger than the max configured size this will be adjusted to the maximum size.",
+            "description": "The size of the avatar you want to get. Rounded up to 16, 32, 48, 64, 128, 256, 512 or 1024 and capped at the max configured size.",
             "in": "query",
             "name": "size",
             "type": "integer"
