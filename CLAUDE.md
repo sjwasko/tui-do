@@ -257,6 +257,10 @@ now moves the project and its sub-projects to a trash for 30 days. Measured on d
 `is_archived=true`, its tasks are absent from `GET /tasks`, and `GET /tasks/{id}` answers
 `404`. So to every read tui-do makes, trashed is deleted, and a full pull's retain removes it
 locally exactly as before. Restoring it in the web UI brings it back on the next full pull.
+**A deleted task goes to the same trash.** `tasks` gained `deleted_at` too: on 2026-11-09, 24
+tasks deleted through the API were still rows on dev, and `GET /tasks` left out exactly those
+24 (2,033 listed, 2,033 live). Count rows `WHERE deleted_at IS NULL` on both tables, or a
+database total disagrees with the API for no fault of tui-do's.
 `GET /tasks/{id}` also does not return `positions`, even after one is set; read a position
 through `GET /projects/{id}/views/{view}/tasks`.
 
