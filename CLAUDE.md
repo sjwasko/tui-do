@@ -228,6 +228,7 @@ a relation and an attachment **untouched**, where the same shape deletes reminde
 | `related_tasks` | no — measured 2026-08-30 |
 | `attachments` | no — measured 2026-08-30 |
 | `labels` | no; attached and detached through their own endpoints |
+| `positions` (2.8.0) | no — measured 2026-11-08: omitted and `[]` both left list and kanban order untouched |
 
 So each collection is its own question and the answer only comes from asking the server.
 `a_task_update_leaves_relations_alone` in `tests/live.rs` pins the relations half; the
@@ -249,6 +250,15 @@ contained by `Reach`, either: both reaches call `pull_lists` unconditionally, wh
 why the delete-safety reasoning about `Full` versus `Incremental` did not cover it.
 `an_archived_project_and_its_tasks_survive_a_pull` mocks the two shapes the way the
 server answers them.
+
+**2.8.0 deletes a project into a trash, and tui-do cannot tell.** `DELETE /projects/{id}`
+now moves the project and its sub-projects to a trash for 30 days. Measured on dev
+2026-11-08: a trashed project is absent from `GET /projects` *with and without*
+`is_archived=true`, its tasks are absent from `GET /tasks`, and `GET /tasks/{id}` answers
+`404`. So to every read tui-do makes, trashed is deleted, and a full pull's retain removes it
+locally exactly as before. Restoring it in the web UI brings it back on the next full pull.
+`GET /tasks/{id}` also does not return `positions`, even after one is set; read a position
+through `GET /projects/{id}/views/{view}/tasks`.
 
 **Writing a label: three findings, measured on dev 2026-08-29.** The label lifecycle is
 not the task lifecycle with a different noun.
@@ -428,7 +438,7 @@ field quietly becomes uneditable.
 |---|---|
 | **Dev server** | `https://dev-box.example.net:8443` — use this for everything |
 | **Prod server** | `https://prod-box.example.net:8443` — the author's real task data, daily-driven. **Never an automated test target;** see below |
-| **Vikunja version** | v2.6.0 on both. They had drifted — prod moved to 2.6.0 and dev sat on 2.5.0 until dev was upgraded on 2026-09-14 — so re-read prod's `/api/v1/info` after any upgrade there rather than trusting this row. Dev is the conformance target for Rule 3, so a spec refresh takes dev's answer, not prod's |
+| **Vikunja version** | v2.8.0 on both, read from `/api/v1/info` on 2026-11-08, when the spec was refreshed from dev. They have drifted before (2.5.0 against 2.6.0 until 2026-09-14), and this row sat on 2.6.0 for weeks after both servers moved, so re-read `/api/v1/info` on both after any upgrade rather than trusting it. Dev is the conformance target for Rule 3, so a spec refresh takes dev's answer, not prod's |
 | **TLS** | Tailscale Serve certs are publicly trusted; never disable certificate verification |
 
 The dev deployment kit — the compose stack, `reset-dev.sh`, `seed-from-prod.sh`,
