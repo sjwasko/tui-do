@@ -55,22 +55,24 @@ impl TerminalGuard {
         enable_raw_mode().context("could not put the terminal into raw mode")?;
         RAW.store(true, Ordering::SeqCst);
         ALTERNATE.store(true, Ordering::SeqCst);
-        let mut out = io::stdout();
-        // A blinking block, not the terminal's default. tui-do shows a cursor only where
-        // text is being typed, and in the edit form the focused field is already
-        // underlined -- an underline caret would be camouflaged by it, and a thin bar was
-        // what the form had in effect before, which is to say nothing findable.
-        execute!(
-            out,
-            EnterAlternateScreen,
-            cursor::Hide,
-            cursor::SetCursorStyle::BlinkingBlock
-        )
-        .context("could not switch to the alternate screen")?;
+        given_back_on_error(|| {
+            let mut out = io::stdout();
+            // A blinking block, not the terminal's default. tui-do shows a cursor only
+            // where text is being typed, and in the edit form the focused field is already
+            // underlined -- an underline caret would be camouflaged by it, and a thin bar
+            // was what the form had in effect before, which is to say nothing findable.
+            execute!(
+                out,
+                EnterAlternateScreen,
+                cursor::Hide,
+                cursor::SetCursorStyle::BlinkingBlock
+            )
+            .context("could not switch to the alternate screen")?;
 
-        let terminal = Terminal::new(CrosstermBackend::new(out))
-            .context("could not initialise the terminal backend")?;
-        Ok(Self { terminal })
+            let terminal = Terminal::new(CrosstermBackend::new(out))
+                .context("could not initialise the terminal backend")?;
+            Ok(Self { terminal })
+        })
     }
 
     /// Take over `height` lines at the bottom of the normal screen, in raw mode.
@@ -86,14 +88,18 @@ impl TerminalGuard {
         install_hook();
         enable_raw_mode().context("could not put the terminal into raw mode")?;
         RAW.store(true, Ordering::SeqCst);
-        let terminal = Terminal::with_options(
-            CrosstermBackend::new(io::stdout()),
-            TerminalOptions {
-                viewport: Viewport::Inline(height),
-            },
-        )
-        .context("could not initialise the terminal backend")?;
-        Ok(Self { terminal })
+        given_back_on_error(|| {
+            // An inline viewport asks the terminal where its cursor is, and one that never
+            // answers -- a pty with no emulator behind it -- fails here after two seconds.
+            let terminal = Terminal::with_options(
+                CrosstermBackend::new(io::stdout()),
+                TerminalOptions {
+                    viewport: Viewport::Inline(height),
+                },
+            )
+            .context("could not initialise the terminal backend")?;
+            Ok(Self { terminal })
+        })
     }
 
     /// The size of the terminal, if it will say.
@@ -166,6 +172,19 @@ fn install_hook() {
             previous(info);
         }));
     });
+}
+
+/// Finish taking the terminal, giving it back if that fails.
+///
+/// Raw mode is already on when `rest` runs, and there is no guard yet whose `Drop` would
+/// turn it off, so an error returned from here used to leave the shell with no echo
+/// under the error message that explained why.
+fn given_back_on_error<T>(rest: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let taken = rest();
+    if taken.is_err() {
+        restore();
+    }
+    taken
 }
 
 /// Whether the terminal is still ours to draw on.
