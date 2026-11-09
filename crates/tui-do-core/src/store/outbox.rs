@@ -268,6 +268,31 @@ impl Mutation {
         }
     }
 
+    /// The label id this entry's own request sends, when it sends one.
+    ///
+    /// This is what depends on a `CreateLabel`: an attach or a detach puts the id in its
+    /// path, and a rename in its path and body. Exhaustive over [`Mutation`] rather than a
+    /// wildcard arm, so a new variant fails to compile here rather than silently
+    /// answering "sends no label".
+    ///
+    /// `None` for the three task-carrying variants even when their task holds labels.
+    /// `CLAUDE.md` records, measured, that a task body's `labels` field is ignored by the
+    /// server, and a delete sends no body at all -- so none of them asks the server for a
+    /// label. What they carry is [`Self::strip_label`]'s business instead. `None` for
+    /// `CreateLabel` too: the id it carries is the one it defines, and the server ignores
+    /// it.
+    #[must_use]
+    pub fn wire_label(&self) -> Option<LabelId> {
+        match self {
+            Self::AttachLabel { label, .. } | Self::DetachLabel { label, .. } => Some(label.id),
+            Self::UpdateLabel { after, .. } => Some(after.id),
+            Self::CreateTask { .. }
+            | Self::UpdateTask { .. }
+            | Self::DeleteTask { .. }
+            | Self::CreateLabel { .. } => None,
+        }
+    }
+
     /// What undoing this would be, when it can be undone.
     ///
     /// Undo queues the inverse as an ordinary mutation, so it is optimistic, rolls back

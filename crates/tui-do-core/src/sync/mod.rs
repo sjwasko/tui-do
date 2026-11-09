@@ -1107,8 +1107,9 @@ fn is_permanent(error: &ApiError) -> bool {
 /// same subject" is not enough: an `AttachLabel` built on it has the *task* as its
 /// subject and carries the label by value, so a subject filter cannot see it -- and
 /// sending it means asking the server to attach a label id it has never issued.
-/// Exhaustive over [`Mutation`] rather than a wildcard arm, so a new variant fails to
-/// compile here rather than silently answering "does not reference this label".
+/// The answer is [`Mutation::wire_label`], which is exhaustive over [`Mutation`] so a new
+/// variant fails to compile there rather than silently answering "does not reference
+/// this label". The interface's undo prune asks the same question (BUG-27).
 ///
 /// **Both halves of [`Sync::push`] ask this, and for one reason.** A *rejected* create
 /// discards those entries; a *deferred* one blocks them until the create has been retried.
@@ -1132,22 +1133,14 @@ fn is_permanent(error: &ApiError) -> bool {
 /// carries a live label by the time it reaches the queue: `decompose` splits any labels
 /// off into their own `AttachLabel` entries before a `CreateTask` is ever stored.
 fn references(mutation: &Mutation, label: LabelId) -> bool {
-    match mutation {
-        Mutation::AttachLabel { label: carried, .. }
-        | Mutation::DetachLabel { label: carried, .. } => carried.id == label,
-        Mutation::UpdateLabel { after, .. } => after.id == label,
-        // A queued `DeleteTask.before` can also carry the rejected label -- and
-        // `retarget_label` swaps it there too, for the same reason. `false` here is
-        // still right for what this function actually guards (the wire): a delete sends
-        // no body. Rolling one back re-runs `upsert_task(before)` locally, and that used
-        // to resurrect the label row the `CreateLabel` rollback had just deleted (BUG-14,
-        // and the same through `UpdateTask`). The store closes it instead: `upsert_label`
-        // writes a provisional label only while its `CreateLabel` is still queued.
-        Mutation::CreateTask { .. }
-        | Mutation::UpdateTask { .. }
-        | Mutation::CreateLabel { .. }
-        | Mutation::DeleteTask { .. } => false,
-    }
+    // A queued `DeleteTask.before` can also carry the rejected label -- and
+    // `retarget_label` swaps it there too, for the same reason. `false` for it is still
+    // right for what this function actually guards (the wire): a delete sends no body.
+    // Rolling one back re-runs `upsert_task(before)` locally, and that used to resurrect
+    // the label row the `CreateLabel` rollback had just deleted (BUG-14, and the same
+    // through `UpdateTask`). The store closes it instead: `upsert_label` writes a
+    // provisional label only while its `CreateLabel` is still queued.
+    mutation.wire_label() == Some(label)
 }
 
 /// Whether a refusal means the server had already done what was asked.
