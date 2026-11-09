@@ -556,8 +556,9 @@ contain a `?`. Four steps, in this order:
    pure module, `tui-do-ui::assist` (`QuickAddInput`, fed a `Vocabulary` of names), held by
    both the CLI prompt (`crates/tui-do/src/runtime/prompt.rs`, on an inline viewport through
    `TerminalGuard::inline`) and the `a` prompt. `@user` completes from `Store::usernames`,
-   which is every creator and assignee the store has seen; `a` takes them from the tasks on
-   screen. The live preview is a private stand-in marked `TODO(item 12 step 1)` until
+   which is every creator and assignee the store has seen, and both prompts read that one
+   list (`a` through `Effect::LoadUsers`). Neither sends a line whose `+[`, `*[` or `@[` is
+   unclosed (`assist::unclosed`). The live preview is a private stand-in marked `TODO(item 12 step 1)` until
    `Parsed::summary` lands. As planned: with no text and a terminal on both ends, open a one-line
    prompt: a dim placeholder showing the recommended shape that vanishes on the first
    keystroke, and a live preview line that re-parses on every key. **Tab** completes
