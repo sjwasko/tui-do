@@ -1165,7 +1165,9 @@ author's store held 178 open and 3,774 done (3,952 total, ~79 pages). Almost all
 history rather than use: 3,584 tasks were created in the May 2026 import and 1,794 were
 completed in the November cleanup, against an organic rate of ~50-95 new tasks a month — so
 the listing grows by roughly 1,000 tasks, ~20 pages, a year. The progress line now reads
-`3952 tasks (178 open)` so the number stops looking wrong. **Status: none of leads 1-4 is
+`3952 tasks (178 open)` so the number stops looking wrong. **Lead 1 done 2026-11-10:** the timer pulls incrementally and in full at startup
+and then hourly, through `LAST_RECONCILE`. Lead 2 waits on measuring whether attaching a
+label or an assignee moves a task's `updated` on dev. **Status before that: none of leads 1-4 was
 done** — the timer still runs `Pass::Full` every `interval_seconds` (300), and the upsert
 still has no `updated` guard — and none is urgent at this size. Revisit when `R` or the
 timer's pass is felt as slow; do lead 1 first, since the timer, not `R`, is what repeats

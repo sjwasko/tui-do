@@ -144,7 +144,13 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     spawn_input(tx.clone(), Arc::clone(&stop));
     spawn_ticks(tx.clone(), Arc::clone(&stop));
     if let Some(sync) = sync.clone() {
-        spawn_sync_timer(sync, config.sync.clone(), Arc::clone(&stop), tx.clone());
+        spawn_sync_timer(
+            sync,
+            store.clone(),
+            config.sync.clone(),
+            Arc::clone(&stop),
+            tx.clone(),
+        );
     }
 
     let result = event_loop(&mut model, &mut guard, &tx, &mut rx, &store, sync.as_ref()).await;
@@ -1067,9 +1073,35 @@ fn spawn_ticks(tx: LoopTx, stop: Arc<AtomicBool>) {
     });
 }
 
+/// How long the timer goes without a full pull before it does one.
+///
+/// A full pull is the only kind that notices a task deleted in another client, and against
+/// the author's store it is ~79 pages, mostly done tasks. Every five minutes that was 288 of
+/// them a day; hourly is 24, and the cost is that a deletion made elsewhere can take up to
+/// an hour to disappear here unless `R` is pressed. Decided 2026-11-10 (`md/TODO.md`, lead 1).
+const FULL_PULL_EVERY: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
+/// Which pass a timer tick runs.
+///
+/// The first tick is startup and always pulls in full. After that, full only when no full
+/// pull -- the timer's or `R`'s -- has reconciled within [`FULL_PULL_EVERY`]; a store that
+/// cannot say when one last did gets a full one, because that is the pass that is never
+/// wrong, only slow.
+fn timer_pass(
+    first: bool,
+    last_reconcile: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Pass {
+    match last_reconcile {
+        Some(at) if !first && now - at < FULL_PULL_EVERY => Pass::Delta,
+        _ => Pass::Full,
+    }
+}
+
 /// Sync on a timer, and once at startup.
 fn spawn_sync_timer(
     sync: Arc<Sync>,
+    store: Store,
     settings: tui_do_core::config::SyncConfig,
     stop: Arc<AtomicBool>,
     tx: LoopTx,
@@ -1080,17 +1112,16 @@ fn spawn_sync_timer(
     spawn_effect(tx.clone(), async move {
         let mut interval =
             tokio::time::interval(Duration::from_secs(settings.interval_seconds.max(30)));
+        let mut first = true;
         loop {
             interval.tick().await;
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            spawn_sync(
-                Arc::clone(&sync),
-                tx.clone(),
-                Pass::Full,
-                Trigger::Scheduled,
-            );
+            let last_reconcile = store.last_reconcile().await.ok().flatten();
+            let pass = timer_pass(first, last_reconcile, chrono::Utc::now());
+            first = false;
+            spawn_sync(Arc::clone(&sync), tx.clone(), pass, Trigger::Scheduled);
         }
     });
 }
@@ -2650,6 +2681,22 @@ mod tests {
             matches!(seen.last(), Some(SyncEvent::Finished(_))),
             "the reload event was lost when the pass ended; saw {seen:?}"
         );
+    }
+
+    #[test]
+    fn the_timer_pulls_in_full_at_startup_and_hourly_and_otherwise_only_changes() {
+        let now = chrono::Utc::now();
+        let recent = Some(now - chrono::TimeDelta::minutes(5));
+        let stale = Some(now - chrono::TimeDelta::minutes(61));
+
+        assert_eq!(timer_pass(true, recent, now), Pass::Full, "startup");
+        assert_eq!(timer_pass(false, recent, now), Pass::Delta);
+        assert_eq!(
+            timer_pass(false, stale, now),
+            Pass::Full,
+            "an hour has passed"
+        );
+        assert_eq!(timer_pass(false, None, now), Pass::Full, "never reconciled");
     }
 
     #[test]

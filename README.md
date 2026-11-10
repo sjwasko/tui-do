@@ -264,6 +264,8 @@ server:
 sync:
   # The local store answers every read, so this sets staleness rather than speed.
   # Shorter if you have several instances syncing against the same Vikunja.
+  # Each sync fetches what changed; once an hour it re-reads everything, which is
+  # what notices a task deleted elsewhere. R does that at once.
   interval_seconds: 300
   enabled: true
 
