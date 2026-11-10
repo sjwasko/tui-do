@@ -1949,7 +1949,17 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
         model.toast(Toast::error("A task needs a title"));
         return Vec::new();
     }
-    let wanted = label_names(&draft.labels);
+    // A label title is a name, not a key, exactly as a project's is below: two labels can
+    // both read "urgent". Resolving an untouched field by name answered with whichever
+    // came first and swapped it for the one the task held -- attach 12, detach 13 -- on
+    // every save of any field. So an untouched field resolves nothing, and the task's own
+    // label ids stand.
+    let labels_untouched = draft.labels.trim() == draft.labels_was.trim();
+    let wanted = if labels_untouched {
+        Vec::new()
+    } else {
+        label_names(&draft.labels)
+    };
     let (_, missing) = resolve_labels(&model.data.labels, &wanted);
     if unknown == Unknown::Ask && !missing.is_empty() {
         model
@@ -2021,7 +2031,11 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // parsed, while the question had to be asked *before* any of that so a refused
     // submission does not report three unrelated complaints alongside it. Both calls are
     // pure and read the same pool, so they cannot disagree.
-    let (resolved, missing) = resolve_labels(&model.data.labels, &wanted);
+    let (resolved, missing) = if labels_untouched {
+        (before.labels.clone(), Vec::new())
+    } else {
+        resolve_labels(&model.data.labels, &wanted)
+    };
     // Reachable only on the resumed run: the first one stopped and asked. What is left
     // here is a label the user declined, or one whose create the server rejected -- in
     // both cases they have already been told, and this says what it cost them.

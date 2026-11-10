@@ -651,6 +651,12 @@ pub struct EditState {
     pub project_was: String,
     /// The labels field.
     pub labels: TextInput,
+    /// The labels field as the form was opened with it.
+    ///
+    /// Label titles are not unique either, so resolving an untouched field by name can
+    /// answer with a different label of the same title and swap it in. Kept for the same
+    /// reason as [`Self::project_was`]: an untouched field keeps the task's label ids.
+    pub labels_was: String,
     /// Which field has the keyboard.
     pub focus: EditField,
 }
@@ -678,7 +684,8 @@ impl EditState {
             due_prefill: due,
             project: TextInput::new(project_name.to_string()),
             project_was: project_name.to_string(),
-            labels: TextInput::new(labels),
+            labels: TextInput::new(labels.clone()),
+            labels_was: labels,
             focus: EditField::Title,
             before: Box::new(task.clone()),
         }
@@ -712,7 +719,13 @@ impl EditState {
                 .into_iter()
                 .filter(|name| !name.eq_ignore_ascii_case(label.title.trim()))
                 .collect();
+            let untouched = self.labels.value() == self.labels_was;
             self.labels = TextInput::new(kept.join(", "));
+            // Still untouched by the user, so still the task's own ids -- which `before`,
+            // above, no longer includes the dead one among.
+            if untouched {
+                self.labels_was = self.labels.value().to_string();
+            }
         }
     }
 
@@ -754,6 +767,7 @@ impl EditState {
             project: self.project.value().trim().to_string(),
             project_was: self.project_was.trim().to_string(),
             labels: self.labels.value().to_string(),
+            labels_was: self.labels_was.clone(),
         }
     }
 }
@@ -823,6 +837,9 @@ pub struct EditDraft {
     pub project_was: String,
     /// The label names, comma-separated, as typed.
     pub labels: String,
+    /// The label names the form was opened with, to tell an untouched field from an
+    /// edited one when two labels share a title.
+    pub labels_was: String,
 }
 
 impl ModalView for EditState {

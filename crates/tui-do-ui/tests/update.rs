@@ -5681,3 +5681,26 @@ fn a_dialog_follows_its_task_through_adoption() {
         other => panic!("the priority is set: {other:?}"),
     }
 }
+
+#[test]
+fn saving_an_edit_keeps_a_label_that_shares_its_title_with_another() {
+    // Titles are not unique. With 12 and 13 both called "urgent" and the task holding
+    // 13, an untouched Labels field resolved "urgent" to 12 on every save and swapped
+    // the two: attach 12, detach 13.
+    let mut model = with_labels(
+        vec![label(12, "urgent"), label(13, "urgent")],
+        vec![label(13, "urgent")],
+    );
+    press(&mut model, 'e');
+    press(&mut model, '!');
+    let effects = press_ctrl(&mut model, 's');
+    let writes = all_applied(&effects);
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    match writes[0] {
+        Mutation::UpdateTask { after, .. } => {
+            assert_eq!(after.title, "first!");
+            assert_eq!(after.labels, [label(13, "urgent")]);
+        }
+        other => panic!("only the title changed: {other:?}"),
+    }
+}
