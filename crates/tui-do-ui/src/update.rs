@@ -980,12 +980,19 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         Action::CommandPalette => {
             // Built from the keymap, in the focused pane's context, so the palette and
             // the help modal list the same things for the same reason.
+            //
+            // A task command is the exception, offered from every pane while a task is
+            // selected: it acts on the selection, which exists whichever pane has focus.
+            // That is what lets `:` reach "Add or remove labels" from the sidebar and the
+            // preview, where `l` is taken or unbound -- the promise its binding makes.
+            let task_selected = model.selected_task().is_some();
             let candidates = KEYMAP
                 .iter()
                 .filter(|binding| {
                     binding.action.is_command()
                         && (binding.context == crate::keymap::Context::Global
-                            || binding.context == model.context())
+                            || binding.context == model.context()
+                            || (task_selected && binding.group == crate::keymap::Group::Task))
                 })
                 .map(|binding| {
                     Candidate::hinted(

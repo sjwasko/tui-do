@@ -639,6 +639,50 @@ fn the_palette_offers_the_focused_panes_commands() {
 }
 
 #[test]
+fn the_palette_offers_labels_from_every_pane_while_a_task_is_selected() {
+    // `l` is list-only because the sidebar's `l` expands, and its comment promised `:`
+    // would reach it from anywhere. The palette filtered by the focused pane, so it did
+    // not.
+    for focus in [Focus::Sidebar, Focus::Preview] {
+        let mut model = loaded();
+        model.focus = focus;
+        press(&mut model, ':');
+        let Some(Modal::Picker(palette)) = model.modals.last() else {
+            panic!("the palette did not open");
+        };
+        assert!(
+            palette
+                .candidates
+                .iter()
+                .any(|candidate| candidate.title == "Add or remove labels"),
+            "not offered from {focus:?}"
+        );
+        for c in "Add or remove labels".chars() {
+            press(&mut model, c);
+        }
+        press_code(&mut model, KeyCode::Enter);
+        assert!(
+            matches!(model.modals.last(), Some(Modal::Labels(_))),
+            "{:?}",
+            model.modals.last()
+        );
+    }
+
+    // With no task to act on there is nothing for it to do, so it is not offered.
+    let mut model = loaded();
+    answer(&mut model, Vec::new());
+    model.focus = Focus::Sidebar;
+    press(&mut model, ':');
+    let Some(Modal::Picker(palette)) = model.modals.last() else {
+        panic!("the palette did not open");
+    };
+    assert!(!palette
+        .candidates
+        .iter()
+        .any(|candidate| candidate.title == "Add or remove labels"));
+}
+
+#[test]
 fn quitting_from_the_palette_quits() {
     let mut model = loaded();
     press(&mut model, ':');
