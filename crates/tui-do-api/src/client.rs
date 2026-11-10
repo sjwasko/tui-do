@@ -1206,9 +1206,12 @@ fn classify(status: u16, headers: &HeaderMap, body: &str) -> ApiError {
         };
     }
     // A 5xx takes only `Retry-After`. `x-ratelimit-reset` is the rate limiter's window,
-    // and says nothing about when a failing server will be back.
+    // and says nothing about when a failing server will be back. A zero wait -- `0`, or a
+    // date already past, which clock skew alone can produce -- is no advice here: taken
+    // as given, it replaced the backoff with an immediate retry on every pass against a
+    // server that is down.
     let wait = if (500..=599).contains(&status) {
-        explicit_retry_after(headers)
+        explicit_retry_after(headers).filter(|wait| !wait.is_zero())
     } else {
         retry_after(headers)
     };
@@ -1520,6 +1523,20 @@ mod tests {
         let rendered = format!("{call:?}");
         assert!(!rendered.contains("hunter2"));
         assert!(rendered.contains("bytes"));
+    }
+
+    #[test]
+    fn a_server_error_with_a_zero_wait_keeps_the_backoff() {
+        // Found reviewing 1.2.2: `503 Retry-After: 0` turned the exponential backoff into a
+        // retry on every pass.
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, "0".parse().expect("a header"));
+        assert_eq!(classify(503, &headers, "").retry_after(), None);
+        headers.insert(RETRY_AFTER, "120".parse().expect("a header"));
+        assert_eq!(
+            classify(503, &headers, "").retry_after(),
+            Some(Duration::from_secs(120))
+        );
     }
 
     #[test]
