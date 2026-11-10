@@ -821,7 +821,7 @@ impl Sync {
         task: &Task,
     ) -> std::result::Result<Task, ApiError> {
         if entry.may_have_been_sent() {
-            for candidate in self.client.tasks_named(&task.title).await? {
+            for candidate in searched(self.client.tasks_named(&task.title).await)? {
                 if candidate.project_id != task.project_id {
                     continue;
                 }
@@ -918,7 +918,7 @@ impl Sync {
                 // server does not have. So this protects against *our own* replay, and
                 // only mostly.
                 if entry.may_have_been_sent() {
-                    let existing = self.client.labels_named(&label.title).await?;
+                    let existing = searched(self.client.labels_named(&label.title).await)?;
                     if existing.len() > 1 {
                         // Titles are not unique, so the server may hold several exact
                         // matches -- one per lost response, plus anything another box
@@ -1189,6 +1189,25 @@ fn is_permanent(error: &ApiError) -> bool {
         } => false,
         ApiError::Rejected { .. } | ApiError::Forbidden { .. } => true,
         _ => false,
+    }
+}
+
+/// The answer to a create's read-before-retry, with a refusal read as "nothing found".
+///
+/// A 4xx on the search is the server's last word about the *search*, not about the
+/// create it guards, and passing it up rolled the user's task or label back. Creating
+/// instead risks a duplicate, which is visible and deletable, where a rollback loses what
+/// they typed. A transport failure or a 5xx still defers, because the create would
+/// likely meet the same thing.
+fn searched<T>(
+    found: std::result::Result<Vec<T>, ApiError>,
+) -> std::result::Result<Vec<T>, ApiError> {
+    match found {
+        Err(error) if is_permanent(&error) => {
+            tracing::warn!(%error, "the search before a retried create was refused; creating");
+            Ok(Vec::new())
+        }
+        other => other,
     }
 }
 

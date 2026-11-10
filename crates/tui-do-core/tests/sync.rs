@@ -2935,3 +2935,90 @@ async fn a_label_create_cut_off_mid_request_adopts_on_the_next_push() {
     assert_eq!(labels.len(), 1, "one label, not two; saw {labels:?}");
     assert_eq!(labels[0].id, LabelId(41));
 }
+
+#[tokio::test]
+async fn a_refused_search_does_not_reject_the_create_it_guards() {
+    // The read before a retry exists to stop a duplicate. A 4xx on that read is the
+    // server's final word about the *search*, not about the create, and treating it as
+    // the create's answer rolled the user's task back. Create instead: a duplicate is
+    // visible and deletable, a lost task is neither.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"code": 0, "message": "bad search"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(77, "whiskey")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+    assert!(store.task(TaskId(77)).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_refused_search_does_not_reject_the_label_create_it_guards() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"code": 0, "message": "bad search"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 41, "title": "next"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .defer(
+            created.id,
+            "connection reset".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap();
+    assert_eq!(labels.len(), 1, "{labels:?}");
+    assert_eq!(labels[0].id, LabelId(41));
+}

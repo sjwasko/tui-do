@@ -2435,7 +2435,9 @@ must exit non-zero and print the message, and must not print `Sent.`.
   their backoff. The comment now says the query is deliberately unfiltered and why.
 - `RUNNING` is never cleared on panic or abort.
 - A two-atomic seam in the sync trigger can drop an `Asked` force.
-- A 4xx from `labels_named` rejects the create it was there to protect.
+- ~~A 4xx from `labels_named` rejects the create it was there to protect.~~ **Fixed
+  2026-11-10**, for `tasks_named` too: `sync::searched` reads a refused search as "nothing
+  found" and the create goes ahead. BUG-33's fix runs this search more often.
 - The concurrent projects fan-out feeds a cascading retain.
 - `crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production code.
 - `enum Screen` is vestigial: one variant, no use outside `model.rs`. Scope actually lives in
