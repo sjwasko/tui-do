@@ -115,15 +115,21 @@ impl Overlay {
     }
 
     /// The store gave the task `write` created this id; it was drawn without one.
-    pub fn created(&mut self, write: WriteSeq, id: TaskId) {
+    ///
+    /// Answers the task as it was drawn, placeholder id and all, so a caller holding other
+    /// copies of it -- the undo stack's inverse of the create -- can tell which is this one.
+    pub fn created(&mut self, write: WriteSeq, id: TaskId) -> Option<Task> {
+        let mut drawn = None;
         for entry in &mut self.entries {
             if entry.write == write {
                 if let Mutation::CreateTask { task } = &mut entry.mutation {
+                    drawn = Some((**task).clone());
                     task.id = id;
                     entry.created = Some(id);
                 }
             }
         }
+        drawn
     }
 
     /// A provisional task id has become the server's.
