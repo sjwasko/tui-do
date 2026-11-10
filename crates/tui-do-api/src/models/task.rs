@@ -236,7 +236,16 @@ impl Task {
                 title: merge!(title),
                 description: merge!(description),
                 done: merge!(done),
-                done_at: merge!(done_at),
+                // The user's value, but never a collision of its own. The server stamps
+                // `done_at` when it marks a task done, so it never matches the stamp
+                // this box wrote, and an undo of a done would always read the server's
+                // timestamp as someone else's edit. A real disagreement about whether
+                // the task is done is reported on `done`.
+                done_at: if before.done_at == after.done_at {
+                    done_at
+                } else {
+                    after.done_at
+                },
                 priority: merge!(priority),
                 index: merge!(index),
                 identifier: merge!(identifier),
@@ -600,5 +609,34 @@ mod tests {
         assert!(task.labels.is_empty());
         assert!(task.comments.is_empty());
         assert!(task.related_tasks.is_empty());
+    }
+
+    #[test]
+    fn an_undo_of_a_done_is_not_a_collision_on_the_servers_done_at() {
+        // Found driving the key remap on dev, 2026-11-09: `t` then `U` toasted an
+        // overwrite of `done_at` with no other client involved. The local done stamps
+        // its own `done_at`, the server stamps another, and the undo's `before` carries
+        // the local one -- so the server's own timestamp read as someone else's edit.
+        let open = Task {
+            id: TaskId(7),
+            title: "water the plants".into(),
+            ..Task::default()
+        };
+        let done_here = Task {
+            done: true,
+            done_at: Some(at(2026, 11, 9)).into(),
+            ..open.clone()
+        };
+        let done_there = Task {
+            done: true,
+            done_at: Some(at(2026, 11, 10)).into(),
+            ..open.clone()
+        };
+
+        let merged = open.merge_onto(&done_here, done_there);
+
+        assert!(merged.collisions.is_empty(), "{:?}", merged.collisions);
+        assert!(!merged.task.done);
+        assert_eq!(merged.task.done_at.get(), None);
     }
 }

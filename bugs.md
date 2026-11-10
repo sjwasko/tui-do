@@ -2391,13 +2391,12 @@ must exit non-zero and print the message, and must not print `Sent.`.
 
 ## Minor
 
-- **Found driving the key remap on dev, 2026-11-09, unconfirmed cause:** `t`, `U`, `C-r`,
-  `U` in quick succession on one task toasted "saved over a change made elsewhere to task …
-  (done_at)", with no other client touching it. Likely a false collision in
-  `Task::merge_onto`: `done_at` is set by the server, so an undo queued before the done's
-  echo came back carries this box's `done_at` as `before`, and the server's own timestamp
-  reads as someone else's edit. The task ended in the state the user asked for. Predates
-  the remap — `d`, `u`, `C-r`, `u` would do the same.
+- ~~**Found driving the key remap on dev, 2026-11-09:** `t`, `U`, `C-r`, `U` in quick
+  succession toasted "saved over a change made elsewhere … (done_at)".~~ **Fixed
+  2026-11-10.** The cause was as suspected: the server stamps its own `done_at`, so an
+  undo's `before` never matched it. `Task::merge_onto` now takes the user's `done_at`
+  without reporting a collision on it; a real disagreement shows on `done`. Test:
+  `an_undo_of_a_done_is_not_a_collision_on_the_servers_done_at`.
 - **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
   - An unknown `*label` takes its text out of the title and is then left off, so the words
     are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned
