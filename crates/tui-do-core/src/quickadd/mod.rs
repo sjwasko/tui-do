@@ -477,38 +477,44 @@ fn unquote(value: &str) -> String {
 }
 
 /// Recognise `every 2 weeks`, `every week`, `every 3 days`.
+///
+/// Every `every` is tried and the last one that forms a phrase wins. Only the first used to
+/// be, so an ordinary `every` earlier in the line hid the real repeat: `Check every box
+/// every week` had none. The last, because that is where the recommended form puts it,
+/// and an `every` in the title then cannot take its place.
 fn repeat_phrase(words: &[words::Word]) -> Option<(Repeat, Range<usize>, Vec<usize>)> {
-    let start = words.iter().position(|w| w.is("every"))?;
+    (0..words.len())
+        .rev()
+        .filter(|&start| words[start].is("every"))
+        .find_map(|start| repeat_at(words, start))
+}
+
+/// The repeat phrase starting with the `every` at `start`, if one does.
+fn repeat_at(words: &[words::Word], start: usize) -> Option<(Repeat, Range<usize>, Vec<usize>)> {
+    let next = words.get(start + 1)?;
 
     // `every week`
-    if let Some(next) = words.get(start + 1) {
-        if let Some(unit) = dates::unit(next.trimmed()) {
-            return Some((
-                Repeat { every: 1, unit },
-                words[start].range.start..next.range.end,
-                vec![words[start].range.start, next.range.start],
-            ));
-        }
-
-        // `every 2 weeks`
-        if let (Ok(every), Some(unit_word)) = (next.trimmed().parse::<u32>(), words.get(start + 2))
-        {
-            if let Some(unit) = dates::unit(unit_word.trimmed()) {
-                if every > 0 {
-                    return Some((
-                        Repeat { every, unit },
-                        words[start].range.start..unit_word.range.end,
-                        vec![
-                            words[start].range.start,
-                            next.range.start,
-                            unit_word.range.start,
-                        ],
-                    ));
-                }
-            }
-        }
+    if let Some(unit) = dates::unit(next.trimmed()) {
+        return Some((
+            Repeat { every: 1, unit },
+            words[start].range.start..next.range.end,
+            vec![words[start].range.start, next.range.start],
+        ));
     }
-    None
+
+    // `every 2 weeks`
+    let every = next.trimmed().parse::<u32>().ok().filter(|&n| n > 0)?;
+    let unit_word = words.get(start + 2)?;
+    let unit = dates::unit(unit_word.trimmed())?;
+    Some((
+        Repeat { every, unit },
+        words[start].range.start..unit_word.range.end,
+        vec![
+            words[start].range.start,
+            next.range.start,
+            unit_word.range.start,
+        ],
+    ))
 }
 
 #[cfg(test)]
@@ -705,6 +711,39 @@ mod tests {
         let parsed = parse("Fix it start:monday", &clock);
         assert_eq!(parsed.title, "Fix it");
         assert_eq!(on_evening(parsed.start_date), "2026-11-09 00:00");
+    }
+
+    #[test]
+    fn the_last_every_that_forms_a_repeat_is_the_repeat() {
+        // Only the first `every` was tried, so an ordinary one earlier in the line hid
+        // the real repeat and both stayed in the title.
+        let clock = evening();
+        let weekly = Some(Repeat {
+            every: 1,
+            unit: Unit::Week,
+        });
+        for (input, title) in [
+            ("Check every box every week", "Check every box"),
+            ("check every room every week", "check every room"),
+            ("every day counts every week", "every day counts"),
+            ("do it every day every week", "do it every day"),
+            ("check every room every week +Home", "check every room"),
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.repeat, weekly, "{input:?}");
+            assert_eq!(parsed.title, title, "{input:?}");
+        }
+
+        // An `every` after the repeat that forms nothing does not displace it.
+        let parsed = parse("every 2 days check every room", &clock);
+        assert_eq!(
+            parsed.repeat,
+            Some(Repeat {
+                every: 2,
+                unit: Unit::Day
+            })
+        );
+        assert_eq!(parsed.title, "check every room");
     }
 
     #[test]
