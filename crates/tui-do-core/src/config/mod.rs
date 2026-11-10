@@ -338,6 +338,17 @@ impl Config {
         Ok(self.resolve_token(config_path)?.token)
     }
 
+    /// Where `server.token_file` points, resolved the way [`Config::resolve_token`] reads
+    /// it: `~` expanded, a relative path taken against the config's directory. `None` when
+    /// the config names no token file.
+    #[must_use]
+    pub fn token_file_path(&self, config_path: &Path) -> Option<PathBuf> {
+        self.server
+            .token_file
+            .as_deref()
+            .map(|file| resolve_relative(file, config_path))
+    }
+
     /// The API token, and where it came from.
     ///
     /// Four sources, tried in this order:

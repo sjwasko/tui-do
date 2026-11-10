@@ -26,7 +26,7 @@
 //! launch.
 
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use tui_do_core::config::{write_token_file, Config, ServerConfig, SyncConfig, TOKEN_FILE};
@@ -115,13 +115,13 @@ pub(crate) fn run(
     let who = verify(&url, &token)?;
     println!("Signed in as {who}.");
 
-    let token_path = path.parent().map_or_else(
-        || Path::new(TOKEN_FILE).to_path_buf(),
-        |dir| dir.join(TOKEN_FILE),
-    );
+    let token_file = token_file_for(&path, existing.as_ref());
+    let (config, dropped_inline_token) = configure(existing, url, token_file);
+    let token_path = config
+        .token_file_path(&path)
+        .context("the config names no token file to write")?;
     write_token_file(&token_path, &token)?;
 
-    let (config, dropped_inline_token) = configure(existing, url);
     if dropped_inline_token {
         println!(
             "Removed the inline server.token from the config; the token is in {} now.",
@@ -146,7 +146,7 @@ pub(crate) fn run(
 /// reports. Dropping it is not optional: [`Config::api_token`] refuses a config carrying
 /// both `token` and `token_file` rather than resolving a precedence nobody remembers, so
 /// leaving it would write a config that cannot start.
-fn configure(existing: Option<Config>, url: String) -> (Config, bool) {
+fn configure(existing: Option<Config>, url: String, token_file: PathBuf) -> (Config, bool) {
     let mut config = existing.unwrap_or_else(|| Config {
         server: ServerConfig {
             url: String::new(),
@@ -159,11 +159,32 @@ fn configure(existing: Option<Config>, url: String) -> (Config, bool) {
         quick_actions: Vec::new(),
     });
     config.server.url = url;
-    // Relative, so the pair travels: a config and its token copied to another box resolve
-    // against wherever they landed rather than against this machine's home directory.
-    config.server.token_file = Some(Path::new(TOKEN_FILE).to_path_buf());
+    config.server.token_file = Some(token_file);
     let dropped = config.server.token.take().is_some();
     (config, dropped)
+}
+
+/// The token file a login writes, as the config will name it.
+///
+/// An existing config that already names one keeps it: login never repoints a config at a
+/// different file, because the file it named is the one its owner knows about. Anything
+/// else gets a name derived from the config's own, so two configs in one directory never
+/// share a token -- `tui-do --config dev.yaml login` used to write `token` whatever the
+/// config was called, overwriting the credential `config.yaml` beside it reads.
+/// `config.yaml` keeps the plain `token` it has always had; `dev.yaml` gets `dev-token`.
+///
+/// Relative, so the pair travels: a config and its token copied to another box resolve
+/// against wherever they landed rather than against this machine's home directory.
+fn token_file_for(config_path: &Path, existing: Option<&Config>) -> PathBuf {
+    if let Some(named) = existing.and_then(|config| config.server.token_file.clone()) {
+        return named;
+    }
+    match config_path.file_stem().map(|stem| stem.to_string_lossy()) {
+        Some(stem) if stem != "config" && !stem.is_empty() => {
+            PathBuf::from(format!("{stem}-{TOKEN_FILE}"))
+        }
+        _ => PathBuf::from(TOKEN_FILE),
+    }
 }
 
 /// Ask for a line, offering `default` when there is one.
@@ -398,7 +419,12 @@ mod tests {
         let quick_actions = existing.quick_actions.clone();
         let view = existing.view.clone();
 
-        let (config, dropped) = configure(Some(existing), "https://new.example.com".to_string());
+        let token_file = token_file_for(Path::new("/x/config.yaml"), Some(&existing));
+        let (config, dropped) = configure(
+            Some(existing),
+            "https://new.example.com".to_string(),
+            token_file,
+        );
 
         assert_eq!(config.server.url, "https://new.example.com");
         assert_eq!(config.sync.interval_seconds, 42);
@@ -416,7 +442,12 @@ mod tests {
         existing.server.token = Some("tk_inline".to_string());
         existing.server.token_file = None;
 
-        let (config, dropped) = configure(Some(existing), "https://example.com".to_string());
+        let token_file = token_file_for(Path::new("/x/config.yaml"), Some(&existing));
+        let (config, dropped) = configure(
+            Some(existing),
+            "https://example.com".to_string(),
+            token_file,
+        );
 
         assert!(dropped, "the caller has to be told, so it can say so");
         assert_eq!(config.server.token, None);
@@ -433,7 +464,8 @@ mod tests {
     /// A first run has no config at all, which is the case the whole command exists for.
     #[test]
     fn a_first_run_writes_a_relative_token_file() {
-        let (config, dropped) = configure(None, "https://example.com".to_string());
+        let token_file = token_file_for(Path::new("/x/config.yaml"), None);
+        let (config, dropped) = configure(None, "https://example.com".to_string(), token_file);
 
         assert!(!dropped);
         assert_eq!(config.server.url, "https://example.com");
@@ -445,6 +477,68 @@ mod tests {
             config.sync,
             SyncConfig::default(),
             "a config written for someone should carry the ordinary defaults"
+        );
+    }
+
+    /// A config that already names its token file is written through that file and keeps
+    /// naming it. Login never repoints a config, whatever the config is called.
+    #[test]
+    fn logging_in_again_writes_the_token_file_the_config_already_names() {
+        let mut existing = Config::example();
+        existing.server.token_file = Some(PathBuf::from("prod-token"));
+        let path = Path::new("/x/dev.yaml");
+
+        let token_file = token_file_for(path, Some(&existing));
+        let (config, _) = configure(
+            Some(existing),
+            "https://dev.example.com".to_string(),
+            token_file,
+        );
+
+        assert_eq!(
+            config.server.token_file.as_deref(),
+            Some(Path::new("prod-token"))
+        );
+        assert_eq!(
+            config.token_file_path(path),
+            Some(PathBuf::from("/x/prod-token"))
+        );
+
+        let mut absolute = Config::example();
+        absolute.server.token_file = Some(PathBuf::from("/secrets/vikunja"));
+        assert_eq!(
+            token_file_for(Path::new("/x/config.yaml"), Some(&absolute)),
+            PathBuf::from("/secrets/vikunja")
+        );
+    }
+
+    /// The bug: `tui-do --config dev.yaml login` wrote `token` beside it, which is the file
+    /// `config.yaml` in the same directory reads -- so logging in to dev overwrote prod's
+    /// credential. A new config's token is named after the config; `config.yaml` keeps the
+    /// plain `token` it has always had.
+    #[test]
+    fn a_new_config_gets_a_token_file_named_after_itself() {
+        assert_eq!(
+            token_file_for(Path::new("/x/config.yaml"), None),
+            PathBuf::from("token")
+        );
+        assert_eq!(
+            token_file_for(Path::new("/x/dev.yaml"), None),
+            PathBuf::from("dev-token")
+        );
+        assert_eq!(
+            token_file_for(Path::new("work.yml"), None),
+            PathBuf::from("work-token")
+        );
+
+        // A config with only an inline token has no file of its own to keep, so it gets
+        // the derived name too rather than the shared one.
+        let mut inline = Config::example();
+        inline.server.token = Some("tk_inline".to_string());
+        inline.server.token_file = None;
+        assert_eq!(
+            token_file_for(Path::new("/x/dev.yaml"), Some(&inline)),
+            PathBuf::from("dev-token")
         );
     }
 }
