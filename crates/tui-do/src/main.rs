@@ -84,7 +84,8 @@ enum Command {
     /// then the repeat. Dates go last because a date leaves the title only when nothing
     /// follows it except whitespace, punctuation and other tokens. A real add prints
     /// the same line as "as typed best: ..." whenever what was typed differs from it;
-    /// copy that form next time.
+    /// copy that form next time. A line starting with - is shown after "-- ", which
+    /// keeps it from being read as a flag and goes outside any quotes.
     ///
     /// --tokens lists every project, label and user the local store knows, one to a
     /// line and written the way the best form writes them, then the token syntax:

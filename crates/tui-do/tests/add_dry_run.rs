@@ -378,5 +378,34 @@ async fn a_real_add_shows_the_best_phrasing_only_when_it_differs() {
     );
     assert!(!tidy.contains("as typed best"), "{tidy}");
 
+    // Found by the 2026-11-09 smoke test: a line starting with `-` pasted back reads as
+    // a flag, so the best form is shown after `--`, which pastes back as the same line.
+    for flag in ["--offline", "--dry-run"] {
+        let dashed = stdout(&tui_do(
+            &dir,
+            &["add", flag, "--", "--dry-run x !3 +Personal"],
+        ));
+        assert!(
+            dashed.contains("\nas typed best: -- --dry-run x +Personal !3\n"),
+            "{flag}: {dashed}"
+        );
+    }
+    let pasted = tui_do(
+        &dir,
+        &[
+            "add",
+            "--dry-run",
+            "--",
+            "--dry-run",
+            "x",
+            "+Personal",
+            "!3",
+        ],
+    );
+    assert!(
+        stdout(&pasted).starts_with("Would add \"--dry-run x\" to Personal\n"),
+        "{pasted:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }

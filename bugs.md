@@ -2396,8 +2396,9 @@ must exit non-zero and print the message, and must not print `Sent.`.
     `Parsed` line already passes it through `printable`.~~ **Fixed 2026-11-10** — the title,
     the created and unknown label names and the "no project called" error all go through
     `printable` now.
-  - A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
-    copy-safe: pasted back, it reads as the flag.
+  - ~~A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
+    copy-safe: pasted back, it reads as the flag.~~ **Fixed 2026-11-10** — a best form
+    starting with `-` is printed after `-- `, in a real add and a dry run.
   - `-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;
     the help says both are stored exactly as given (the server keeps `\r\n` when sent it).
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for

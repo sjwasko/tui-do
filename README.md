@@ -421,6 +421,8 @@ follows it except whitespace, punctuation and other tokens. A date kept mid-sent
 in the title, so the best form keeps it there and writes the date again at the end. Every
 real add whose line differs from its best form says so on a second line,
 `as typed best: …`; a line already written that way, spacing aside, gets no second line.
+A best form starting with `-` is shown after `-- `, which keeps it from being read as a
+flag when pasted back; the `--` goes outside any quotes.
 
 Wrap a name containing spaces in brackets or quotes; brackets are usually easier from a
 shell, which strips quotes before tui-do sees them:

@@ -1464,7 +1464,7 @@ pub async fn add(
     }
     // Second, straight under the line it rewrites.
     if let Some(best) = better_phrasing(text, &parsed, &clock) {
-        println!("as typed best: {best}");
+        println!("{}", best_line(&best));
     }
     for line in lines {
         println!("{line}");
@@ -1685,7 +1685,7 @@ async fn rehearse(
     }
     println!("Parsed: {}", printable(&parsed.summary(&clock.timezone())));
     if let Some(best) = checked_canonical(parsed, clock) {
-        println!("as typed best: {best}");
+        println!("{}", best_line(&best));
     }
     println!("Dry run: nothing was queued or sent.");
     Ok(())
@@ -1957,6 +1957,16 @@ fn better_phrasing(
 ) -> Option<String> {
     let typed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     checked_canonical(parsed, clock).filter(|best| *best != printable(&typed))
+}
+
+/// The `as typed best:` line, written so it can be pasted back after `tui-do add`.
+///
+/// A best form starting with `-` is shown after `-- `: pasted back bare, `--dry-run x`
+/// is read as the flag, and `--` is what tells the command line that the rest is the
+/// task. The `--` is not part of the task, so it goes outside any quotes.
+fn best_line(best: &str) -> String {
+    let guard = if best.starts_with('-') { "-- " } else { "" };
+    format!("as typed best: {guard}{best}")
 }
 
 /// The line in its canonical form, if that parses back to the same task.
