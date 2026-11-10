@@ -86,6 +86,29 @@ impl Store {
         .await
     }
 
+    /// Store labels a pull returned, leaving anything with unsent local changes alone.
+    ///
+    /// The label half of [`Store::upsert_tasks_from_server`], and for the same reason: the
+    /// server's copy of a label the user has just renamed is older than what is on their
+    /// screen, and writing it would undo the rename in front of them until it is sent.
+    /// Returns how many were written.
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn upsert_labels_from_server(&self, labels: Vec<Label>) -> Result<usize> {
+        let now = Utc::now();
+        self.write(move |tx| {
+            let mut stored = 0;
+            for label in &labels {
+                if write_server_label(tx, label, now)? == ServerLabel::Written {
+                    stored += 1;
+                }
+            }
+            Ok(stored)
+        })
+        .await
+    }
+
     /// Read one label.
     ///
     /// # Errors
@@ -242,6 +265,64 @@ pub(super) fn attach_label(
         )?;
     }
     Ok(())
+}
+
+/// [`attach_label`] for a label the server sent embedded in a task.
+///
+/// The link is the server's to state, so it is written whenever the label row exists;
+/// the row itself is left alone while a change to it is queued. See
+/// [`Store::upsert_labels_from_server`].
+pub(super) fn attach_server_label(
+    tx: &Transaction<'_>,
+    task: TaskId,
+    label: &Label,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    if write_server_label(tx, label, now)? != ServerLabel::Absent {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?1, ?2)",
+            params![task.get(), label.id.get()],
+        )?;
+    }
+    Ok(())
+}
+
+/// What [`write_server_label`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerLabel {
+    /// The server's copy is stored.
+    Written,
+    /// A change to it is queued, so the local row was kept.
+    Kept,
+    /// There is no row to attach.
+    Absent,
+}
+
+/// Write a label the server sent, unless a change to it is still queued.
+///
+/// Filters on `subject_kind`, for the reason [`is_being_created`] does.
+fn write_server_label(
+    tx: &Transaction<'_>,
+    label: &Label,
+    now: DateTime<Utc>,
+) -> Result<ServerLabel> {
+    // Kept only when there is a local row to keep: a queued change with no row behind it
+    // is better served by the server's copy than by a task that loses the link.
+    let kept = tx.query_row(
+        "SELECT exists(SELECT 1 FROM outbox
+                        WHERE subject_id = ?1 AND subject_kind = 'label')
+            AND exists(SELECT 1 FROM labels WHERE id = ?1)",
+        params![label.id.get()],
+        |row| row.get::<_, i64>(0),
+    )? == 1;
+    if kept {
+        return Ok(ServerLabel::Kept);
+    }
+    Ok(if write_label(tx, label, now)? {
+        ServerLabel::Written
+    } else {
+        ServerLabel::Absent
+    })
 }
 
 /// The write behind both, answering whether the label was written.

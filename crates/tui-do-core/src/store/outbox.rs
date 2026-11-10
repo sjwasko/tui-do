@@ -44,7 +44,7 @@ use tui_do_api::models::{Label, LabelId, Task, TaskId};
 
 use super::labels::{attach_label, is_being_created, upsert_label};
 use super::state::{read_state, write_state};
-use super::tasks::{read_task, upsert_task};
+use super::tasks::{read_task, upsert_server_task, upsert_task};
 use super::{DecodeCount, Store};
 use crate::error::Result;
 
@@ -1071,7 +1071,7 @@ impl Store {
             };
             let deleted = local.is_none() && queued_for(Some("delete_task"))?;
             if !deleted {
-                let row = match local {
+                match local {
                     Some(mut local) if queued_for(None)? => {
                         local.id = assigned.id;
                         local.identifier.clone_from(&assigned.identifier);
@@ -1081,11 +1081,10 @@ impl Store {
                         if local.created_by.is_none() {
                             local.created_by.clone_from(&assigned.created_by);
                         }
-                        local
+                        upsert_task(tx, &local, now)?;
                     }
-                    _ => assigned.clone(),
-                };
-                upsert_task(tx, &row, now)?;
+                    _ => upsert_server_task(tx, &assigned, now)?,
+                }
             }
             // `OR IGNORE` because the server's answer may already carry the same link;
             // the row is then dropped with the provisional task below.

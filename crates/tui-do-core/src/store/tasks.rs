@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use tui_do_api::models::{ProjectId, Task, TaskId, TaskReminder, User};
 
-use super::labels::{attach_label, labels_for_tasks};
+use super::labels::{attach_label, attach_server_label, labels_for_tasks};
 use super::sql::{escape_like, group_by_task, instant, joined_user, keep_ids, stamp, upsert_user};
 use super::Store;
 use crate::error::Result;
@@ -361,7 +361,7 @@ impl Store {
                     }
                     continue;
                 }
-                upsert_task(tx, task, now)?;
+                upsert_server_task(tx, task, now)?;
                 applied.stored += 1;
             }
             Ok(applied)
@@ -444,6 +444,31 @@ pub(super) fn read_task(connection: &Connection, id: TaskId) -> Result<Option<Ta
 
 /// Write one task and its links.
 pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>) -> Result<()> {
+    write_task(tx, task, now, Source::Local)
+}
+
+/// Write one task the server sent, and its links.
+///
+/// As [`upsert_task`], except that a label embedded in it whose own change is still
+/// queued keeps its local row: a pull of the task must not undo a rename of the label.
+pub(super) fn upsert_server_task(
+    tx: &Transaction<'_>,
+    task: &Task,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    write_task(tx, task, now, Source::Server)
+}
+
+/// Who a task being written came from, which decides how its embedded labels land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// The user, through a queued mutation or its rollback.
+    Local,
+    /// A pull, or a write's answer.
+    Server,
+}
+
+fn write_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>, source: Source) -> Result<()> {
     tx.execute(
         "INSERT INTO tasks (
             id, project_id, title, description, done, done_at, priority, percent_done,
@@ -502,7 +527,10 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
         params![task.id.get()],
     )?;
     for label in &task.labels {
-        attach_label(tx, task.id, label, now)?;
+        match source {
+            Source::Local => attach_label(tx, task.id, label, now)?,
+            Source::Server => attach_server_label(tx, task.id, label, now)?,
+        }
     }
 
     tx.execute(

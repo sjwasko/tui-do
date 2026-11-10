@@ -1107,7 +1107,7 @@ impl Sync {
 
         let labels = self.client.all_labels().await?;
         let label_ids = labels.iter().map(|label| label.id).collect();
-        report.labels = self.store.upsert_labels(labels).await?;
+        report.labels = self.store.upsert_labels_from_server(labels).await?;
         report.removed += self.store.retain_labels(label_ids).await?;
         self.emit(SyncEvent::Progress {
             stage: Stage::Labels,

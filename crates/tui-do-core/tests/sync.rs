@@ -3379,3 +3379,47 @@ async fn an_edit_queued_behind_a_create_stays_on_screen_when_the_create_settles(
     );
     assert!(store.task(provisional).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn a_pull_does_not_overwrite_a_label_rename_that_has_not_been_sent() {
+    // A task with a queued change is skipped by a pull; a label was not. Label 7 reaches
+    // the store twice in one pull -- in the labels listing and embedded in task 1 -- and
+    // either write put the server's old title back over the rename on screen.
+    let server = MockServer::start().await;
+    let mut carrying = task_json(1, "errand");
+    carrying["labels"] = json!([{"id": 7, "title": "errands"}]);
+    mount_pull(&server, vec![carrying]).await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .upsert_labels(vec![label(7, "errands")])
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(7, "errands")),
+            after: Box::new(label(7, "chores")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    sync.pull().await.unwrap();
+
+    assert_eq!(
+        store
+            .label(LabelId(7))
+            .await
+            .unwrap()
+            .expect("label 7")
+            .title,
+        "chores",
+        "a pull put the server's title back over a queued rename"
+    );
+    let labels = store.task(TaskId(1)).await.unwrap().unwrap().labels;
+    assert_eq!(
+        labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![LabelId(7)],
+        "the task still carries the label, whatever its row says"
+    );
+}
