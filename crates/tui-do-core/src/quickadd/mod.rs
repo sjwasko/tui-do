@@ -139,9 +139,34 @@ pub const TITLE_MAX_CHARS: usize = 1_000;
 /// `4029`, "The task repeat interval must be between 0 and 315360000 seconds (10 years)."
 pub const REPEAT_MAX_SECONDS: i64 = 315_360_000;
 
+/// The years a date may fall in, in UTC, for Vikunja to keep it.
+///
+/// Found by the 2026-11-09 smoke test: `due 0001-01-01` and `due 9999-12-31` were both
+/// accepted and the server ended up with no due date. The year 1 is Go's zero time,
+/// which Vikunja reads as unset, and 23:59 on 9999-12-31 anywhere west of UTC is in the
+/// year 10000 once converted, past what a four-digit year can hold.
+pub const DATE_YEARS: std::ops::RangeInclusive<i32> = 2..=9999;
+
+/// Why Vikunja could not store `at` as the `name` date, if it could not ([`DATE_YEARS`]).
+///
+/// Shared by quick add and by every field that sets a date on its own -- the edit form's
+/// Due and the `d` prompt -- so the three cannot disagree about what the server keeps.
+#[must_use]
+pub fn date_refusal(name: &str, at: DateTime<Utc>) -> Option<String> {
+    let year = chrono::Datelike::year(&at);
+    (!DATE_YEARS.contains(&year)).then(|| {
+        format!(
+            "the {name} date falls in the year {year} in UTC, and Vikunja keeps only dates \
+             between the years {} and {}",
+            DATE_YEARS.start(),
+            DATE_YEARS.end()
+        )
+    })
+}
+
 impl Parsed {
     /// Why the server would refuse this task, if it is known to: a title or a repeat over
-    /// Vikunja's limits.
+    /// Vikunja's limits, or a date it cannot store ([`DATE_YEARS`]).
     ///
     /// Checked before anything is queued (BUG-35). A refused create is rolled back, so a
     /// line that breaks a limit would otherwise be accepted locally, sent, and lost, and
@@ -164,7 +189,9 @@ impl Parsed {
                 ));
             }
         }
-        None
+        [("due", self.due_date), ("start", self.start_date)]
+            .into_iter()
+            .find_map(|(name, at)| at.and_then(|at| date_refusal(name, at)))
     }
 
     /// Whether anything at all was recognised beyond a plain title.
@@ -180,8 +207,25 @@ impl Parsed {
 /// against, so the runtime passes its clock in `Zone::Local` (see [`crate::zone`]) and
 /// tests pass whatever zone they like.
 pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
+    parse_keeping(input, now, &[])
+}
+
+/// Read one line as [`parse`] does, except that a `*label` named in `kept` is not a label:
+/// it stays in the title exactly as typed, and is not in [`Parsed::labels`].
+///
+/// For a label that is left off the task because no such label exists. Taking its text
+/// out of the title and then dropping it lost the words: `*needs review` was saved as
+/// `review`. Names are compared ignoring ASCII case, the fold the label lookup uses, so
+/// every spelling of an unknown name stays.
+///
+/// A kept label is still not read as a date or a repeat, and it does not keep a date in
+/// the title that would have left it (see [`ends_the_line`]): only the label's own text
+/// stays, so whether a label exists changes nothing else about the task.
+pub fn parse_keeping<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: &[String]) -> Parsed {
     let mut parsed = Parsed::default();
     let mut consumed: Vec<Range<usize>> = Vec::new();
+    // Kept labels: in the title, but no more a reason to keep a date there than a label.
+    let mut passed: Vec<Range<usize>> = Vec::new();
 
     let all_words = words::split(input);
 
@@ -193,6 +237,15 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
             Some((kind, value)) if !value.is_empty() => {
                 let range = word.range.clone();
                 match kind {
+                    // Neither consumed nor offered to the date reader: text, as typed.
+                    TokenKind::Label
+                        if kept
+                            .iter()
+                            .any(|name| name.trim().eq_ignore_ascii_case(value.trim())) =>
+                    {
+                        passed.push(range);
+                        continue;
+                    }
                     TokenKind::Label => parsed.labels.push(value),
                     TokenKind::Assignee => parsed.assignees.push(value),
                     // Last project wins: retyping one should correct it, not be ignored.
@@ -246,7 +299,8 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
     // A date leaves the title only from the end (BUG-29). Judged last to first, so that
     // of two dates at the end, the later one being removed lets the earlier one go too.
     for date in dates.iter().rev() {
-        if ends_the_line(input, date.range.end, &consumed) {
+        let skipped: Vec<Range<usize>> = consumed.iter().chain(&passed).cloned().collect();
+        if ends_the_line(input, date.range.end, &skipped) {
             consumed.push(date.range.clone());
         }
     }
@@ -481,12 +535,77 @@ mod tests {
     }
 
     #[test]
+    fn a_date_the_server_cannot_store_is_refused() {
+        // Found by the 2026-11-09 smoke test: both were reported and the server ended up
+        // with no date. Year 1 is Go's zero time, which Vikunja reads as unset, and 23:59
+        // on 9999-12-31 at -05:00 is in the year 10000 in UTC.
+        let zero = p("party due 0001-01-01").server_refusal().unwrap();
+        assert!(zero.contains("due date"), "{zero}");
+        assert!(zero.contains("year 1"), "{zero}");
+        assert!(zero.contains("between the years 2 and 9999"), "{zero}");
+        let far = p("party due 9999-12-31").server_refusal().unwrap();
+        assert!(far.contains("due date"), "{far}");
+        assert!(far.contains("year 10000"), "{far}");
+        let start = p("party start 0001-06-01").server_refusal().unwrap();
+        assert!(start.contains("start date"), "{start}");
+        assert!(p("party start 9999-12-31 at 20:00")
+            .server_refusal()
+            .is_some());
+
+        // Just inside, either way.
+        assert_eq!(p("party due 0002-01-01").server_refusal(), None);
+        assert_eq!(p("party due 9999-12-30").server_refusal(), None);
+        assert_eq!(p("party start 9999-12-31").server_refusal(), None);
+    }
+
+    #[test]
     fn quoted_and_bracketed_values_carry_spaces() {
         let parsed = p(r#"Ship it *"needs review" +[Home Renovation] @'Ada Lovelace'"#);
         assert_eq!(parsed.labels, vec!["needs review"]);
         assert_eq!(parsed.project.as_deref(), Some("Home Renovation"));
         assert_eq!(parsed.assignees, vec!["Ada Lovelace"]);
         assert_eq!(parsed.title, "Ship it");
+    }
+
+    #[test]
+    fn a_label_kept_in_the_title_stays_exactly_as_typed() {
+        // An unknown `*label` that is left off the task must not take its words with it:
+        // `**bold** _md_` was saved as `_md_` and `*needs review` as `review`.
+        let clock = now();
+        let kept = |input: &str, names: &[&str]| {
+            let names: Vec<String> = names.iter().map(|n| (*n).to_string()).collect();
+            parse_keeping(input, &clock, &names)
+        };
+        let parsed = kept("**bold** _md_", &["*bold**"]);
+        assert_eq!(parsed.title, "**bold** _md_");
+        assert!(parsed.labels.is_empty());
+        assert!(
+            !parsed.has_magic(),
+            "it is not highlighted as a label either"
+        );
+
+        let parsed = kept("*needs review", &["needs"]);
+        assert_eq!(parsed.title, "*needs review");
+
+        // Only the names given stay; a known label still leaves, case folded the way
+        // the label lookup folds it, so `*Waiting` stays when `waiting` was unknown.
+        let parsed = kept("Call the VA *urgent *waiting *Waiting", &["waiting"]);
+        assert_eq!(parsed.title, "Call the VA *waiting *Waiting");
+        assert_eq!(parsed.labels, vec!["urgent"]);
+
+        // A label named like a date is still not read as one.
+        let parsed = kept("Plan *tomorrow", &["tomorrow"]);
+        assert_eq!(parsed.title, "Plan *tomorrow");
+        assert_eq!(parsed.due_date, None);
+
+        // Only the label stays: a date it follows leaves the title as it would have if
+        // the label had been known, so whether a label exists changes nothing else.
+        let parsed = kept("pay rent due friday *bills", &["bills"]);
+        assert_eq!(parsed.title, "pay rent *bills");
+        assert_eq!(local(parsed.due_date), "2026-08-28 23:59");
+
+        // Nothing kept is exactly `parse`.
+        assert_eq!(kept("Fix *bug due friday", &[]), p("Fix *bug due friday"));
     }
 
     #[test]

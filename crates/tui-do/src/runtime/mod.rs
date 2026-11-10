@@ -144,7 +144,13 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     spawn_input(tx.clone(), Arc::clone(&stop));
     spawn_ticks(tx.clone(), Arc::clone(&stop));
     if let Some(sync) = sync.clone() {
-        spawn_sync_timer(sync, config.sync.clone(), Arc::clone(&stop), tx.clone());
+        spawn_sync_timer(
+            sync,
+            store.clone(),
+            config.sync.clone(),
+            Arc::clone(&stop),
+            tx.clone(),
+        );
     }
 
     let result = event_loop(&mut model, &mut guard, &tx, &mut rx, &store, sync.as_ref()).await;
@@ -1067,9 +1073,35 @@ fn spawn_ticks(tx: LoopTx, stop: Arc<AtomicBool>) {
     });
 }
 
+/// How long the timer goes without a full pull before it does one.
+///
+/// A full pull is the only kind that notices a task deleted in another client, and against
+/// the author's store it is ~79 pages, mostly done tasks. Every five minutes that was 288 of
+/// them a day; hourly is 24, and the cost is that a deletion made elsewhere can take up to
+/// an hour to disappear here unless `R` is pressed. Decided 2026-11-10 (`md/TODO.md`, lead 1).
+const FULL_PULL_EVERY: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
+/// Which pass a timer tick runs.
+///
+/// The first tick is startup and always pulls in full. After that, full only when no full
+/// pull -- the timer's or `R`'s -- has reconciled within [`FULL_PULL_EVERY`]; a store that
+/// cannot say when one last did gets a full one, because that is the pass that is never
+/// wrong, only slow.
+fn timer_pass(
+    first: bool,
+    last_reconcile: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Pass {
+    match last_reconcile {
+        Some(at) if !first && now - at < FULL_PULL_EVERY => Pass::Delta,
+        _ => Pass::Full,
+    }
+}
+
 /// Sync on a timer, and once at startup.
 fn spawn_sync_timer(
     sync: Arc<Sync>,
+    store: Store,
     settings: tui_do_core::config::SyncConfig,
     stop: Arc<AtomicBool>,
     tx: LoopTx,
@@ -1080,17 +1112,16 @@ fn spawn_sync_timer(
     spawn_effect(tx.clone(), async move {
         let mut interval =
             tokio::time::interval(Duration::from_secs(settings.interval_seconds.max(30)));
+        let mut first = true;
         loop {
             interval.tick().await;
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            spawn_sync(
-                Arc::clone(&sync),
-                tx.clone(),
-                Pass::Full,
-                Trigger::Scheduled,
-            );
+            let last_reconcile = store.last_reconcile().await.ok().flatten();
+            let pass = timer_pass(first, last_reconcile, chrono::Utc::now());
+            first = false;
+            spawn_sync(Arc::clone(&sync), tx.clone(), pass, Trigger::Scheduled);
         }
     });
 }
@@ -1420,7 +1451,7 @@ pub async fn add(
     // run never so much as builds a client.
     if mode.dry_run {
         let store = open_existing_store().await?;
-        return rehearse(config, &store, &parsed, &clock, &mode).await;
+        return rehearse(config, &store, text, parsed, &clock, &mode).await;
     }
     let store = open_store().await?;
 
@@ -1471,7 +1502,8 @@ pub async fn add(
         }
     }
 
-    let built = built.ok_or_else(|| no_project(&parsed, &projects))?;
+    let mut built = built.ok_or_else(|| no_project(&parsed, &projects))?;
+    let parsed = left_off(&mut built, text, parsed, &clock, &mode)?;
 
     let project_id = built.task.project_id;
     let project = project_label(&projects, project_id);
@@ -1504,7 +1536,7 @@ pub async fn add(
     }
     // Second, straight under the line it rewrites.
     if let Some(best) = better_phrasing(text, &parsed, &clock) {
-        println!("as typed best: {best}");
+        println!("{}", best_line(&best));
     }
     for line in lines {
         println!("{line}");
@@ -1629,8 +1661,12 @@ fn no_project(
     parsed: &tui_do_core::quickadd::Parsed,
     projects: &[tui_do_core::models::Project],
 ) -> anyhow::Error {
-    match parsed.project.as_deref() {
-        Some(name) => match longer_project(projects, name) {
+    match parsed
+        .project
+        .as_deref()
+        .map(|typed| (typed, printable(typed)))
+    {
+        Some((typed, name)) => match longer_project(projects, typed) {
             // The commonest way to get here by far: `+Dinner Places` names the project
             // `Dinner` and leaves `Places` in the title, because a token ends at the
             // first space. Saying so here is the moment the bracket form is worth
@@ -1667,7 +1703,8 @@ fn no_project(
 async fn rehearse(
     config: &Config,
     store: &Store,
-    parsed: &tui_do_core::quickadd::Parsed,
+    text: &str,
+    parsed: tui_do_core::quickadd::Parsed,
     clock: &tui_do_core::ZonedTime,
     mode: &AddMode,
 ) -> anyhow::Result<()> {
@@ -1680,15 +1717,16 @@ async fn rehearse(
         .await
         .unwrap_or_default();
     let users = store.users().await.unwrap_or_default();
-    let built = tui_do_ui::quickadd_task(
-        parsed,
+    let mut built = tui_do_ui::quickadd_task(
+        &parsed,
         &projects,
         &labels,
         &users,
         None,
         config.view.default_project.as_deref(),
     )
-    .ok_or_else(|| no_project(parsed, &projects))?;
+    .ok_or_else(|| no_project(&parsed, &projects))?;
+    let parsed = &left_off(&mut built, text, parsed, clock, mode)?;
 
     // What `queue_add` would do with the labels, without queuing anything.
     let (created_labels, unknown_labels) = if mode.create_labels {
@@ -1719,10 +1757,37 @@ async fn rehearse(
     }
     println!("Parsed: {}", printable(&parsed.summary(&clock.timezone())));
     if let Some(best) = checked_canonical(parsed, clock) {
-        println!("as typed best: {best}");
+        println!("{}", best_line(&best));
     }
     println!("Dry run: nothing was queued or sent.");
     Ok(())
+}
+
+/// The line as it will be added, once the labels `--create-labels` will not make are
+/// known to be left off: their words go back in the title, as typed.
+///
+/// `parsed` unchanged when every label resolves or is to be created. Otherwise re-read
+/// with the unknown names kept as text, which is what the `Parsed:` line and the
+/// `as typed best:` check then describe, and checked against the server's limits again,
+/// since the title is longer now.
+///
+/// # Errors
+/// The longer title is past the server's limit.
+fn left_off(
+    built: &mut tui_do_ui::QuickAdd,
+    text: &str,
+    parsed: tui_do_core::quickadd::Parsed,
+    clock: &tui_do_core::ZonedTime,
+    mode: &AddMode,
+) -> anyhow::Result<tui_do_core::quickadd::Parsed> {
+    if mode.create_labels || built.unknown_labels.is_empty() {
+        return Ok(parsed);
+    }
+    let kept = built.keep_unknown_labels(text, clock);
+    if let Some(refusal) = kept.server_refusal() {
+        anyhow::bail!("not added: {refusal}");
+    }
+    Ok(kept)
 }
 
 /// How `tui-do add` was asked to run.
@@ -1859,6 +1924,9 @@ impl Outcome<'_> {
             Tense::Did => "Added",
             Tense::Would => "Would add",
         };
+        // Typed by the user, or read from a file or stdin: as untrusted on a terminal as a
+        // name from the server, so it goes through the same filter the `Parsed` line uses.
+        let title = printable(title);
         let mut lines = Vec::new();
         // On the first line, after the dates, so the line's opening stays the shape
         // people and the skill doc read.
@@ -1897,7 +1965,10 @@ impl Outcome<'_> {
                 Tense::Did => "Created",
                 Tense::Would => "Would create",
             };
-            lines.push(format!("{verb} label {}.", created_labels.join(", ")));
+            lines.push(format!(
+                "{verb} label {}.",
+                printable(&created_labels.join(", "))
+            ));
         }
         if !unknown_labels.is_empty() {
             let one = unknown_labels.len() == 1;
@@ -1907,7 +1978,7 @@ impl Outcome<'_> {
                 "No labels called"
             };
             let object = if one { "it" } else { "them" };
-            let listed = unknown_labels.join(", ");
+            let listed = printable(&unknown_labels.join(", "));
             lines.push(match tense {
                 // Scoped to next time in the *text*, not only in the comment: the natural
                 // reading of a CLI hint is "re-run me with this flag", and the task above
@@ -1958,6 +2029,16 @@ fn better_phrasing(
 ) -> Option<String> {
     let typed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     checked_canonical(parsed, clock).filter(|best| *best != printable(&typed))
+}
+
+/// The `as typed best:` line, written so it can be pasted back after `tui-do add`.
+///
+/// A best form starting with `-` is shown after `-- `: pasted back bare, `--dry-run x`
+/// is read as the flag, and `--` is what tells the command line that the rest is the
+/// task. The `--` is not part of the task, so it goes outside any quotes.
+fn best_line(best: &str) -> String {
+    let guard = if best.starts_with('-') { "-- " } else { "" };
+    format!("as typed best: {guard}{best}")
 }
 
 /// The line in its canonical form, if that parses back to the same task.
@@ -2392,6 +2473,43 @@ mod tests {
         );
     }
 
+    /// Every name the user typed goes through `printable`, as the `Parsed` line already
+    /// did: found by the 2026-11-09 smoke test, where ESC and BEL in a title reached the
+    /// terminal from the `Added` and `Would add` lines.
+    #[test]
+    fn the_report_prints_no_control_characters() {
+        let created = vec!["new\u{1b}]52;c;x\u{7}".to_string()];
+        let unknown = vec!["gone\u{1b}[2J".to_string()];
+        let outcome = Outcome {
+            title: "call \u{1b}]52;c;evil\u{7}mom",
+            project: "Inbox".to_string(),
+            project_id: tui_do_core::models::ProjectId(7),
+            ambiguous_project: false,
+            dates: String::new(),
+            backdated: None,
+            created_labels: &created,
+            unknown_labels: &unknown,
+            unknown_users: &[],
+            description: "",
+        };
+        for tense in [Tense::Did, Tense::Would] {
+            let lines = outcome.lines(tense);
+            for line in &lines {
+                assert!(!line.chars().any(char::is_control), "{line:?}");
+            }
+            assert!(
+                lines[0].ends_with("\"call \u{fffd}]52;c;evil\u{fffd}mom\" to Inbox"),
+                "{:?}",
+                lines[0]
+            );
+        }
+
+        // And the error for a project that is not there, which names what was typed.
+        let parsed = tui_do_core::quickadd::parse("x +\u{1b}]52;c;x\u{7}", &now());
+        let said = no_project(&parsed, &[]).to_string();
+        assert!(!said.chars().any(char::is_control), "{said:?}");
+    }
+
     /// A description is counted on the first line and never printed; a dry run shows a
     /// printable glimpse of its first line as well.
     #[test]
@@ -2563,6 +2681,22 @@ mod tests {
             matches!(seen.last(), Some(SyncEvent::Finished(_))),
             "the reload event was lost when the pass ended; saw {seen:?}"
         );
+    }
+
+    #[test]
+    fn the_timer_pulls_in_full_at_startup_and_hourly_and_otherwise_only_changes() {
+        let now = chrono::Utc::now();
+        let recent = Some(now - chrono::TimeDelta::minutes(5));
+        let stale = Some(now - chrono::TimeDelta::minutes(61));
+
+        assert_eq!(timer_pass(true, recent, now), Pass::Full, "startup");
+        assert_eq!(timer_pass(false, recent, now), Pass::Delta);
+        assert_eq!(
+            timer_pass(false, stale, now),
+            Pass::Full,
+            "an hour has passed"
+        );
+        assert_eq!(timer_pass(false, None, now), Pass::Full, "never reconciled");
     }
 
     #[test]

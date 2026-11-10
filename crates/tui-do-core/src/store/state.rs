@@ -103,12 +103,10 @@ impl Store {
 
     /// When a full pull last reconciled deletions, if one ever has.
     ///
-    /// Recorded but not yet consumed: nothing in production reads this, only tests. It is
-    /// kept because the distinction it carries is real and is documented in `CLAUDE.md` --
     /// `LAST_PULL` means "everything up to here has been seen" and both reaches advance
     /// it, where this means "and nothing else is gone", which only a `Full` pull may
-    /// claim. A future "your deletions were last checked N hours ago", or a decision that
-    /// a full pull is overdue, is what it is for.
+    /// claim. The runtime's sync timer reads it to decide when a full pull is overdue
+    /// (since 2026-11-10; until then nothing in production read it).
     ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.

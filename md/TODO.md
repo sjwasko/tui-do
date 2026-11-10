@@ -65,19 +65,20 @@ is the actual order. Items keep their stable numbers — nothing is renumbered, 
 notes cite them — so this says *what order*, not *what number*.
 
 ```
-  NOW      8(macOS)   DROPPED 2026-11-09 -- measured, every upgrade loses access
+  NOW      v1.2.0     the key remap, BUG-33, the add fixes, the hourly full
+                      pull. Owed before the tag: see "Owed at the next publish"
            ------------------------------------------------------------
-           Phase A shipped (tap pours v1.1.0, macOS supported, CI gates).
-           What goes NOW in its place is open: see DECIDE.
+           8(macOS) DROPPED 2026-11-09. Phase A shipped.
 
-  NEXT     3a         tui_do_core::agent + list/show --json
+  NEXT     lead 2     measure on dev whether a label or assignee change moves
+                      a task's `updated`, then guard the upsert on it
+           3a         DEFERRED 2026-11-10 -- until someone asks for it
            3b         DROPPED 2026-11-09 -- Vikunja ships its own MCP server
 
-  DECIDE   What is NOW after item 8. The 2026-11-09 handoff lists BUG-33,
-           the six `tui-do add` findings, crates.io, and a cheaper full sync.
-           BUG-20 before November. The --json contract before 3a ships.
-           Whether 3a is still wanted without 3b (see item 3).
-           BUG-9 needs a decision, not work. BUG-7 is fixed.
+  DECIDED  2026-11-10: BUG-33, the six `tui-do add` findings and the false
+           done_at overwrite fixed; CRLF stays converted; WSL left as is;
+           enum Screen kept; crates.io from v1.2.0; timer full pull hourly;
+           3a deferred. BUG-7, BUG-9 and BUG-20 are fixed.
 
   DEFER    4 (Kanban), standalone mode, comments, subtasks
 ```
@@ -204,9 +205,10 @@ lands, and the order matters.
 upstream, so a second one in tui-do would duplicate it. There will be no `tui-do mcp`, no
 `crates/tui-do-mcp` and no `rmcp` dependency. **What is left is 3a:** `tui-do list` and
 `tui-do show` with `--json`, read from the local store. The "veans can read and tui-do
-cannot" argument below never depended on MCP and still holds. Nobody has decided yet whether
-it is still worth building now that agents have a first-party route into Vikunja; it is on
-the DECIDE line. The rest of this entry is as written. Read "one contract through two
+cannot" argument below never depended on MCP and still holds. *Decided 2026-11-10: deferred
+until someone asks for it.* Vikunja's MCP server and API cover reading; what 3a adds is
+offline reads from the local store, and the JSON shape becomes a public contract the moment
+anything depends on it, so it waits for a user to design it for. The rest of this entry is as written. Read "one contract through two
 doors" as one door now.
 Design taken in `md/2026-09-08-mcp-server-design.md`. `tui-do list` and `tui-do show` are
 still the item — today `add` is the entire agent surface, and the real gap against veans is
@@ -577,7 +579,10 @@ hand, seconds apart" to "four that launch when you open the laptop."
   scissors line. `--description-file -` with no task text is refused in words,
   since stdin cannot be both the description and step 2's prompt.
 - **Stored as given.** No Markdown conversion and no guessing: CRLF becomes LF, one trailing
-  newline is dropped, and that is all. Invalid UTF-8, a NUL (PostgreSQL rejects one in text)
+  newline is dropped, and that is all. *Decided 2026-11-10: CRLF stays converted.* WSL is
+  the only Windows route, a file saved in Notepad there ends its lines in CRLF, and
+  converting keeps the description the same in the web UI and on every other box. From a file, stdin or the editor only: since
+  2026-11-10 `-d` keeps every byte, as its help always said. Invalid UTF-8, a NUL (PostgreSQL rejects one in text)
   or more than **64 KiB** is refused before anything is queued. The cap is ours: the spec
   gives `description` no `maxLength` and Vikunja stores it as long text, so 64 KiB is a
   generous guard against a misnamed file, which every later edit would otherwise re-send.
@@ -1161,7 +1166,9 @@ author's store held 178 open and 3,774 done (3,952 total, ~79 pages). Almost all
 history rather than use: 3,584 tasks were created in the May 2026 import and 1,794 were
 completed in the November cleanup, against an organic rate of ~50-95 new tasks a month — so
 the listing grows by roughly 1,000 tasks, ~20 pages, a year. The progress line now reads
-`3952 tasks (178 open)` so the number stops looking wrong. **Status: none of leads 1-4 is
+`3952 tasks (178 open)` so the number stops looking wrong. **Lead 1 done 2026-11-10:** the timer pulls incrementally and in full at startup
+and then hourly, through `LAST_RECONCILE`. Lead 2 waits on measuring whether attaching a
+label or an assignee moves a task's `updated` on dev. **Status before that: none of leads 1-4 was
 done** — the timer still runs `Pass::Full` every `interval_seconds` (300), and the upsert
 still has no `updated` guard — and none is urgent at this size. Revisit when `R` or the
 timer's pass is felt as slow; do lead 1 first, since the timer, not `R`, is what repeats
@@ -1277,7 +1284,7 @@ they are commitments rather than ideas.
 | Agentic AI | `tui-do add` with `--dry-run`/`--tokens` and `skills/tui-do/SKILL.md` today; 3a if built. **No MCP server** (decided 2026-11-09) — Vikunja's official one covers that, and a follow-up on the forum should say so |
 | Comments | not started |
 | Subtasks | not started |
-| WSL support | not started; Windows is currently answered with "use WSL" |
+| WSL support | not started; Windows is currently answered with "use WSL". *Decided 2026-11-10: left as is for v1.2.0.* Untested; the likely gap is `o`, which sees WSLg's display and tries `xdg-open` rather than copying |
 | A standalone version, with no Vikunja backend | not started, and the largest of these by far — it means a second source of truth behind the store, and it should get a design note before any code |
 
 ---
@@ -1290,13 +1297,13 @@ they are commitments rather than ideas.
   that explain the change. Those release notes also need a "Keys changed" section at the top,
   because that page is what the notice sends people to. The README already says 1.2.0.
 
-- **`tui-do-core` must go out as `2.0.0`.** Its public `CoreError` gained a `Refused`
-  variant with the BUG-27 fix (2026-11-08) and became `#[non_exhaustive]` in the same
-  change. Either is a breaking change for anything outside the workspace that matched it
-  exhaustively, so a `1.x` publish would break a semver promise. No version was bumped
-  then; the bump belongs to the release that ships it, along with the other three crates'
-  path-dependency versions (see `CLAUDE.md`, "The version lives in `Cargo.toml` in four
-  places").
+- **crates.io is published from the `v1.2.0` tag, and 1.1.0 is skipped.** *Decided
+  2026-11-10.* crates.io holds 1.0.1; v1.1.0's crates were never published, and 1.1.0
+  carries BUG-33. Because `tui-do-core` and `tui-do-ui` 2.0.0 were never published, the
+  breaking changes made since the `v1.1.0` tag ride in 2.0.0 too: `OutboxEntry` gained
+  `sent_at`, and `Effect` gained `DismissKeysNotice`. So the v1.2.0 publish is
+  `tui-do-api` and `tui-do` at 1.2.0, `tui-do-core` and `tui-do-ui` at 2.0.0, in the order
+  `CLAUDE.md` gives, from a checkout of the tag.
 
 ---
 

@@ -725,16 +725,59 @@ fn quick_add_assigns_the_users_it_names() {
 }
 
 #[test]
-fn a_task_past_the_servers_limits_is_not_queued() {
+fn quick_add_prefers_the_label_and_project_spelled_exactly() {
+    // Found by the 2026-11-09 smoke test: `*Urgent` attached `urgent` when both existed,
+    // because the case-insensitive match took the first. Exact first, as `@user` does.
     let mut model = loaded();
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(5, "Urgent")]),
+    );
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "home", 0), project(3, "Home", 0)]),
+    );
     press(&mut model, 'n');
-    for c in "water the cactus every 1000 years".chars() {
+    for c in "Fix the door *Urgent *URGENT +Home".chars() {
         press(&mut model, c);
     }
     let effects = press_code(&mut model, KeyCode::Enter);
-    assert!(applied(&effects).is_none(), "{effects:?}");
+    match applied(&effects).expect("a task was queued") {
+        Mutation::CreateTask { task } => {
+            let ids: Vec<i64> = task.labels.iter().map(|l| l.id.get()).collect();
+            // `*URGENT` matches neither exactly, so it falls back to the first.
+            assert_eq!(ids, vec![5, 4]);
+            assert_eq!(task.project_id, ProjectId(3));
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
     let toast = model.status.toast.as_ref().expect("the user is told");
-    assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
+    assert!(
+        !toast.text.contains("more than one project"),
+        "an exact match is not ambiguous: {}",
+        toast.text
+    );
+}
+
+#[test]
+fn a_task_past_the_servers_limits_is_not_queued() {
+    for line in [
+        "water the cactus every 1000 years",
+        // A date the server cannot store. The model's clock is at UTC here, so the year
+        // 10000 cannot be reached from a typed date; the core test covers it.
+        "party due 0001-01-01",
+        "party start 0001-06-01",
+    ] {
+        let mut model = loaded();
+        press(&mut model, 'n');
+        for c in line.chars() {
+            press(&mut model, c);
+        }
+        let effects = press_code(&mut model, KeyCode::Enter);
+        assert!(applied(&effects).is_none(), "{line:?}: {effects:?}");
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
+    }
 }
 
 #[test]
@@ -804,6 +847,33 @@ fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
     }
     let toast = model.status.toast.as_ref().expect("the user is told");
     assert!(toast.text.contains("nosuchlabel"), "{}", toast.text);
+}
+
+#[test]
+fn a_label_left_off_keeps_its_words_in_the_title() {
+    // Found by the 2026-11-09 smoke test: `**bold** _md_` was saved as `_md_` and
+    // `*needs review` as `review`, because the label's text left the title and the label
+    // was then left off.
+    for (typed, title) in [
+        ("**bold** _md_", "**bold** _md_"),
+        ("*needs review", "*needs review"),
+        ("pay rent *bills due friday", "pay rent *bills"),
+    ] {
+        let mut model = loaded();
+        press(&mut model, 'n');
+        for c in typed.chars() {
+            press(&mut model, c);
+        }
+        press_code(&mut model, KeyCode::Enter);
+        let effects = press(&mut model, 'n');
+        match applied(&effects).expect("the task was still created") {
+            Mutation::CreateTask { task } => {
+                assert_eq!(task.title, title, "{typed:?}");
+                assert!(task.labels.is_empty(), "{typed:?}");
+            }
+            other => panic!("wrong mutation: {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -3938,7 +4008,8 @@ fn declining_adds_the_task_without_the_label() {
 
     match all_applied(&effects).as_slice() {
         [Mutation::CreateTask { task }] => {
-            assert_eq!(task.title, "Call the VA");
+            // The label left off keeps its words in the title, as typed.
+            assert_eq!(task.title, "Call the VA *waiting");
             assert_eq!(
                 task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
                 vec![LabelId(4)],
@@ -4114,7 +4185,7 @@ fn escaping_the_question_still_adds_the_task() {
     let (mut model, _) = asked_about_waiting();
     let effects = press_code(&mut model, KeyCode::Esc);
     match all_applied(&effects).as_slice() {
-        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA"),
+        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA *waiting"),
         other => panic!("wrong mutations: {other:?}"),
     }
     assert!(model.modals.is_empty());
@@ -5059,6 +5130,50 @@ fn an_edited_due_field_is_read_as_a_local_date() {
         after.due_date.get(),
         Some(Utc.with_ymd_and_hms(2027, 3, 16, 4, 59, 0).unwrap())
     );
+}
+
+#[test]
+fn the_due_prompt_refuses_a_date_the_server_cannot_store() {
+    // The `d` half of the 2026-11-09 smoke finding quick add already refuses: 23:59 on
+    // 9999-12-31 in New York is the year 10000 in UTC, and the server keeps no due date.
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    for typed in ["9999-12-31", "0001-01-01"] {
+        let mut model = due_in_new_york(due);
+        press(&mut model, 'd');
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+        );
+        for c in typed.chars() {
+            press(&mut model, c);
+        }
+        let effects = press_code(&mut model, KeyCode::Enter);
+        assert!(applied(&effects).is_none(), "{typed}: {effects:?}");
+        assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(toast.text.starts_with("Not set:"), "{}", toast.text);
+    }
+}
+
+#[test]
+fn the_edit_form_keeps_the_due_date_when_the_new_one_cannot_be_stored() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let state = open_edit(&mut model);
+    state.focus = tui_do_ui::modal::EditField::Due;
+    for _ in 0..40 {
+        state.handle(Key::plain(KeyCode::Backspace));
+    }
+    type_into(state, "9999-12-31");
+    let effects = save(&mut model);
+
+    if let Some(Mutation::UpdateTask { after, .. }) = applied(&effects) {
+        assert_eq!(after.due_date.get(), Some(due), "the refused date was sent");
+    }
+    assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("year 10000"), "{}", toast.text);
 }
 
 #[test]

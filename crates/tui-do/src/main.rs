@@ -84,7 +84,8 @@ enum Command {
     /// then the repeat. Dates go last because a date leaves the title only when nothing
     /// follows it except whitespace, punctuation and other tokens. A real add prints
     /// the same line as "as typed best: ..." whenever what was typed differs from it;
-    /// copy that form next time.
+    /// copy that form next time. A line starting with - is shown after "-- ", which
+    /// keeps it from being read as a flag and goes outside any quotes.
     ///
     /// --tokens lists every project, label and user the local store knows, one to a
     /// line and written the way the best form writes them, then the token syntax:
@@ -122,7 +123,8 @@ enum Command {
     ///   EOF
     ///
     /// It is stored exactly as given -- Markdown, plain text or HTML -- but for one
-    /// trailing newline, and quick-add tokens in it stay text. It must be UTF-8 and
+    /// trailing newline and CRLF becoming LF from a file or stdin (-d keeps every
+    /// byte), and quick-add tokens in it stay text. It must be UTF-8 and
     /// at most 64 KiB. The confirmation line counts it rather than printing it:
     /// `with a description (3 paragraphs, 1,240 characters)`.
     ///
@@ -285,7 +287,8 @@ struct AddArgs {
     /// Off by default: labels are one global pool shared by every project, so a typo in
     /// a task line otherwise becomes a permanent entry that pollutes completion
     /// everywhere. The interface asks; a command that may be running unattended cannot,
-    /// so it takes an instruction instead.
+    /// so it takes an instruction instead. Without it, an unknown `*label` is left off and
+    /// its words stay in the title as typed.
     #[arg(long)]
     create_labels: bool,
 
@@ -331,8 +334,8 @@ struct AddArgs {
 
     /// Read the task's description from a file, or from stdin if PATH is `-`.
     ///
-    /// Stored exactly as given, but for one trailing newline. It must be UTF-8 text of
-    /// 64 KiB or less. With `-`, pipe it in or use a quoted heredoc, and give the task's
+    /// Stored exactly as given, but for one trailing newline, and CRLF line endings
+    /// become LF. It must be UTF-8 text of 64 KiB or less. With `-`, pipe it in or use a quoted heredoc, and give the task's
     /// text as an argument.
     #[arg(
         long,
@@ -363,7 +366,13 @@ struct AddArgs {
 fn read_description(args: &AddArgs) -> anyhow::Result<runtime::DescriptionSource> {
     use tui_do_core::description;
     let bytes = match (&args.description, &args.description_file) {
-        (Some(text), _) => text.clone().into_bytes(),
+        // Exactly as typed: the trailing newline `normalise` drops is a file's or a
+        // heredoc's, and an argument has none it did not mean.
+        (Some(text), _) => {
+            return Ok(runtime::DescriptionSource::Given(description::check(
+                text.clone().into_bytes(),
+            )?));
+        }
         (None, Some(path)) if path.as_os_str() == STDIN => {
             let stdin = std::io::stdin();
             // `-` at a terminal waits for typing, as `git commit -F -` does. Say so, or it
@@ -876,7 +885,8 @@ mod tests {
         let args = add_args(&["title", "-d", "- one\n- two\r\n"]).unwrap();
         assert_eq!(
             read_description(&args).unwrap(),
-            runtime::DescriptionSource::Given("- one\n- two".to_string())
+            // Byte for byte, as its help says: the trailing CRLF too.
+            runtime::DescriptionSource::Given("- one\n- two\r\n".to_string())
         );
         let none = add_args(&["title"]).unwrap();
         assert_eq!(

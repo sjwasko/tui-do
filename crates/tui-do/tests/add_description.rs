@@ -123,6 +123,22 @@ async fn an_inline_description_keeps_its_newline() {
 }
 
 #[tokio::test]
+async fn an_inline_description_is_stored_exactly_as_given() {
+    // Found by the 2026-11-09 smoke test: `-d 'text\n'` lost its newline. The trim is for
+    // a file or a heredoc, which always end in one; an argument ends where it was typed.
+    let dir = scratch("inline-exact").await;
+    let want = "Ask about the crown.\r\nBring the card.\n";
+    let output = tui_do(
+        &dir,
+        &["add", "--offline", "Call the dentist +Personal", "-d", want],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(queued(&dir).await[0].description, want);
+    assert_eq!(stored(&dir).await[0].description, want);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn a_description_file_is_stored_exactly() {
     let dir = scratch("file").await;
     // Tokens, Markdown, HTML-ish text, indentation and a CRLF, as a file might carry.

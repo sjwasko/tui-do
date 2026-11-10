@@ -113,7 +113,22 @@ async fn a_dry_run_leaves_the_store_untouched() {
     assert!(before.0.is_empty(), "the scratch outbox starts empty");
 
     let line = "Call the dentist due 2099-01-05 +Personal *health *nope !3";
-    for flags in [&["--dry-run"][..], &["--dry-run", "--create-labels"][..]] {
+    // Left off, `*nope` stays in the title as typed, and a best form that would make it a
+    // label again is not one: it does not parse back to this task.
+    for (flags, title, parsed, best) in [
+        (
+            &["--dry-run"][..],
+            "Call the dentist *nope",
+            "title \"Call the dentist *nope\" · +Personal · *health · !3 · due Mon 5 Jan 2099",
+            None,
+        ),
+        (
+            &["--dry-run", "--create-labels"][..],
+            "Call the dentist",
+            "title \"Call the dentist\" · +Personal · *health · *nope · !3 · due Mon 5 Jan 2099",
+            Some("Call the dentist +Personal *health *nope !3 due 2099-01-05"),
+        ),
+    ] {
         let mut args = vec!["add"];
         args.extend_from_slice(flags);
         args.push(line);
@@ -121,22 +136,22 @@ async fn a_dry_run_leaves_the_store_untouched() {
         let out = stdout(&output);
         assert!(output.status.success(), "{flags:?}: {output:?}");
         assert!(
-            out.starts_with("Would add \"Call the dentist\" to Personal, due Mon 5 Jan 2099\n"),
+            out.starts_with(&format!(
+                "Would add \"{title}\" to Personal, due Mon 5 Jan 2099\n"
+            )),
             "{flags:?}: {out}"
         );
         assert!(
-            out.contains(
-                "Parsed: title \"Call the dentist\" · +Personal · *health · *nope · !3 · \
-                 due Mon 5 Jan 2099\n"
-            ),
+            out.contains(&format!("Parsed: {parsed}\n")),
             "{flags:?}: {out}"
         );
-        assert!(
-            out.contains(
-                "as typed best: Call the dentist +Personal *health *nope !3 due 2099-01-05\n"
+        match best {
+            Some(best) => assert!(
+                out.contains(&format!("as typed best: {best}\n")),
+                "{flags:?}: {out}"
             ),
-            "{flags:?}: {out}"
-        );
+            None => assert!(!out.contains("as typed best"), "{flags:?}: {out}"),
+        }
         assert!(
             out.contains("Dry run: nothing was queued or sent."),
             "{out}"
@@ -155,6 +170,63 @@ async fn a_dry_run_leaves_the_store_untouched() {
         &["add", "--dry-run", "--create-labels", line],
     ));
     assert!(created.contains("Would create label nope."), "{created}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_label_left_off_keeps_its_words_in_the_title() {
+    // Found by the 2026-11-09 smoke test: `**bold** _md_` was saved as `_md_` and
+    // `*needs review` as `review`. The warning was there; the words were not.
+    let dir = scratch("label-left-off").await;
+    for (typed, title) in [
+        ("**bold** _md_ +Personal", "**bold** _md_"),
+        ("*needs review +Personal", "*needs review"),
+        (
+            "Call the dentist *health *nope +Personal",
+            "Call the dentist *nope",
+        ),
+    ] {
+        let dry = stdout(&tui_do(&dir, &["add", "--dry-run", typed]));
+        assert!(
+            dry.starts_with(&format!("Would add \"{title}\" to Personal\n")),
+            "{typed:?}: {dry}"
+        );
+        assert!(
+            dry.contains(&format!("Parsed: title \"{title}\"")),
+            "{typed:?}: {dry}"
+        );
+        let real = stdout(&tui_do(&dir, &["add", "--offline", typed]));
+        assert!(
+            real.starts_with(&format!("Added \"{title}\" to Personal\n")),
+            "{typed:?}: {real}"
+        );
+        assert!(real.contains("left off"), "{typed:?}: {real}");
+    }
+    let (_, tasks, _) = contents(&dir).await;
+    for title in ["**bold** _md_", "*needs review", "Call the dentist *nope"] {
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task.ends_with(&format!(" {title}"))),
+            "{title:?} in {tasks:?}"
+        );
+    }
+
+    // Created, it is a label again and leaves the title.
+    let created = stdout(&tui_do(
+        &dir,
+        &[
+            "add",
+            "--dry-run",
+            "--create-labels",
+            "*needs review +Personal",
+        ],
+    ));
+    assert!(
+        created.starts_with("Would add \"review\" to Personal\n"),
+        "{created}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -305,6 +377,35 @@ async fn a_real_add_shows_the_best_phrasing_only_when_it_differs() {
         "{tidy}"
     );
     assert!(!tidy.contains("as typed best"), "{tidy}");
+
+    // Found by the 2026-11-09 smoke test: a line starting with `-` pasted back reads as
+    // a flag, so the best form is shown after `--`, which pastes back as the same line.
+    for flag in ["--offline", "--dry-run"] {
+        let dashed = stdout(&tui_do(
+            &dir,
+            &["add", flag, "--", "--dry-run x !3 +Personal"],
+        ));
+        assert!(
+            dashed.contains("\nas typed best: -- --dry-run x +Personal !3\n"),
+            "{flag}: {dashed}"
+        );
+    }
+    let pasted = tui_do(
+        &dir,
+        &[
+            "add",
+            "--dry-run",
+            "--",
+            "--dry-run",
+            "x",
+            "+Personal",
+            "!3",
+        ],
+    );
+    assert!(
+        stdout(&pasted).starts_with("Would add \"--dry-run x\" to Personal\n"),
+        "{pasted:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

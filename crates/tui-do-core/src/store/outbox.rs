@@ -191,6 +191,23 @@ impl Mutation {
         }
     }
 
+    /// Whether this makes something new on the server.
+    ///
+    /// A create is the one mutation a replay duplicates rather than repeats, so it is
+    /// marked sent before it goes out (BUG-33), and its settle rewrites what is queued
+    /// behind it. Exhaustive so a new variant has to answer.
+    #[must_use]
+    pub const fn is_create(&self) -> bool {
+        match self {
+            Self::CreateTask { .. } | Self::CreateLabel { .. } => true,
+            Self::UpdateTask { .. }
+            | Self::DeleteTask { .. }
+            | Self::AttachLabel { .. }
+            | Self::DetachLabel { .. }
+            | Self::UpdateLabel { .. } => false,
+        }
+    }
+
     /// What this entry acts on.
     #[must_use]
     pub fn subject(&self) -> Subject {
@@ -482,6 +499,11 @@ pub struct OutboxEntry {
     /// Set by [`Store::defer`] from the backoff schedule, or from the server's
     /// `Retry-After` when it sent one.
     pub next_attempt_at: Option<DateTime<Utc>>,
+    /// When a create was last put on the wire, or `None` if it never has been.
+    ///
+    /// Set by [`Store::mark_sent`] before the request leaves, so it survives a process
+    /// that dies before the answer is stored (BUG-33). Only creates carry it.
+    pub sent_at: Option<DateTime<Utc>>,
 }
 
 impl OutboxEntry {
@@ -495,6 +517,16 @@ impl OutboxEntry {
     #[must_use]
     pub const fn is_failing(&self) -> bool {
         self.attempts > 0
+    }
+
+    /// Whether an earlier attempt may already have reached the server.
+    ///
+    /// True after a recorded failure, and also after a request that went out and whose
+    /// answer was never stored -- a process killed mid-request leaves `attempts` at zero
+    /// but `sent_at` set (BUG-33). This is what arms a create's read-before-retry.
+    #[must_use]
+    pub const fn may_have_been_sent(&self) -> bool {
+        self.is_failing() || self.sent_at.is_some()
     }
 }
 
@@ -528,10 +560,12 @@ struct StoredEntry {
     attempts: i64,
     last_error: Option<String>,
     next_attempt_at: Option<String>,
+    sent_at: Option<String>,
 }
 
 impl StoredEntry {
-    /// From `id, created, payload, attempts, last_error, next_attempt_at`, in that order.
+    /// From `id, created, payload, attempts, last_error, next_attempt_at, sent_at`, in
+    /// that order.
     fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
@@ -540,6 +574,7 @@ impl StoredEntry {
             attempts: row.get(3)?,
             last_error: row.get(4)?,
             next_attempt_at: row.get(5)?,
+            sent_at: row.get(6)?,
         })
     }
 
@@ -553,6 +588,7 @@ impl StoredEntry {
             attempts: self.attempts,
             last_error: self.last_error,
             next_attempt_at: parse_instant(self.next_attempt_at.as_deref()),
+            sent_at: parse_instant(self.sent_at.as_deref()),
         })
     }
 }
@@ -715,6 +751,7 @@ impl Store {
                     attempts: 0,
                     last_error: None,
                     next_attempt_at: None,
+                    sent_at: None,
                 };
                 first.get_or_insert(entry);
             }
@@ -747,7 +784,7 @@ impl Store {
             // drain's decision, not this query's, because only the drain knows which
             // trigger asked.
             let mut sql = String::from(
-                "SELECT id, created, payload, attempts, last_error, next_attempt_at
+                "SELECT id, created, payload, attempts, last_error, next_attempt_at, sent_at
                    FROM outbox ORDER BY id ASC",
             );
             if let Some(limit) = limit {
@@ -841,7 +878,7 @@ impl Store {
         self.read(move |connection| {
             connection
                 .query_row(
-                    "SELECT id, created, payload, attempts, last_error, next_attempt_at
+                    "SELECT id, created, payload, attempts, last_error, next_attempt_at, sent_at
                        FROM outbox WHERE id = ?1",
                     params![id],
                     StoredEntry::from_row,
@@ -946,6 +983,26 @@ impl Store {
                 params![label.get()],
                 |row| row.get::<_, i64>(0),
             )? == 1)
+        })
+        .await
+    }
+
+    /// Record that `entry` is about to be put on the wire.
+    ///
+    /// Written before the request, not after the answer, because the answer is exactly
+    /// what a killed process never stores. A create that finds this set on its next
+    /// attempt reads before it writes instead of making a second task or label (BUG-33).
+    ///
+    /// # Errors
+    /// [`crate::CoreError::Store`] on any SQL failure.
+    pub async fn mark_sent(&self, entry: i64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.write(move |tx| {
+            tx.execute(
+                "UPDATE outbox SET sent_at = ?1 WHERE id = ?2",
+                params![now, entry],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -2215,6 +2272,7 @@ mod tests {
             attempts: 0,
             last_error: None,
             next_attempt_at: None,
+            sent_at: None,
         };
 
         store.discard(&detach).await.unwrap();

@@ -192,7 +192,11 @@ asserted by `an_incremental_pull_does_not_delete_what_it_did_not_mention`.
 
 The cost is real and is the user's decision, taken 2026-08-28: `r` is incremental and
 cannot see a task deleted in another client, so `R` is bound to a full pull and `r` names
-it in its toast. Startup and the timer stay full.
+it in its toast. Startup is full. **The timer is incremental, and full once an hour**
+(`FULL_PULL_EVERY`, decided 2026-11-10): it reads `LAST_RECONCILE` and pulls in full when no
+full pull, its own or `R`'s, has reconciled within the hour. That was 288 full pulls a day
+at the default interval and is now 24, and a deletion made elsewhere can take up to an hour
+to show.
 
 Two state keys, because they stopped being the same fact: `LAST_PULL` is "everything up to
 here has been seen" and both reaches advance it; `LAST_RECONCILE` is "and nothing else is

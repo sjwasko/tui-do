@@ -61,15 +61,15 @@ impl fmt::Display for DescriptionError {
 
 impl std::error::Error for DescriptionError {}
 
-/// Check and normalise a description as it arrived.
+/// Check a description and keep it byte for byte: for one typed as an argument, which
+/// ends where it was typed and carries no line ending a file or a heredoc adds.
 ///
-/// Stored exactly as given, except that CRLF becomes LF and one trailing newline is
-/// dropped -- a file or a heredoc always ends in one, and nobody means it as content.
-/// Only one, so a description that ends in a blank line on purpose keeps it.
+/// Found by the 2026-11-09 smoke test: `-d 'text\n'` went through [`normalise`] and lost
+/// its newline, where its help promises it is stored exactly as given.
 ///
 /// # Errors
 /// Larger than [`MAX_BYTES`], not UTF-8, or carrying a NUL.
-pub fn normalise(bytes: Vec<u8>) -> Result<String, DescriptionError> {
+pub fn check(bytes: Vec<u8>) -> Result<String, DescriptionError> {
     if bytes.len() > MAX_BYTES {
         return Err(DescriptionError::TooLarge(bytes.len()));
     }
@@ -78,7 +78,23 @@ pub fn normalise(bytes: Vec<u8>) -> Result<String, DescriptionError> {
     if let Some(at) = text.find('\0') {
         return Err(DescriptionError::Nul(at));
     }
-    let mut text = text.replace("\r\n", "\n");
+    Ok(text)
+}
+
+/// Check and normalise a description as it arrived from a file, stdin or the editor.
+///
+/// Stored exactly as given, except that CRLF becomes LF and one trailing newline is
+/// dropped -- a file or a heredoc always ends in one, and nobody means it as content.
+/// Only one, so a description that ends in a blank line on purpose keeps it.
+///
+/// CRLF is converted because the only Windows route is WSL, where a file saved in Notepad
+/// ends its lines in CRLF; the server would keep them and show them in every other
+/// client. Decided 2026-11-10.
+///
+/// # Errors
+/// Larger than [`MAX_BYTES`], not UTF-8, or carrying a NUL.
+pub fn normalise(bytes: Vec<u8>) -> Result<String, DescriptionError> {
+    let mut text = check(bytes)?.replace("\r\n", "\n");
     if text.ends_with('\n') {
         text.pop();
     }
@@ -179,6 +195,25 @@ mod tests {
             "  leading space"
         );
         assert_eq!(normalise(Vec::new()).unwrap(), "");
+    }
+
+    #[test]
+    fn a_checked_description_is_kept_byte_for_byte() {
+        let given = "one\r\ntwo\n";
+        assert_eq!(check(given.as_bytes().to_vec()).unwrap(), given);
+        // The same refusals as `normalise`.
+        assert!(matches!(
+            check(vec![b'a', 0xff]),
+            Err(DescriptionError::NotUtf8(1))
+        ));
+        assert!(matches!(
+            check(b"a\0".to_vec()),
+            Err(DescriptionError::Nul(1))
+        ));
+        assert!(matches!(
+            check(vec![b'a'; MAX_BYTES + 1]),
+            Err(DescriptionError::TooLarge(_))
+        ));
     }
 
     #[test]

@@ -49,7 +49,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
 | ~~BUG-34~~ | FIXED — the interface's `a` assigns by id, exact case first, once each, and reports an unknown name; the binary sends `"assignees":[{"id":3,…` to wiremock; the store returns users with ids | yes |
 | ~~BUG-35~~ | FIXED — the binary against wiremock: a `412` exits 1 with the message and no `Sent.`, a `201` still says `Sent.`, and both limits refuse a dry run and a real add with no request made | yes |
-| BUG-33 | abort a push once a held mock has received the create, then push again: one `PUT` must reach the server, or the second must adopt | yes |
+| ~~BUG-33~~ | FIXED — four `tests/sync.rs` cases: a task and a label create aborted once the held mock has the `PUT` adopt on the next push with no second `PUT`; one with nothing on the server still creates; a first attempt makes no search. The three abort cases fail with the gate reverted | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
@@ -77,7 +77,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
 | **Found by the `tui-do add` smoke test** | ~~BUG-34~~ — FIXED 2026-11-09: `@user` assigns by id, and an unknown name is reported. ~~BUG-35~~ — FIXED 2026-11-09: a create the server rejects exits 1 with its reason, and the title and repeat limits are checked before queuing. Six minor findings under Minor |
-| **Found fixing BUG-31** | **BUG-33** — open, Important: a create whose request reached the server before the process ended is sent again on the next launch, and makes a second task. The read-before-retry BUG-19 added only runs for an entry with a recorded failure, and a killed process records nothing |
+| **Found fixing BUG-31** | ~~BUG-33~~ — FIXED 2026-11-10, Important: a create cut off mid-request made a second task on the next launch. A create is now marked sent in the store before the request leaves, and that mark arms the read-before-retry as a recorded failure does |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read. Fixed against the ~30 sends/s threshold decided when BUG-28 was filed: a held key still costs the push most of its throughput, now 97-182/s against 624/s idle |
@@ -85,7 +85,7 @@ throughout, both learned the hard way in this pass:
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
-| **Minor** | 20 remaining, none urgent |
+| **Minor** | 9 remaining, none urgent; the six from the 2026-11-09 `tui-do add` smoke test, the false `done_at` overwrite and a refused retry search fixed 2026-11-10, and two findings closed as not defects |
 
 Every open item needed either a decision or a measurement — that was the point of the
 2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
@@ -2230,7 +2230,21 @@ query with the caret checked after every key. A third, in `runtime/prompt.rs`, t
 three failed on the old code: the title test and the add test could not see the end of the
 line, and the search test lost the caret.
 
-### BUG-33 — a create cut off mid-request is sent again on the next launch, and can make a second task
+### ~~BUG-33~~ — FIXED 2026-11-10 — a create cut off mid-request is sent again on the next launch, and can make a second task
+
+**The fix, option 1 of the three below.** Schema v6 adds `outbox.sent_at`, and
+`Sync::deliver` writes it through `Store::mark_sent` before a `CreateTask` or `CreateLabel`
+goes on the wire. `OutboxEntry::may_have_been_sent` is `is_failing() || sent_at.is_some()`,
+and both creates' read-before-retry are gated on it. The entry in hand is the copy read
+before the mark, so a first attempt still makes no search. The created-window check in
+step 2 was not added: the three existing checks are unchanged, and a skewed clock would
+only turn an adoption into a duplicate. Step 3 was not needed: every way an entry is
+answered deletes its row, and a deferral bumps `attempts`, which arms the read anyway. The
+label read is weaker than the task one, which checks the local row: it adopts any exact
+title, so a kill before the `PUT` landed can now adopt another box's same-titled label.
+That is the trade the `CreateLabel` arm already documents for a connect failure, reached
+one more way. A database at v6 is refused by v1.1.0 and older,
+as every migration is.
 
 `crates/tui-do-core/src/sync/mod.rs`: `Sync::create_or_adopt` (~812) and its gate,
 `OutboxEntry::is_failing` in `store/outbox.rs` (~496). The `CreateLabel` arm (~889) has the
@@ -2377,28 +2391,41 @@ must exit non-zero and print the message, and must not print `Sent.`.
 
 ## Minor
 
-- **Found driving the key remap on dev, 2026-11-09, unconfirmed cause:** `t`, `U`, `C-r`,
-  `U` in quick succession on one task toasted "saved over a change made elsewhere to task …
-  (done_at)", with no other client touching it. Likely a false collision in
-  `Task::merge_onto`: `done_at` is set by the server, so an undo queued before the done's
-  echo came back carries this box's `done_at` as `before`, and the server's own timestamp
-  reads as someone else's edit. The task ended in the state the user asked for. Predates
-  the remap — `d`, `u`, `C-r`, `u` would do the same.
-- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
-  - An unknown `*label` takes its text out of the title and is then left off, so the words
+- ~~**Found driving the key remap on dev, 2026-11-09:** `t`, `U`, `C-r`, `U` in quick
+  succession toasted "saved over a change made elsewhere … (done_at)".~~ **Fixed
+  2026-11-10.** The cause was as suspected: the server stamps its own `done_at`, so an
+  undo's `before` never matched it. `Task::merge_onto` now takes the user's `done_at`
+  without reporting a collision on it; a real disagreement shows on `done`. Test:
+  `an_undo_of_a_done_is_not_a_collision_on_the_servers_done_at`.
+- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev, all six fixed 2026-11-10:
+  - ~~An unknown `*label` takes its text out of the title and is then left off, so the words
     are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned
-    about, but the task is already queued and re-running adds a second one.
-  - `*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
-    and ignores an exact one.
-  - `due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
+    about, but the task is already queued and re-running adds a second one.~~
+    **Fixed 2026-11-10** — a label left off is re-read as text (`quickadd::parse_keeping`),
+    so its words stay in the title as typed, in `tui-do add`, its dry run and the interface.
+  - ~~`*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
+    and ignores an exact one.~~ **Fixed 2026-11-10** — labels and projects match exactly
+    first and ignore case only when nothing does, as `@user` already did.
+  - ~~`due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
     server ends up with no due date: the first is Go's zero time, which means unset, and the
-    second is year 10000 in UTC once 23:59 local is converted.
-  - The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
-    `Parsed` line already passes it through `printable`.
-  - A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
-    copy-safe: pasted back, it reads as the flag.
-  - `-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;
-    the help says both are stored exactly as given (the server keeps `\r\n` when sent it).
+    second is year 10000 in UTC once 23:59 local is converted.~~ **Fixed 2026-11-10** —
+    `Parsed::server_refusal` refuses a due or start date outside the years 2 to 9999 in UTC,
+    so `tui-do add`, its dry run and the interface all refuse it before anything is queued.
+    The edit form's Due field and the `d` prompt share the check since 2026-11-10
+    (`quickadd::date_refusal`): `d` refuses, and the form keeps the old date and says why.
+  - ~~The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
+    `Parsed` line already passes it through `printable`.~~ **Fixed 2026-11-10** — the title,
+    the created and unknown label names and the "no project called" error all go through
+    `printable` now.
+  - ~~A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
+    copy-safe: pasted back, it reads as the flag.~~ **Fixed 2026-11-10** — a best form
+    starting with `-` is printed after `-- `, in a real add and a dry run.
+  - ~~`-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;
+    the help says both are stored exactly as given (the server keeps `\r\n` when sent it).~~
+    **Fixed 2026-11-10** — `-d` is checked by `description::check` and kept byte for byte.
+    A file keeps both rules, which the design in `md/TODO.md` chose (a file or heredoc
+    always ends in a newline); its help now names the CRLF rule too. **Decided 2026-11-10:**
+    a file's CRLF stays converted, for files written in Windows editors under WSL.
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for
   `RepeatMode::FromCurrentDate` with `repeat_after == 0`. Cosmetic badge only, unverified.
 - `crates/tui-do-ui/src/theme.rs:248` — `Theme::label` paints a background, the one exception
@@ -2420,13 +2447,28 @@ must exit non-zero and print the message, and must not print `Sent.`.
   **Fixed** — and the comment was worse than stale: implementing what it described would
   **break** `r`/`R`, which pass `Backoff::Ignore` precisely to retry entries still inside
   their backoff. The comment now says the query is deliberately unfiltered and why.
-- `RUNNING` is never cleared on panic or abort.
+- ~~`RUNNING` is never cleared on panic or abort.~~ **Not reachable, checked 2026-11-10:**
+  the only abort is in `flush_on_exit`, which then pushes directly rather than through
+  `spawn_sync`, and the process ends; a panicking pass ends the interface (BUG-7). A guard
+  would matter only if a pass is ever aborted while the interface keeps running.
 - A two-atomic seam in the sync trigger can drop an `Asked` force.
-- A 4xx from `labels_named` rejects the create it was there to protect.
-- The concurrent projects fan-out feeds a cascading retain.
-- `crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production code.
-- `enum Screen` is vestigial: one variant, no use outside `model.rs`. Scope actually lives in
-  `query.scope`. Either delete it or give it the job its name implies.
+- ~~A 4xx from `labels_named` rejects the create it was there to protect.~~ **Fixed
+  2026-11-10**, for `tasks_named` too: `sync::searched` reads a refused search as "nothing
+  found" and the create goes ahead. BUG-33's fix runs this search more often.
+- The concurrent projects fan-out feeds a cascading retain. **Read 2026-11-10:** the risk is
+  offset paging, not the concurrency. A project deleted elsewhere between page 1 and page 2
+  shifts the next one across the boundary, so it is missing from the listing and
+  `retain_projects` removes it and its tasks locally. Rows with queued entries are spared
+  and the next full pull restores the rest, so it is a wrong picture until then, not lost
+  data. Only one page of projects exists at realistic counts, which never reaches the
+  fan-out. Tasks page the same way. A fix wants a design: Vikunja offers no cursor.
+- ~~`crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production
+  code.~~ **Not a defect, checked 2026-11-10:** it is inside `mod tests`, on a struct read
+  only through its derived `Debug`, and the comment above it says so.
+- ~~`enum Screen` is vestigial: one variant, no use outside `model.rs`.~~ **Kept, decided
+  2026-11-10.** `CLAUDE.md` Rule 2 names it as where screen state goes, so a second screen
+  is a variant rather than a `show_x` bool, and deleting it would break `tui-do-ui`'s
+  public API for nothing a user sees.
 - "Which modals hold a label" is an unnamed concept re-derived across five exhaustive
   `match modal` sites in `update.rs`.
 
