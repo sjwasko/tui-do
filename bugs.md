@@ -2439,9 +2439,13 @@ must exit non-zero and print the message, and must not print `Sent.`.
   2026-11-10**, for `tasks_named` too: `sync::searched` reads a refused search as "nothing
   found" and the create goes ahead. BUG-33's fix runs this search more often.
 - The concurrent projects fan-out feeds a cascading retain.
-- `crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production code.
+- ~~`crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production
+  code.~~ **Not a defect, checked 2026-11-10:** it is inside `mod tests`, on a struct read
+  only through its derived `Debug`, and the comment above it says so.
 - `enum Screen` is vestigial: one variant, no use outside `model.rs`. Scope actually lives in
-  `query.scope`. Either delete it or give it the job its name implies.
+  `query.scope`. Either delete it or give it the job its name implies. **Needs a decision,
+  2026-11-10:** `tui-do-ui` re-exports it and `Model.screen` is public, so deleting it is a
+  breaking change to a published crate, and `CLAUDE.md` Rule 2 names it as the pattern.
 - "Which modals hold a label" is an unnamed concept re-derived across five exhaustive
   `match modal` sites in `update.rs`.
 
