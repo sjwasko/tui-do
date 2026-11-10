@@ -125,6 +125,17 @@ pub(crate) fn run(
     println!("{}", signed_in(&who));
 
     let token_file = token_file_for(&path, existing.as_ref());
+    if let Some(was) = existing
+        .as_ref()
+        .and_then(|config| config.server.token_file.as_ref())
+        .filter(|was| **was != token_file)
+    {
+        println!(
+            "This config used {}, which config.yaml reads too; its token goes in {} now.",
+            was.display(),
+            token_file.display()
+        );
+    }
     let (config, dropped_inline_token) = configure(existing, url, token_file);
     let token_path = config
         .token_file_path(&path)
@@ -185,14 +196,20 @@ fn configure(existing: Option<Config>, url: String, token_file: PathBuf) -> (Con
 /// Relative, so the pair travels: a config and its token copied to another box resolve
 /// against wherever they landed rather than against this machine's home directory.
 fn token_file_for(config_path: &Path, existing: Option<&Config>) -> PathBuf {
-    if let Some(named) = existing.and_then(|config| config.server.token_file.clone()) {
-        return named;
-    }
-    match config_path.file_stem().map(|stem| stem.to_string_lossy()) {
+    let own = match config_path.file_stem().map(|stem| stem.to_string_lossy()) {
         Some(stem) if stem != "config" && !stem.is_empty() => {
             PathBuf::from(format!("{stem}-{TOKEN_FILE}"))
         }
         _ => PathBuf::from(TOKEN_FILE),
+    };
+    match existing.and_then(|config| config.server.token_file.clone()) {
+        // Before 1.2.2 every login wrote `token`, so a `dev.yaml` written then names the
+        // file `config.yaml` reads. Keeping it would go on overwriting the main config's
+        // credential; a config other than `config.yaml` naming exactly `token` gets its
+        // own file instead, and the caller says so.
+        Some(named) if named == Path::new(TOKEN_FILE) && own != named => own,
+        Some(named) => named,
+        None => own,
     }
 }
 
@@ -532,7 +549,8 @@ mod tests {
     }
 
     /// A config that already names its token file is written through that file and keeps
-    /// naming it. Login never repoints a config, whatever the config is called.
+    /// naming it. The one exception is below: a config other than `config.yaml` naming
+    /// exactly `token`, which a login before 1.2.2 wrote and which is `config.yaml`'s.
     #[test]
     fn logging_in_again_writes_the_token_file_the_config_already_names() {
         let mut existing = Config::example();
@@ -560,6 +578,23 @@ mod tests {
         assert_eq!(
             token_file_for(Path::new("/x/config.yaml"), Some(&absolute)),
             PathBuf::from("/secrets/vikunja")
+        );
+    }
+
+    /// A `dev.yaml` written by a login before 1.2.2 names `token`, the file `config.yaml`
+    /// reads. Keeping it would go on overwriting the main config's credential.
+    #[test]
+    fn an_older_config_sharing_the_main_token_gets_its_own() {
+        let mut existing = Config::example();
+        existing.server.token_file = Some(PathBuf::from("token"));
+        assert_eq!(
+            token_file_for(Path::new("/x/dev.yaml"), Some(&existing)),
+            PathBuf::from("dev-token")
+        );
+        assert_eq!(
+            token_file_for(Path::new("/x/config.yaml"), Some(&existing)),
+            PathBuf::from("token"),
+            "config.yaml keeps its own"
         );
     }
 
