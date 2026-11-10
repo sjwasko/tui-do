@@ -620,14 +620,15 @@ fn month_name(text: &str) -> Option<u32> {
     })
 }
 
-/// The next occurrence of `month`/`day`, this year or next.
+/// The next occurrence of `month`/`day`, today or later.
+///
+/// Usually this year or next, but 29 February can be up to eight years away (2096 to
+/// 2104), and asking only this year was why `due feb 29` in 2026 was not a date at all.
+/// A day no year has, `feb 30`, is still none.
 fn on_or_after(today: NaiveDate, month: u32, day: u32) -> Option<NaiveDate> {
-    let this_year = NaiveDate::from_ymd_opt(today.year(), month, day)?;
-    if this_year >= today {
-        Some(this_year)
-    } else {
-        NaiveDate::from_ymd_opt(today.year() + 1, month, day)
-    }
+    (today.year()..=today.year().checked_add(8)?)
+        .filter_map(|year| NaiveDate::from_ymd_opt(year, month, day))
+        .find(|date| *date >= today)
 }
 
 /// The coming `target` weekday. `include_today` decides whether today counts.

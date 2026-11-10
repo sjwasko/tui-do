@@ -747,6 +747,28 @@ mod tests {
     }
 
     #[test]
+    fn feb_29_without_a_year_is_the_next_one_there_is() {
+        // 2026 and 2027 have none, so it was silently not a date and stayed in the title.
+        let clock = evening();
+        for input in [
+            "Leap day due feb 29",
+            "Leap day due 29 feb",
+            "Leap day due february 29th",
+            "Leap day due 29/02",
+            "Leap day due 29feb",
+            "Leap day feb 29",
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, "Leap day", "{input:?}");
+            assert_eq!(on_evening(parsed.due_date), "2028-02-29 23:59", "{input:?}");
+        }
+        // A day no month has is still not a date.
+        let parsed = parse("Odd one due feb 30", &clock);
+        assert_eq!(on_evening(parsed.due_date), "none");
+        assert_eq!(parsed.title, "Odd one due feb 30");
+    }
+
+    #[test]
     fn a_plain_title_stays_a_plain_title() {
         let parsed = p("Buy milk");
         assert_eq!(parsed.title, "Buy milk");
