@@ -123,7 +123,8 @@ enum Command {
     ///   EOF
     ///
     /// It is stored exactly as given -- Markdown, plain text or HTML -- but for one
-    /// trailing newline, and quick-add tokens in it stay text. It must be UTF-8 and
+    /// trailing newline and CRLF becoming LF from a file or stdin (-d keeps every
+    /// byte), and quick-add tokens in it stay text. It must be UTF-8 and
     /// at most 64 KiB. The confirmation line counts it rather than printing it:
     /// `with a description (3 paragraphs, 1,240 characters)`.
     ///
@@ -333,8 +334,8 @@ struct AddArgs {
 
     /// Read the task's description from a file, or from stdin if PATH is `-`.
     ///
-    /// Stored exactly as given, but for one trailing newline. It must be UTF-8 text of
-    /// 64 KiB or less. With `-`, pipe it in or use a quoted heredoc, and give the task's
+    /// Stored exactly as given, but for one trailing newline, and CRLF line endings
+    /// become LF. It must be UTF-8 text of 64 KiB or less. With `-`, pipe it in or use a quoted heredoc, and give the task's
     /// text as an argument.
     #[arg(
         long,
@@ -365,7 +366,13 @@ struct AddArgs {
 fn read_description(args: &AddArgs) -> anyhow::Result<runtime::DescriptionSource> {
     use tui_do_core::description;
     let bytes = match (&args.description, &args.description_file) {
-        (Some(text), _) => text.clone().into_bytes(),
+        // Exactly as typed: the trailing newline `normalise` drops is a file's or a
+        // heredoc's, and an argument has none it did not mean.
+        (Some(text), _) => {
+            return Ok(runtime::DescriptionSource::Given(description::check(
+                text.clone().into_bytes(),
+            )?));
+        }
         (None, Some(path)) if path.as_os_str() == STDIN => {
             let stdin = std::io::stdin();
             // `-` at a terminal waits for typing, as `git commit -F -` does. Say so, or it
@@ -878,7 +885,8 @@ mod tests {
         let args = add_args(&["title", "-d", "- one\n- two\r\n"]).unwrap();
         assert_eq!(
             read_description(&args).unwrap(),
-            runtime::DescriptionSource::Given("- one\n- two".to_string())
+            // Byte for byte, as its help says: the trailing CRLF too.
+            runtime::DescriptionSource::Given("- one\n- two\r\n".to_string())
         );
         let none = add_args(&["title"]).unwrap();
         assert_eq!(

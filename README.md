@@ -482,7 +482,8 @@ missing, when either is redirected. Three flags matter:
 its tokens; the description is body text, stored exactly as given (Markdown, plain text or
 HTML), with no tokens read out of it. Pick one of three ways:
 
-- **`-d 'text'`** inline, for a line or two. Newlines in the argument are kept.
+- **`-d 'text'`** inline, for a line or two. The argument is kept byte for byte, newlines
+  included.
 - **`--description-file PATH`** reads a file, and **`--description-file -`** reads stdin, for
   anything longer. A quoted heredoc moves several paragraphs without retyping or expanding
   them:
@@ -507,7 +508,8 @@ HTML), with no tokens read out of it. Pick one of three ways:
   kept exactly, `# Heading`s included. Leave it empty for no description, or quit with an
   error (`:cq` in vim) to add nothing. It needs a terminal.
 
-It must be UTF-8 and at most 64 KiB, and one trailing newline is dropped. The confirmation
+It must be UTF-8 and at most 64 KiB. From a file, stdin or the editor, one trailing newline
+is dropped, since a file or a heredoc always ends in one, and CRLF becomes LF. The confirmation
 line counts it rather than printing it:
 
 ```console
