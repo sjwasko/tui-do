@@ -684,6 +684,30 @@ mod tests {
     }
 
     #[test]
+    fn the_colon_form_takes_its_time_out_of_the_title() {
+        // `at 9am` set the time but was not counted in the phrase, so the whole of it
+        // stayed in the title and the canonical line repeated it.
+        let clock = evening();
+        let parsed = parse("Fix it start:monday at 9am", &clock);
+        assert_eq!(parsed.title, "Fix it");
+        assert_eq!(on_evening(parsed.start_date), "2026-11-09 09:00");
+        assert_eq!(
+            parsed.canonical(&clock.timezone()),
+            "Fix it start 2026-11-09 at 09:00"
+        );
+        let token = &parsed.tokens[0];
+        assert_eq!(
+            &"Fix it start:monday at 9am"[token.range.clone()],
+            "start:monday at 9am"
+        );
+
+        // Without a time it is one word, as before.
+        let parsed = parse("Fix it start:monday", &clock);
+        assert_eq!(parsed.title, "Fix it");
+        assert_eq!(on_evening(parsed.start_date), "2026-11-09 00:00");
+    }
+
+    #[test]
     fn a_plain_title_stays_a_plain_title() {
         let parsed = p("Buy milk");
         assert_eq!(parsed.title, "Buy milk");

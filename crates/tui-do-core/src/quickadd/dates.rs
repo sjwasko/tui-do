@@ -156,7 +156,10 @@ fn phrase<Tz: TimeZone>(
     if let Some(word) = words.get(index) {
         if let Some(value) = word.trimmed().strip_prefix("start:") {
             let date = simple_phrase(&[value.to_string()], today, keyword)?;
-            return Some((at_time(date, field, words, index + 1, now)?, 1));
+            let at = at_time(date, field, words, index + 1, now)?;
+            // A trailing `at 9am` is part of the phrase here too, or it stays in the title.
+            let extra = usize::from(time_at(words, index + 1).is_some()) * 2;
+            return Some((at, 1 + extra));
         }
     }
 
