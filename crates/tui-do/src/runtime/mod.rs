@@ -903,7 +903,10 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
     // server the push cannot answer, and a still screen there reads as a hang —
     // which is the one thing this project is not allowed to look like. The dots
     // are also the clock: when the last one lands, the wait is over.
-    let syncer = (*sync).clone();
+    // Listened to for rejections, as `tui-do add` does (BUG-35): a refused entry is
+    // rolled back rather than deferred, so the report alone cannot say why.
+    let (events_tx, mut events) = mpsc::unbounded_channel();
+    let syncer = Sync::clone(sync).with_events(events_tx);
     let push = syncer.push();
     tokio::pin!(push);
     let mut outcome = None;
@@ -918,16 +921,69 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
     }
     let _ = writeln!(out);
 
-    let _ = match outcome {
-        Some(Ok(report)) if report.is_complete() => writeln!(out, "Sent."),
-        Some(Ok(report)) => writeln!(
-            out,
+    let mut heard = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        heard.push(event);
+    }
+    for line in flush_said(outcome, &heard) {
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+/// What the quit flush says once its push has answered, or has not.
+///
+/// A refusal is said first and with the server's reason. `PushReport::is_complete` is
+/// `deferred == 0` and a refused entry is rolled back rather than deferred, so reading
+/// the report alone said "Sent." for a change the server had turned down -- the flush's
+/// half of what BUG-35 was for `tui-do add`.
+fn flush_said(
+    outcome: Option<tui_do_core::Result<tui_do_core::sync::PushReport>>,
+    events: &[SyncEvent],
+) -> Vec<String> {
+    let report = match outcome {
+        Some(Ok(report)) => report,
+        Some(Err(error)) => {
+            return vec![format!(
+                "Still queued — could not reach the server: {error}"
+            )]
+        }
+        None => return vec!["Still queued — the server did not answer in time.".to_string()],
+    };
+    let mut lines = Vec::new();
+    if report.rejected > 0 {
+        let reasons: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SyncEvent::Rejected { message, .. } => Some(printable(message)),
+                _ => None,
+            })
+            .collect();
+        let changes = if report.rejected == 1 {
+            "change"
+        } else {
+            "changes"
+        };
+        lines.push(if reasons.is_empty() {
+            format!("The server refused {} {changes}.", report.rejected)
+        } else {
+            format!(
+                "The server refused {} {changes}: {}",
+                report.rejected,
+                reasons.join("; ")
+            )
+        });
+    }
+    if report.deferred > 0 {
+        lines.push(format!(
             "{} still queued; the next run will send them.",
             report.deferred
-        ),
-        Some(Err(error)) => writeln!(out, "Still queued — could not reach the server: {error}"),
-        None => writeln!(out, "Still queued — the server did not answer in time."),
-    };
+        ));
+    } else if report.rejected == 0 {
+        lines.push("Sent.".to_string());
+    } else if report.sent > 0 {
+        lines.push("The rest were sent.".to_string());
+    }
+    lines
 }
 
 /// Server-written text, made safe to print on one line of a terminal.
@@ -2242,6 +2298,57 @@ mod tests {
             rejected: 1,
             deferred: 0,
         })
+    }
+
+    #[test]
+    fn the_quit_flush_names_a_refusal_instead_of_saying_sent() {
+        // `is_complete` is `deferred == 0`, and a refused entry is rolled back rather than
+        // deferred, so a flush whose only change the server turned down said "Sent.".
+        let task = Subject::Task(tui_do_core::models::TaskId(4));
+        let report = PushReport {
+            sent: 0,
+            rejected: 1,
+            deferred: 0,
+        };
+        let said = flush_said(
+            Some(Ok(report)),
+            &[refused(
+                task,
+                "update_task",
+                "The task title cannot be empty.",
+            )],
+        );
+        assert_eq!(
+            said,
+            vec!["The server refused 1 change: The task title cannot be empty.".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_quit_flush_says_what_went_beside_what_was_refused() {
+        let task = Subject::Task(tui_do_core::models::TaskId(4));
+        let report = PushReport {
+            sent: 2,
+            rejected: 2,
+            deferred: 1,
+        };
+        let said = flush_said(
+            Some(Ok(report)),
+            &[refused(task, "update_task", "no\x1b]52;c;x\x07")],
+        );
+        assert_eq!(
+            said,
+            vec![
+                "The server refused 2 changes: no\u{fffd}]52;c;x\u{fffd}".to_string(),
+                "1 still queued; the next run will send them.".to_string(),
+            ]
+        );
+        let clean = PushReport {
+            sent: 3,
+            rejected: 0,
+            deferred: 0,
+        };
+        assert_eq!(flush_said(Some(Ok(clean)), &[]), vec!["Sent.".to_string()]);
     }
 
     #[test]
