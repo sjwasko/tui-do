@@ -403,9 +403,14 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
         return;
     };
     // Clamped here too, not only in `update`: a resize or a shorter task can leave a
-    // scroll that was in range past the end of what is now there.
-    let scroll = usize::from(model.list.preview_scroll.min(preview_max_scroll(model)));
-    let lines = preview_lines(model, task, inner, scroll + usize::from(inner.height));
+    // scroll that was in range past the end of what is now there. Rendered once a frame:
+    // unscrolled, only what fits is laid out; scrolled, the whole description is, and the
+    // clamp comes from those same lines rather than from a second render.
+    let height = usize::from(inner.height);
+    let wanted = usize::from(model.list.preview_scroll);
+    let budget = if wanted == 0 { height } else { usize::MAX };
+    let lines = preview_lines(model, task, inner, budget);
+    let scroll = wanted.min(lines.len().saturating_sub(height));
     let scrolled: Vec<Line<'static>> = lines.into_iter().skip(scroll).collect();
     frame.render_widget(Paragraph::new(scrolled), inner);
 }
