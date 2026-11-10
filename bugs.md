@@ -2423,8 +2423,8 @@ must exit non-zero and print the message, and must not print `Sent.`.
     the help says both are stored exactly as given (the server keeps `\r\n` when sent it).~~
     **Fixed 2026-11-10** — `-d` is checked by `description::check` and kept byte for byte.
     A file keeps both rules, which the design in `md/TODO.md` chose (a file or heredoc
-    always ends in a newline); its help now names the CRLF rule too. Whether a file's CRLF
-    should survive is a decision, not taken here.
+    always ends in a newline); its help now names the CRLF rule too. **Decided 2026-11-10:**
+    a file's CRLF stays converted, for files written in Windows editors under WSL.
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for
   `RepeatMode::FromCurrentDate` with `repeat_after == 0`. Cosmetic badge only, unverified.
 - `crates/tui-do-ui/src/theme.rs:248` — `Theme::label` paints a background, the one exception

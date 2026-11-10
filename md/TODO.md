@@ -578,7 +578,9 @@ hand, seconds apart" to "four that launch when you open the laptop."
   scissors line. `--description-file -` with no task text is refused in words,
   since stdin cannot be both the description and step 2's prompt.
 - **Stored as given.** No Markdown conversion and no guessing: CRLF becomes LF, one trailing
-  newline is dropped, and that is all. From a file, stdin or the editor only: since
+  newline is dropped, and that is all. *Decided 2026-11-10: CRLF stays converted.* WSL is
+  the only Windows route, a file saved in Notepad there ends its lines in CRLF, and
+  converting keeps the description the same in the web UI and on every other box. From a file, stdin or the editor only: since
   2026-11-10 `-d` keeps every byte, as its help always said. Invalid UTF-8, a NUL (PostgreSQL rejects one in text)
   or more than **64 KiB** is refused before anything is queued. The cap is ours: the spec
   gives `description` no `maxLength` and Vikunja stores it as long text, so 64 KiB is a

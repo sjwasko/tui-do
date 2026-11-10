@@ -87,6 +87,10 @@ pub fn check(bytes: Vec<u8>) -> Result<String, DescriptionError> {
 /// dropped -- a file or a heredoc always ends in one, and nobody means it as content.
 /// Only one, so a description that ends in a blank line on purpose keeps it.
 ///
+/// CRLF is converted because the only Windows route is WSL, where a file saved in Notepad
+/// ends its lines in CRLF; the server would keep them and show them in every other
+/// client. Decided 2026-11-10.
+///
 /// # Errors
 /// Larger than [`MAX_BYTES`], not UTF-8, or carrying a NUL.
 pub fn normalise(bytes: Vec<u8>) -> Result<String, DescriptionError> {
