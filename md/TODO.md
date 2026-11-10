@@ -718,6 +718,24 @@ never shows again.
 
 ---
 
+**14. Text fields can only be typed into: no editor hand-off, no word keys, no real paste.**
+*(raised and agreed 2026-11-10, from driving 1.2.0)* Pasting a very long title, then
+pressing `e` to move most of it into the description, cannot be done: `TextInput::press`
+(`crates/tui-do-ui/src/modal.rs`) knows typing, Backspace, Delete, arrows, Home, End and
+Ctrl-U, and nothing else. Ctrl-X arrives and is ignored; Super chords never reach the
+terminal application; the terminal's own mouse selection copies only the part of a
+scrolled field that is on screen, and cannot cut. The interface does not enable bracketed
+paste, so a paste arrives as keystrokes and a pasted newline acts as Enter. Two pieces:
+
+1. **Ctrl-E in the edit form opens the task in `$VISUAL`/`$EDITOR`**, title on the first
+   line and description below, the way `tui-do add --edit` does (`runtime::editor`). This
+   is the fix for the case that found it, and for long descriptions generally. It is a
+   runtime effect, not `tui-do-ui` work: the terminal has to be handed over and taken back.
+2. **Readline keys in every `TextInput`:** Ctrl-W (word back), Ctrl-K (to end), Ctrl-A and
+   Ctrl-E (start and end, where Ctrl-E is not already the editor), Alt-B and Alt-F (by
+   word), each per grapheme as BUG-26 requires. Plus bracketed paste in the interface, so
+   a paste lands as one insert and a pasted newline does not submit.
+
 ## Auth and credentials
 
 **7. ~~Decide: OAuth first, or keychain first.~~ Decided 2026-09-08: keychain first.**
