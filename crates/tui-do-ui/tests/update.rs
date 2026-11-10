@@ -5852,3 +5852,62 @@ fn undoing_a_done_on_a_task_that_does_not_repeat_leaves_its_dates_alone() {
     };
     assert_eq!(before.due_date, after.due_date);
 }
+
+#[test]
+fn an_undo_that_removes_another_row_leaves_the_cursor_where_it_is() {
+    // `U` after a create deletes the new row. The cursor had moved on to "second", and
+    // the removal moved it to whatever slid into the gap -- "first" -- as though the
+    // removed row had been the selected one.
+    let mut model = loaded();
+    let write = add_by_keys(&mut model, "buy milk");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    let mut created = task(-1, "buy milk");
+    created.project_id = ProjectId(1);
+    answer(
+        &mut model,
+        vec![
+            created,
+            task(1, "first"),
+            task(2, "second"),
+            task(3, "third"),
+        ],
+    );
+    press(&mut model, 'j');
+    press(&mut model, 'j');
+    assert_eq!(selected_title(&model), "second");
+
+    match applied(&press(&mut model, 'U')) {
+        Some(Mutation::DeleteTask { before }) => assert_eq!(before.id, TaskId(-1)),
+        other => panic!("`U` deletes the new task: {other:?}"),
+    }
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+    assert_eq!(selected_title(&model), "second");
+}
+
+#[test]
+fn an_undo_that_removes_the_selected_row_moves_to_the_one_below() {
+    let mut model = loaded();
+    let write = add_by_keys(&mut model, "buy milk");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    let mut created = task(-1, "buy milk");
+    created.project_id = ProjectId(1);
+    answer(
+        &mut model,
+        vec![created, task(1, "first"), task(2, "second")],
+    );
+    assert_eq!(selected_title(&model), "buy milk");
+    press(&mut model, 'U');
+    assert_eq!(selected_title(&model), "first");
+}

@@ -2804,10 +2804,21 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
         // where `x` holds its place. Removing it here means the selection moves down
         // one, exactly as a delete does: to the row that slid up into the gap, or the one
         // above if it was last.
+        //
+        // Only when the row that left *was* the selection, though. An undo or redo can
+        // remove some other row -- `U` after a create deletes the new task, wherever the
+        // cursor has gone since -- and moving then took the cursor off a task the change
+        // never touched.
         Landed::Removed(at) => {
             let tasks = &model.data.tasks;
-            let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
-            model.list.selected = next.map(|task| task.id);
+            let still_here = model
+                .list
+                .selected
+                .is_some_and(|id| tasks.iter().any(|task| task.id == id));
+            if !still_here {
+                let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
+                model.list.selected = next.map(|task| task.id);
+            }
         }
         // A rename or a recolour has to reach *two* snapshots, because the model keeps
         // two copies of every label and neither is a view of the other:
