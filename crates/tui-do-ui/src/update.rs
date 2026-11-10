@@ -930,7 +930,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 // exhaustive, so a mutation that cannot be inverted is skipped rather
                 // than unwrapped.
                 if let Some(back) = mutation.inverse() {
-                    model.redo.push(back);
+                    model.redo.push(redo_of(back));
                 }
                 model.toast(Toast::info(undo_text(&mutation)));
                 apply(model, mutation)
@@ -942,7 +942,17 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         },
         Action::Redo => match model.redo.pop() {
             Some(mutation) => {
-                if let Some(back) = mutation.inverse() {
+                // A redone done on a repeating task is undone the way the first one was,
+                // with the predicted dates, or the second `U` changes nothing.
+                let back = match &mutation {
+                    Mutation::UpdateTask { before, after }
+                        if after.done && !before.done && before.repeats() =>
+                    {
+                        Some(undo_of_done(before, after, model.now.with_timezone(&Utc)))
+                    }
+                    other => other.inverse(),
+                };
+                if let Some(back) = back {
                     model.undo.push(back);
                 }
                 apply(model, mutation)
@@ -2548,6 +2558,26 @@ fn undo_of_done(before: &Task, after: &Task, now: DateTime<Utc>) -> Mutation {
     Mutation::UpdateTask {
         before: Box::new(moved),
         after: Box::new(before.clone()),
+    }
+}
+
+/// The redo of an undo, which is the undo's inverse -- except for a repeating task's done.
+///
+/// [`undo_of_done`] carries predicted moved dates as its `before`, so the undo sends the old
+/// ones. Inverted, those predictions become the redo's `after` and would be sent with
+/// `done: true`, and the server would move the dates on again from there: a weekly task
+/// two weeks ahead. A redo is pressing `t` again, so it carries the dates it started from.
+fn redo_of(mutation: Mutation) -> Mutation {
+    match mutation {
+        Mutation::UpdateTask { before, mut after }
+            if after.done && !before.done && before.repeats() =>
+        {
+            after.due_date = before.due_date;
+            after.start_date = before.start_date;
+            after.end_date = before.end_date;
+            Mutation::UpdateTask { before, after }
+        }
+        other => other,
     }
 }
 

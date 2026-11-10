@@ -5842,6 +5842,39 @@ fn undoing_a_done_on_a_repeating_task_puts_its_due_date_back() {
 }
 
 #[test]
+fn redoing_a_done_on_a_repeating_task_sends_its_own_dates() {
+    // Found reviewing 1.2.2: the redo was the undo's inverse, so it carried the predicted
+    // moved dates with `done: true`, and the server moved them on a second time -- a weekly
+    // task ended two weeks ahead. A redo is pressing `t` again: the original dates, done.
+    let mut model = loaded();
+    let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
+    let mut weekly = task(1, "water the plants");
+    weekly.repeat_after = 7 * 86_400;
+    weekly.due_date = Some(due).into();
+    answer(&mut model, vec![weekly, task(2, "second")]);
+
+    press(&mut model, 't');
+    press(&mut model, 'U');
+    let Some(Mutation::UpdateTask { before, after }) = model.redo.last().cloned() else {
+        panic!("an undo leaves a redo: {:?}", model.redo.last());
+    };
+    assert!(after.done && !before.done);
+    assert_eq!(
+        after.due_date.get(),
+        Some(due),
+        "the redo sends the date as it was"
+    );
+
+    // And undoing the redo still puts the date back, as the first undo did.
+    press_ctrl(&mut model, 'r');
+    let Some(Mutation::UpdateTask { before, after }) = model.undo.last().cloned() else {
+        panic!("a redo leaves an undo: {:?}", model.undo.last());
+    };
+    assert_eq!(after.due_date.get(), Some(due));
+    assert_ne!(before.due_date, after.due_date);
+}
+
+#[test]
 fn undoing_a_done_on_a_task_that_does_not_repeat_leaves_its_dates_alone() {
     let mut model = loaded();
     let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
