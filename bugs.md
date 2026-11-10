@@ -2438,6 +2438,11 @@ must exit non-zero and print the message, and must not print `Sent.`.
     always ends in a newline); its help now names the CRLF rule too. **Decided 2026-11-10:**
     a file's CRLF stays converted, for files written in Windows editors under WSL.
 - **Found by the 2026-11-10 whole-repo review**, not yet fixed:
+  - `crates/tui-do-ui/src/markdown.rs` (`redraw_prefixes`, 1.2.2) — the swap of the ASCII
+    list and quote prefixes for `•` and `│` cannot tell html2text's prefix from content
+    that starts a line with `* ` or `| `: a plain-text table row or a `| grep` line has its
+    `|` drawn as `│`, and a wrapped `a * b` can show `• b`. On screen only; the stored text
+    is untouched. A fix needs html2text to say which columns it added.
   - `crates/tui-do-ui/src/urls.rs:38-40` — a bare URL inside Markdown emphasis keeps the
     emphasis: `**https://x.com**` opens `https://x.com**`, `_https://x.com_` keeps the
     underscore, and `(see https://x.com/a.)` keeps the full stop because `balance` runs after
@@ -2542,6 +2547,15 @@ day; the commits carry the detail.
 - The login prompt left raw mode on after a signal, and printed the user name unfiltered.
 - `Retry-After` was ignored on a 5xx; transport errors printed the search text in the URL;
   a `null` page body failed; redirects turned a `POST` into a `GET` reported as success.
+
+**From the review of the 1.2.2 branch itself:** redo of a repeating task's done sent the
+predicted dates and moved it twice; a create whose store write failed left an undo stuck on
+id 0; a dialog opened on a new row before the store named it said "That task is gone"; a
+`Retry-After: 0` on a 5xx disabled the backoff; a `dev.yaml` from an older login kept
+sharing `config.yaml`'s token file; an opener reported its exit when the browser closed;
+the preview rendered a description twice a frame; the pending-label check was prepared
+anew for every label in a pull. Its claim that core and ui 2.0.0 were already on
+crates.io was checked and is wrong: crates.io has only 1.0.1.
 
 ## Structure: where the code is hard to troubleshoot
 
