@@ -727,7 +727,18 @@ const fn again_code(pass: Pass) -> u8 {
     }
 }
 
+/// Set once the quit flush has begun, after which no pass is started.
+///
+/// The flush pushes on its own, outside `spawn_sync`'s `RUNNING` guard, so a pass that
+/// started beside it -- a running pass's `AGAIN` tail, a late `Effect::Apply`, the timer
+/// -- would be a second drain of the same queue, and two drains can each read a create
+/// before either marks it sent. Never cleared: the process is on its way out.
+static SYNC_STOPPED: AtomicBool = AtomicBool::new(false);
+
 fn spawn_sync(sync: Arc<Sync>, tx: LoopTx, pass: Pass, trigger: Trigger) {
+    if SYNC_STOPPED.load(Ordering::SeqCst) {
+        return;
+    }
     /// One pass at a time. Two overlapping passes would push the same queue twice, and
     /// the queue is ordered — an entry sent twice is a task created twice.
     static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -837,6 +848,8 @@ fn in_flight() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
 /// terminal has gone, and `println!` panics on a write that fails (BUG-31). Every write
 /// ignores its error for the same reason.
 async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + Send)) {
+    // Before anything else, so whatever is in flight below is the last pass there is.
+    SYNC_STOPPED.store(true, Ordering::SeqCst);
     let pending = store.pending_count().await.unwrap_or(0);
     if pending <= 0 {
         return;
@@ -889,10 +902,22 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
                 return;
             }
         }
-    } else if let Ok(mut slot) = in_flight().lock() {
-        if let Some(handle) = slot.take() {
+    } else {
+        let handle = in_flight().lock().ok().and_then(|mut slot| slot.take());
+        if let Some(handle) = handle {
             handle.abort();
+            // `abort` only asks. A pass being polled on another worker runs on to its next
+            // await, so it is waited out -- briefly, since cancelling is all that is left
+            // -- before the push below starts beside it.
+            let _ = tokio::time::timeout(FLUSH_TICK, handle).await;
         }
+    }
+    // The slot holds the pass spawned last, which is not always the one running: a
+    // pass's `AGAIN` tail can store its successor before the pass that spawned it has
+    // stored itself. Whatever is still pushing now is a second drain, so walk away.
+    if sync.is_pushing() {
+        let _ = writeln!(out, "Still sending; leaving the rest queued for next time.");
+        return;
     }
 
     let changes = if pending == 1 { "change" } else { "changes" };
@@ -3209,6 +3234,58 @@ mod tests {
             queued[0].attempts, 0,
             "flush_on_exit pushed again after a push had panicked partway"
         );
+    }
+
+    /// The flush pushes outside `spawn_sync`'s one-at-a-time guard, so anything that could
+    /// still start a pass -- a pass's `AGAIN` tail, a late `Effect::Apply`, the timer --
+    /// would push alongside it, and two drains can read the same create before either
+    /// marks it sent. Once the flush has begun, nothing may start another.
+    ///
+    /// The server is a closed loopback port, so a pass that did start shows up as a
+    /// failed attempt on the entry and as events on the loop's channel.
+    #[tokio::test]
+    async fn no_pass_starts_once_the_quit_flush_has_begun() {
+        let store = scratch_store();
+        let client = Client::builder("http://127.0.0.1:9")
+            .credentials(tui_do_api::Credentials::api_token("tk_test"))
+            .build()
+            .unwrap();
+        let sync = Arc::new(Sync::new(client, store.clone()));
+        // Nothing queued yet, so the flush itself sends nothing.
+        flush_on_exit(&store, &sync, &mut io::sink()).await;
+
+        store
+            .upsert_tasks(vec![tui_do_core::models::Task {
+                id: tui_do_core::models::TaskId(4),
+                project_id: ProjectId(1),
+                title: "late".to_string(),
+                ..tui_do_core::models::Task::default()
+            }])
+            .await
+            .unwrap();
+        store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(
+                    store
+                        .task(tui_do_core::models::TaskId(4))
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                ),
+            })
+            .await
+            .unwrap();
+        let (tx, mut rx) = LoopTx::channel();
+        spawn_sync(Arc::clone(&sync), tx, Pass::Push, Trigger::Scheduled);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert!(
+            rx.msg.try_recv().is_err(),
+            "a pass started after the flush began"
+        );
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].attempts, 0, "a pass pushed after the flush began");
     }
 
     /// A store with nothing in it, for a test to queue against without touching
