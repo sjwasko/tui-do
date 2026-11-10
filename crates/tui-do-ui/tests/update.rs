@@ -1732,6 +1732,7 @@ fn an_adoption_leaves_a_label_it_does_not_name_alone() {
     // Then the form the label was made in, opened with the task's own label already
     // ticked -- which is the `chosen` entry this test is here to leave alone.
     model.modals.push(Modal::Labels(LabelsState::new(
+        TaskId(1),
         model.data.labels.clone(),
         vec![LabelId(-1)],
     )));
@@ -5537,4 +5538,146 @@ fn a_task_key_before_the_store_has_named_a_new_task_does_nothing() {
         );
     }
     assert_eq!(selected_title(&model), "buy milk");
+}
+
+/// Open a task dialog on the second row, then let a reload take that row away so the
+/// selection falls to the first. Returns the effects of `confirm`.
+fn confirm_after_the_task_is_gone(
+    model: &mut Model,
+    open: impl FnOnce(&mut Model),
+    confirm: impl FnOnce(&mut Model) -> Vec<Effect>,
+) -> Vec<Effect> {
+    press(model, 'j');
+    assert_eq!(selected_title(model), "second");
+    open(model);
+    assert!(!model.modals.is_empty(), "the dialog opened");
+    let mut first = model.data.tasks[0].clone();
+    first.labels = vec![label(7, "keep me")];
+    answer(model, vec![first, task(3, "third")]);
+    assert_eq!(
+        selected_title(model),
+        "first",
+        "the selection fell to the top"
+    );
+    confirm(model)
+}
+
+fn assert_gone(model: &Model, effects: &[Effect]) {
+    assert!(
+        applied(effects).is_none(),
+        "acted on another task: {:?}",
+        applied(effects)
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("gone"), "{}", toast.text);
+    assert!(model.modals.is_empty(), "{:?}", model.modals);
+}
+
+#[test]
+fn a_priority_set_on_a_task_that_has_gone_changes_no_other_task() {
+    let mut model = loaded();
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'p');
+        },
+        |model| {
+            press(model, '5');
+            press_code(model, KeyCode::Enter)
+        },
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_due_date_set_on_a_task_that_has_gone_changes_no_other_task() {
+    let mut model = loaded();
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'd');
+        },
+        |model| {
+            for c in "tomorrow".chars() {
+                press(model, c);
+            }
+            press_code(model, KeyCode::Enter)
+        },
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn labels_ticked_on_a_task_that_has_gone_are_not_replayed_onto_another() {
+    // The worst of them: `chosen` is a whole answer, so replayed as a set difference on
+    // the first task it detached the label that task carried.
+    let mut model = with_labels(vec![label(7, "keep me")], vec![]);
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'l');
+        },
+        |model| press_code(model, KeyCode::Enter),
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_move_picked_for_a_task_that_has_gone_moves_no_other_task() {
+    let mut model = loaded();
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'm');
+        },
+        |model| {
+            for c in "Personal".chars() {
+                press(model, c);
+            }
+            press_code(model, KeyCode::Enter)
+        },
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_quick_action_for_a_task_that_has_gone_changes_no_other_task() {
+    let mut model = loaded();
+    model.quick_actions = vec![tui_do_core::config::QuickAction {
+        key: 'i',
+        kind: tui_do_core::config::QuickActionKind::Priority(5),
+    }];
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, ' ');
+        },
+        |model| press(model, 'i'),
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_dialog_follows_its_task_through_adoption() {
+    // The id a dialog was opened on can be the provisional one; the server naming it
+    // while the dialog is open must not turn it into "that task is gone".
+    let mut model = loaded();
+    model.data.tasks.insert(0, task(-1, "new task"));
+    model.list.selected = Some(TaskId(-1));
+    press(&mut model, 'p');
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Task(TaskId(-1)),
+            assigned: Subject::Task(TaskId(3901)),
+        }),
+    );
+    press(&mut model, '4');
+    match applied(&press_code(&mut model, KeyCode::Enter)) {
+        Some(Mutation::UpdateTask { after, .. }) => {
+            assert_eq!(after.id, TaskId(3901));
+            assert_eq!(after.priority, 4);
+        }
+        other => panic!("the priority is set: {other:?}"),
+    }
 }

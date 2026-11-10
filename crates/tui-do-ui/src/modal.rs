@@ -12,7 +12,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use tui_do_core::models::{Label, LabelId, ProjectId, Task};
+use tui_do_core::models::{Label, LabelId, ProjectId, Task, TaskId};
 use tui_do_core::quickadd;
 use tui_do_core::ZonedTime;
 use unicode_segmentation::UnicodeSegmentation;
@@ -224,12 +224,21 @@ pub enum Pick {
     /// be reloaded out from under an open picker and an index would then name a different
     /// link -- or none.
     Url(String),
-    /// Move the selected task into this project.
+    /// Move `task` into `project`.
     ///
     /// Distinct from [`Pick::Project`], which *shows* one. Both carry a `ProjectId` and
     /// mean opposite things, which is precisely why they are two variants and not one
     /// with a flag beside it.
-    MoveTo(ProjectId),
+    ///
+    /// The task is the one the picker was opened on, carried rather than read from the
+    /// selection when Enter lands: a reload under the open picker can take that task away
+    /// and move the cursor to another, which would then be moved instead.
+    MoveTo {
+        /// Where it goes.
+        project: ProjectId,
+        /// What goes there.
+        task: TaskId,
+    },
 }
 
 /// One thing a picker can offer.
@@ -475,13 +484,32 @@ pub enum Submission {
     Add(String),
     /// Apply this filled-in edit form.
     Edited(Box<EditDraft>),
-    /// Set the selected task's priority to this, 0 to 5.
-    Priority(i64),
-    /// Set the selected task's due date from this text. Empty clears it; untouched
-    /// keeps the stored instant.
-    Due(Prefilled),
-    /// Make these, exactly these, the selected task's labels.
-    Labels(Vec<LabelId>),
+    /// Set `task`'s priority to `value`, 0 to 5.
+    ///
+    /// This and the three like it name the task the dialog was opened on, not whichever
+    /// is selected when it closes: a reload under an open dialog can take that task away
+    /// and move the cursor to another, and the answer belongs to the first.
+    Priority {
+        /// The task the field was opened on.
+        task: TaskId,
+        /// The priority chosen.
+        value: i64,
+    },
+    /// Set `task`'s due date from this text. Empty clears it; untouched keeps the
+    /// stored instant.
+    Due {
+        /// The task the field was opened on.
+        task: TaskId,
+        /// What was typed, against what was prefilled.
+        due: Prefilled,
+    },
+    /// Make `chosen`, exactly these, `task`'s labels.
+    Labels {
+        /// The task the form was opened on.
+        task: TaskId,
+        /// Every label ticked.
+        chosen: Vec<LabelId>,
+    },
     /// Create a label with this title. Always an [`Outcome::Update`]: the form that
     /// asked stays open, because the user is part-way through deciding one task's
     /// labels and closing it would throw away every tick they had already made.
@@ -513,8 +541,13 @@ pub enum Submission {
         /// Its new colour: six hex digits, or empty for "the interface picks one".
         hex_color: String,
     },
-    /// Run the configured quick action at this index.
-    QuickAction(usize),
+    /// Run the configured quick action at `index` on `task`.
+    QuickAction {
+        /// The task the menu was opened on.
+        task: TaskId,
+        /// Which configured action.
+        index: usize,
+    },
     /// Do not show the key-change notice again.
     DismissKeysNotice,
     /// Make these labels, and hold the submission that named them until the server has.
@@ -878,6 +911,8 @@ pub fn is_priority_text(text: &str) -> bool {
 /// that leaves a valid priority behind, ever reaches the field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriorityState {
+    /// The task this field was opened on, which is the one Enter changes.
+    pub task: TaskId,
     /// What has been typed. Always empty or a valid priority; never anything else.
     pub typed: String,
     /// The row under the cursor, which is what Enter applies.
@@ -887,10 +922,11 @@ pub struct PriorityState {
 }
 
 impl PriorityState {
-    /// A field over a task whose priority is `current`.
+    /// A field over `task`, whose priority is `current`.
     #[must_use]
-    pub fn new(current: i64) -> Self {
+    pub fn new(task: TaskId, current: i64) -> Self {
         Self {
+            task,
             typed: String::new(),
             selected: current.clamp(0, MAX_PRIORITY),
             current,
@@ -922,7 +958,10 @@ impl ModalView for PriorityState {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,
-            KeyCode::Enter => Outcome::Submit(Submission::Priority(self.selected)),
+            KeyCode::Enter => Outcome::Submit(Submission::Priority {
+                task: self.task,
+                value: self.selected,
+            }),
             KeyCode::Down | KeyCode::Tab => {
                 self.step(1);
                 Outcome::Consumed
@@ -972,6 +1011,8 @@ impl ModalView for PriorityState {
 /// so the guess is visible before Enter commits to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueState {
+    /// The task this field was opened on, which is the one Enter changes.
+    pub task: TaskId,
     /// What has been typed. Prefilled with the date the task already has.
     pub input: TextInput,
     /// What the field was prefilled with; see [`Prefilled`].
@@ -981,8 +1022,9 @@ pub struct DueState {
 impl DueState {
     /// A field prefilled with `current`, which is empty when the task has no due date.
     #[must_use]
-    pub fn new(current: &str) -> Self {
+    pub fn new(task: TaskId, current: &str) -> Self {
         Self {
+            task,
             input: TextInput::new(current),
             prefill: current.to_string(),
         }
@@ -996,10 +1038,10 @@ impl ModalView for DueState {
             // Deliberately submits an empty field rather than treating it as a cancel:
             // clearing a due date is a thing people want, and Esc is already the way to
             // back out without changing anything.
-            KeyCode::Enter => Outcome::Submit(Submission::Due(Prefilled::new(
-                self.input.value(),
-                &self.prefill,
-            ))),
+            KeyCode::Enter => Outcome::Submit(Submission::Due {
+                task: self.task,
+                due: Prefilled::new(self.input.value(), &self.prefill),
+            }),
             _ => {
                 self.input.press(key);
                 Outcome::Consumed
@@ -1020,6 +1062,8 @@ impl ModalView for DueState {
 /// and detach sets against them -- the same split the edit form already makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LabelsState {
+    /// The task this form was opened on, which is the one Enter changes.
+    pub task: TaskId,
     /// The filter typed so far.
     pub input: TextInput,
     /// Every label that exists, unfiltered.
@@ -1041,11 +1085,12 @@ pub struct LabelsState {
 }
 
 impl LabelsState {
-    /// A form over `labels`, with the task's own `held` already ticked.
+    /// A form for `task` over `labels`, with the task's own `held` already ticked.
     #[must_use]
-    pub fn new(labels: Vec<Label>, held: Vec<LabelId>) -> Self {
+    pub fn new(task: TaskId, labels: Vec<Label>, held: Vec<LabelId>) -> Self {
         let matches = (0..labels.len()).collect();
         Self {
+            task,
             input: TextInput::default(),
             labels,
             chosen: held,
@@ -1228,7 +1273,10 @@ impl ModalView for LabelsState {
     fn handle(&mut self, key: Key) -> Outcome {
         match key.code {
             KeyCode::Esc => Outcome::Dismiss,
-            KeyCode::Enter => Outcome::Submit(Submission::Labels(self.chosen.clone())),
+            KeyCode::Enter => Outcome::Submit(Submission::Labels {
+                task: self.task,
+                chosen: self.chosen.clone(),
+            }),
             // Space toggles rather than typing a space. A label whose title has one in it
             // is still reachable: the filter is fuzzy, so `inprog` finds `in progress`.
             KeyCode::Char(' ') => {
@@ -1670,15 +1718,17 @@ impl ModalView for ConfirmLabelsState {
 /// `update` decides what that row means, the same way every other modal here works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickActionsState {
+    /// The task this menu was opened on, which is the one an action changes.
+    pub task: TaskId,
     /// One row per configured action: the key that triggers it, and what it does.
     pub rows: Vec<(char, String)>,
 }
 
 impl QuickActionsState {
-    /// A menu over `rows`.
+    /// A menu over `rows`, for `task`.
     #[must_use]
-    pub fn new(rows: Vec<(char, String)>) -> Self {
-        Self { rows }
+    pub fn new(task: TaskId, rows: Vec<(char, String)>) -> Self {
+        Self { task, rows }
     }
 }
 
@@ -1689,7 +1739,10 @@ impl ModalView for QuickActionsState {
             // is what a second press of a mode key should do.
             KeyCode::Esc | KeyCode::Char(' ') => Outcome::Dismiss,
             KeyCode::Char(c) => match self.rows.iter().position(|(bound, _)| *bound == c) {
-                Some(index) => Outcome::Submit(Submission::QuickAction(index)),
+                Some(index) => Outcome::Submit(Submission::QuickAction {
+                    task: self.task,
+                    index,
+                }),
                 // Stays open on an unconfigured key. The menu listing every key that *is*
                 // configured is on screen, so there is nothing left to explain.
                 None => Outcome::Consumed,
@@ -1912,6 +1965,44 @@ impl Modal {
     /// React to a key.
     pub fn handle(&mut self, key: Key) -> Outcome {
         self.as_view_mut().handle(key)
+    }
+
+    /// Point a dialog that acts on task `from` at `to`, because the server has just given
+    /// a provisional task its real id.
+    ///
+    /// Every dialog that changes a task holds the id it was opened on, so a dialog left
+    /// on the provisional id would find its task gone on Enter.
+    pub fn retarget_task(&mut self, from: TaskId, to: TaskId) {
+        let swap = |id: &mut TaskId| {
+            if *id == from {
+                *id = to;
+            }
+        };
+        match self {
+            Self::Priority(state) => swap(&mut state.task),
+            Self::Due(state) => swap(&mut state.task),
+            Self::Labels(state) => swap(&mut state.task),
+            Self::QuickActions(state) => swap(&mut state.task),
+            Self::Edit(state) => swap(&mut state.before.id),
+            Self::ConfirmLabels(state) => {
+                if let Pending::Edit(draft) = &mut state.pending {
+                    swap(&mut draft.before.id);
+                }
+            }
+            Self::Picker(state) => {
+                for candidate in &mut state.candidates {
+                    if let Pick::MoveTo { task, .. } = &mut candidate.pick {
+                        swap(task);
+                    }
+                }
+            }
+            // Nothing else names a task.
+            Self::Help(_)
+            | Self::Search(_)
+            | Self::Add(_)
+            | Self::LabelEdit(_)
+            | Self::KeysChanged(_) => {}
+        }
     }
 
     /// The title drawn in the border.
@@ -2177,6 +2268,7 @@ mod tests {
     #[test]
     fn space_toggles_a_label_and_a_title_with_a_space_in_it_is_still_reachable() {
         let mut form = LabelsState::new(
+            TaskId(1),
             vec![a_label(1, "urgent"), a_label(2, "in progress")],
             vec![],
         );
@@ -2200,13 +2292,16 @@ mod tests {
 
         assert_eq!(
             form.handle(code(KeyCode::Enter)),
-            Outcome::Submit(Submission::Labels(Vec::new()))
+            Outcome::Submit(Submission::Labels {
+                task: TaskId(1),
+                chosen: Vec::new()
+            })
         );
     }
 
     #[test]
     fn toggling_with_nothing_matched_changes_nothing_rather_than_panicking() {
-        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        let mut form = LabelsState::new(TaskId(1), vec![a_label(1, "urgent")], vec![]);
         for c in "zzz".chars() {
             form.handle(key(c));
         }
@@ -2217,7 +2312,7 @@ mod tests {
 
     #[test]
     fn a_label_form_with_no_match_offers_to_create_what_was_typed() {
-        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        let mut form = LabelsState::new(TaskId(1), vec![a_label(1, "urgent")], vec![]);
         for c in "next".chars() {
             form.handle(key(c));
         }
@@ -2232,14 +2327,17 @@ mod tests {
         );
         assert_eq!(
             form.handle(code(KeyCode::Enter)),
-            Outcome::Submit(Submission::Labels(Vec::new())),
+            Outcome::Submit(Submission::Labels {
+                task: TaskId(1),
+                chosen: Vec::new()
+            }),
             "and Enter still means 'apply the ticks I made'"
         );
     }
 
     #[test]
     fn a_form_does_not_offer_to_create_a_label_that_exists() {
-        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        let mut form = LabelsState::new(TaskId(1), vec![a_label(1, "urgent")], vec![]);
         for c in "urgent".chars() {
             form.handle(key(c));
         }
@@ -2257,7 +2355,7 @@ mod tests {
         // it just asked for until the reload comes back. Without `awaiting`, a second
         // Ctrl-N in that window queues a second `CreateLabel` for the same title -- two
         // labels called `next` in a pool that is global to every project.
-        let mut form = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        let mut form = LabelsState::new(TaskId(1), vec![a_label(1, "urgent")], vec![]);
         for c in "next".chars() {
             form.handle(key(c));
         }
@@ -2268,7 +2366,7 @@ mod tests {
 
     #[test]
     fn an_empty_box_offers_nothing_and_a_created_label_comes_back_ticked() {
-        let mut form = LabelsState::new(Vec::new(), Vec::new());
+        let mut form = LabelsState::new(TaskId(1), Vec::new(), Vec::new());
         assert_eq!(form.creatable(), None, "there is nothing to create yet");
         assert_eq!(form.handle(Key::ctrl('n')), Outcome::Consumed);
 
@@ -2498,7 +2596,11 @@ mod tests {
         // A label edited from the task form and one edited from `g l` must be the same
         // operation, so both surfaces ask for it the same way -- and both stay open,
         // because `Submit` would pop the form the user is still working in.
-        let mut ticks = LabelsState::new(vec![a_label(1, "urgent"), a_label(2, "next")], vec![]);
+        let mut ticks = LabelsState::new(
+            TaskId(1),
+            vec![a_label(1, "urgent"), a_label(2, "next")],
+            vec![],
+        );
         ticks.handle(code(KeyCode::Down));
         assert_eq!(
             ticks.handle(Key::ctrl('e')),
@@ -2528,7 +2630,7 @@ mod tests {
 
     #[test]
     fn editing_nothing_does_nothing_rather_than_panicking() {
-        let mut ticks = LabelsState::new(vec![a_label(1, "urgent")], vec![]);
+        let mut ticks = LabelsState::new(TaskId(1), vec![a_label(1, "urgent")], vec![]);
         for c in "zzz".chars() {
             ticks.handle(key(c));
         }
@@ -2547,17 +2649,20 @@ mod tests {
 
     #[test]
     fn the_due_field_submits_an_empty_value_but_esc_still_abandons() {
-        let mut modal = Modal::Due(DueState::new("24/12/2026"));
+        let mut modal = Modal::Due(DueState::new(TaskId(1), "24/12/2026"));
         for _ in 0..10 {
             modal.handle(code(KeyCode::Backspace));
         }
         // Clearing the date is a request, not a cancellation.
         assert_eq!(
             modal.handle(code(KeyCode::Enter)),
-            Outcome::Submit(Submission::Due(Prefilled::new("", "24/12/2026")))
+            Outcome::Submit(Submission::Due {
+                task: TaskId(1),
+                due: Prefilled::new("", "24/12/2026")
+            })
         );
 
-        let mut abandoned = Modal::Due(DueState::new("24/12/2026"));
+        let mut abandoned = Modal::Due(DueState::new(TaskId(1), "24/12/2026"));
         abandoned.handle(key('x'));
         assert_eq!(abandoned.handle(code(KeyCode::Esc)), Outcome::Dismiss);
     }
