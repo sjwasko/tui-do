@@ -1062,3 +1062,55 @@ async fn a_collection_that_grows_while_it_is_read_is_still_read_to_the_end() {
         "the page that appeared mid-walk was dropped"
     );
 }
+
+/// The body of the one `POST` the mock server received.
+async fn posted_body(server: &MockServer) -> serde_json::Value {
+    let sent = server.received_requests().await.expect("recorded");
+    sent.iter()
+        .find(|r| r.method.as_str() == "POST")
+        .expect("the update")
+        .body_json()
+        .expect("json body")
+}
+
+#[tokio::test]
+async fn a_relative_reminder_keeps_what_it_is_relative_to_through_an_update() {
+    // Measured on dev 2026-11-10: a `POST /tasks/{id}` carrying a reminder with
+    // `relative_period: -3600` and no `relative_to` is refused outright -- `400`, code
+    // 4022, "Please provide what the reminder date is relative to". `""` and `null` are
+    // refused the same way. So a task read and written back must carry the relation, or
+    // every edit to a task with a relative reminder is rolled back.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7,
+            "title": "renew the passport",
+            "due_date": "2026-12-01T12:00:00Z",
+            "reminders": [
+                {"reminder": "2026-12-01T11:00:00Z", "relative_period": -3600, "relative_to": "due_date"},
+                {"reminder": "2026-12-02T10:00:00Z", "relative_period": 0, "relative_to": ""}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    let mut task = client.task(TaskId(7)).await.expect("read");
+    task.title = "renew the passport, today".into();
+    client.update_task(&task).await.expect("update");
+
+    let body = posted_body(&server).await;
+    let reminders = body["reminders"].as_array().expect("reminders sent");
+    assert_eq!(reminders[0]["relative_to"], "due_date", "{body}");
+    assert_eq!(reminders[0]["relative_period"], -3600);
+    // An absolute reminder has no relation, and the server accepted it with the key
+    // absent (measured the same day; it echoes `""` back).
+    assert!(reminders[1].get("relative_to").is_none(), "{body}");
+}

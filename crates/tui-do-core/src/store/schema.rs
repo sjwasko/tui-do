@@ -203,6 +203,31 @@ const MIGRATIONS: &[&str] = &[
     r"
     ALTER TABLE outbox ADD COLUMN sent_at TEXT;
     ",
+    // v7 -- what a relative reminder is relative to.
+    //
+    // Measured on dev 2026-11-10: an update carrying a relative reminder without
+    // `relative_to` is refused, `400` / 4022, so a store with nowhere to keep it made
+    // every edit of such a task fail. The column joins the primary key: an hour before
+    // the due date and an hour before the start date are two reminders, and with the
+    // old key whichever came second was dropped by `INSERT OR IGNORE`. SQLite cannot
+    // change a key in place, so the table is rebuilt.
+    //
+    // `''` means absolute, which is how the server spells it. Existing relative rows
+    // have lost their relation and are backfilled `''`; startup's full pull rewrites
+    // every task's reminders from the server, which restores it.
+    r"
+    CREATE TABLE task_reminders_v7 (
+        task_id         INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        reminder        TEXT,
+        relative_period INTEGER NOT NULL DEFAULT 0,
+        relative_to     TEXT    NOT NULL DEFAULT '',
+        PRIMARY KEY (task_id, reminder, relative_period, relative_to)
+    );
+    INSERT INTO task_reminders_v7 (task_id, reminder, relative_period)
+        SELECT task_id, reminder, relative_period FROM task_reminders;
+    DROP TABLE task_reminders;
+    ALTER TABLE task_reminders_v7 RENAME TO task_reminders;
+    ",
 ];
 
 /// The schema version this build expects.
@@ -383,6 +408,45 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kind, "task");
+    }
+
+    #[test]
+    fn the_v7_rebuild_keeps_existing_reminders_and_widens_the_key() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        for (index, sql) in MIGRATIONS[..6].iter().enumerate() {
+            let transaction = connection.transaction().unwrap();
+            apply(&transaction, sql, i64::try_from(index + 1).unwrap()).unwrap();
+            transaction.commit().unwrap();
+        }
+        connection
+            .execute_batch(
+                "INSERT INTO tasks (id, project_id, title, synced_at) VALUES (1, 1, 't', 'now');
+                 INSERT INTO task_reminders (task_id, reminder, relative_period)
+                     VALUES (1, '2026-12-01T11:00:00Z', -3600);",
+            )
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        let (period, relation): (i64, String) = connection
+            .query_row(
+                "SELECT relative_period, relative_to FROM task_reminders WHERE task_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((period, relation.as_str()), (-3600, ""));
+
+        // The same offset from a different date is a second reminder, not a duplicate.
+        let inserted = connection
+            .execute(
+                "INSERT OR IGNORE INTO task_reminders
+                     (task_id, reminder, relative_period, relative_to)
+                 VALUES (1, '2026-12-01T11:00:00Z', -3600, 'start_date')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(inserted, 1);
     }
 
     #[test]

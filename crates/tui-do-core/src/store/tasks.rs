@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
-use tui_do_api::models::{ProjectId, Task, TaskId, TaskReminder, User};
+use tui_do_api::models::{ProjectId, ReminderRelation, Task, TaskId, TaskReminder, User};
 
 use super::labels::{attach_label, labels_for_tasks};
 use super::sql::{escape_like, group_by_task, instant, joined_user, keep_ids, stamp, upsert_user};
@@ -525,12 +525,17 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
     )?;
     for reminder in &task.reminders {
         tx.execute(
-            "INSERT OR IGNORE INTO task_reminders (task_id, reminder, relative_period)
-             VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO task_reminders
+                (task_id, reminder, relative_period, relative_to)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 task.id.get(),
                 stamp(reminder.reminder.get()),
-                reminder.relative_period
+                reminder.relative_period,
+                reminder
+                    .relative_to
+                    .as_ref()
+                    .map_or("", ReminderRelation::as_str),
             ],
         )?;
     }
@@ -630,14 +635,15 @@ fn reminders_for_tasks(
 ) -> Result<HashMap<TaskId, Vec<TaskReminder>>> {
     group_by_task(
         connection,
-        "SELECT task_id, reminder, relative_period FROM task_reminders
+        "SELECT task_id, reminder, relative_period, relative_to FROM task_reminders
           WHERE task_id IN (SELECT value FROM json_each(?1))
-          ORDER BY task_id, reminder, relative_period",
+          ORDER BY task_id, reminder, relative_period, relative_to",
         tasks,
         |row| {
             Ok(TaskReminder {
                 reminder: instant(row, "reminder")?.into(),
                 relative_period: row.get("relative_period")?,
+                relative_to: ReminderRelation::parse(&row.get::<_, String>("relative_to")?),
             })
         },
     )
@@ -910,10 +916,12 @@ mod tests {
             TaskReminder {
                 reminder: at("2026-09-01T09:00:00Z").into(),
                 relative_period: 0,
+                relative_to: None,
             },
             TaskReminder {
                 reminder: None.into(),
                 relative_period: -3600,
+                relative_to: Some(ReminderRelation::DueDate),
             },
         ];
 
@@ -941,6 +949,40 @@ mod tests {
         store.upsert_tasks(vec![fewer]).await.unwrap();
         let again = store.task(TaskId(1)).await.unwrap().expect("the task");
         assert_eq!(again.reminders.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reminder_keeps_what_it_is_relative_to_through_the_store() {
+        // Measured on dev 2026-11-10: an update carrying a relative reminder without its
+        // `relative_to` is refused with `400` / 4022. A task read out of the store is the
+        // body of the next write, so the store has to keep the relation. Two reminders
+        // the same distance before different dates are different reminders, so the
+        // relation is part of what identifies a row too.
+        let store = Store::in_memory().unwrap();
+        let original: Task = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "project_id": 1,
+            "title": "Renew the passport",
+            "reminders": [
+                {"reminder": "2026-12-01T11:00:00Z", "relative_period": -3600, "relative_to": "due_date"},
+                {"reminder": "2026-12-01T11:00:00Z", "relative_period": -3600, "relative_to": "start_date"},
+                {"reminder": "2026-12-02T10:00:00Z", "relative_period": 0, "relative_to": ""}
+            ]
+        }))
+        .unwrap();
+
+        store.upsert_tasks(vec![original]).await.unwrap();
+        let read = store.task(TaskId(1)).await.unwrap().expect("the task");
+
+        let body = serde_json::to_value(&read).unwrap();
+        let mut relations: Vec<String> = body["reminders"]
+            .as_array()
+            .expect("reminders")
+            .iter()
+            .map(|r| r["relative_to"].as_str().unwrap_or("").to_string())
+            .collect();
+        relations.sort();
+        assert_eq!(relations, vec!["", "due_date", "start_date"], "{body}");
     }
 
     #[tokio::test]
@@ -1363,9 +1405,9 @@ mod tests {
             ) -> Vec<TaskReminder> {
                 let mut statement = connection
                     .prepare(
-                        "SELECT reminder, relative_period FROM task_reminders
+                        "SELECT reminder, relative_period, relative_to FROM task_reminders
                           WHERE task_id = ?1
-                          ORDER BY reminder, relative_period",
+                          ORDER BY reminder, relative_period, relative_to",
                     )
                     .unwrap();
                 let rows = statement
@@ -1373,6 +1415,9 @@ mod tests {
                         Ok(TaskReminder {
                             reminder: instant(row, "reminder")?.into(),
                             relative_period: row.get("relative_period")?,
+                            relative_to: ReminderRelation::parse(
+                                &row.get::<_, String>("relative_to")?,
+                            ),
                         })
                     })
                     .unwrap();
@@ -1400,9 +1445,11 @@ mod tests {
         }
 
         fn reminder(at_text: &str, relative_period: i64) -> TaskReminder {
+            // A relative reminder carries its relation, as the server insists it must.
             TaskReminder {
                 reminder: at(at_text).into(),
                 relative_period,
+                relative_to: (relative_period != 0).then_some(ReminderRelation::StartDate),
             }
         }
 
