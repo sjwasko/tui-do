@@ -85,7 +85,7 @@ throughout, both learned the hard way in this pass:
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
-| **Minor** | 19 remaining, none urgent |
+| **Minor** | 13 remaining, none urgent; the six from the 2026-11-09 `tui-do add` smoke test fixed 2026-11-10 |
 
 Every open item needed either a decision or a measurement — that was the point of the
 2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
@@ -2377,7 +2377,7 @@ must exit non-zero and print the message, and must not print `Sent.`.
 
 ## Minor
 
-- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
+- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev, all six fixed 2026-11-10:
   - ~~An unknown `*label` takes its text out of the title and is then left off, so the words
     are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned
     about, but the task is already queued and re-running adds a second one.~~
