@@ -2433,7 +2433,10 @@ must exit non-zero and print the message, and must not print `Sent.`.
   **Fixed** — and the comment was worse than stale: implementing what it described would
   **break** `r`/`R`, which pass `Backoff::Ignore` precisely to retry entries still inside
   their backoff. The comment now says the query is deliberately unfiltered and why.
-- `RUNNING` is never cleared on panic or abort.
+- ~~`RUNNING` is never cleared on panic or abort.~~ **Not reachable, checked 2026-11-10:**
+  the only abort is in `flush_on_exit`, which then pushes directly rather than through
+  `spawn_sync`, and the process ends; a panicking pass ends the interface (BUG-7). A guard
+  would matter only if a pass is ever aborted while the interface keeps running.
 - A two-atomic seam in the sync trigger can drop an `Asked` force.
 - ~~A 4xx from `labels_named` rejects the create it was there to protect.~~ **Fixed
   2026-11-10**, for `tasks_named` too: `sync::searched` reads a refused search as "nothing
