@@ -349,12 +349,9 @@ fn open_browser(page: &str) {
     if !can_open() {
         return;
     }
-    match std::process::Command::new(crate::runtime::URL_OPENER)
-        .arg(page)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+    // Detached as `o` is, and for the same reasons: the token prompt reads stdin next,
+    // and a signal meant for this command is not one for the browser.
+    match crate::runtime::open_detached(crate::runtime::URL_OPENER, page, |_| {}) {
         Ok(_) => println!("Opening that page in your browser…"),
         Err(error) => println!("(could not open a browser: {error})"),
     }
