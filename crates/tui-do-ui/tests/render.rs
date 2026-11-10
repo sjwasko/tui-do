@@ -252,7 +252,7 @@ fn the_question_before_a_new_label() {
     let mut model = fixture((120, 40));
     update(
         &mut model,
-        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+        Msg::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
     );
     for c in "Ship it *nosuchlabel".chars() {
         update(
@@ -282,7 +282,7 @@ fn the_question_grows_a_row_per_name_it_cannot_have() {
     let mut model = fixture((120, 40));
     update(
         &mut model,
-        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+        Msg::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
     );
     for c in "Ship it *nope *alsonope".chars() {
         update(
@@ -369,7 +369,7 @@ fn the_label_edit_form_shows_the_colour_it_is_about_to_save() {
     // worn by every task that carries it -- so the chip is drawn in the colour being
     // typed, in the style the list rows use.
     let mut model = fixture((120, 40));
-    for key in ['g', 'l'] {
+    for key in ['g', 'a'] {
         update(
             &mut model,
             Msg::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
@@ -658,7 +658,7 @@ fn the_add_prompt_teaches_the_syntax_and_then_shows_the_parse() {
     let mut model = fixture((110, 40));
     update(
         &mut model,
-        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+        Msg::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
     );
     // Nothing typed: the legend, because there is no order to remember and the sigils
     // are the whole of what there is to learn.
@@ -689,7 +689,7 @@ fn the_add_prompt_still_shows_a_date_kept_in_the_title() {
     let mut model = fixture((110, 40));
     update(
         &mut model,
-        Msg::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+        Msg::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
     );
     for c in "tomorrow buy milk".chars() {
         update(
@@ -721,7 +721,7 @@ fn the_add_prompt_completes_a_project_and_lists_on_a_second_tab() {
     // Item 12: `a` shares the completion `tui-do add` has, fed from what the model holds.
     let mut model = fixture((110, 40));
     let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-    press_all(&mut model, &chars("aBuy stamps +Err"));
+    press_all(&mut model, &chars("nBuy stamps +Err"));
     press_all(&mut model, &[tab]);
     let screen = draw(&model);
     let status = screen.lines().last().unwrap_or_default();
@@ -766,7 +766,7 @@ fn the_add_prompt_completes_users_from_the_list_the_store_sent() {
         ),
     );
     let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-    press_all(&mut model, &chars("aShip it @adm"));
+    press_all(&mut model, &chars("nShip it @adm"));
     press_all(&mut model, &[tab]);
     let screen = draw(&model);
     let status = screen.lines().last().unwrap_or_default();
@@ -777,7 +777,7 @@ fn the_add_prompt_completes_users_from_the_list_the_store_sent() {
 fn the_add_prompt_will_not_add_a_line_with_an_open_bracket() {
     let mut model = fixture((110, 40));
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    press_all(&mut model, &chars("aBuy stamps +[Err"));
+    press_all(&mut model, &chars("nBuy stamps +[Err"));
     press_all(&mut model, &[enter]);
     let screen = draw(&model);
     let status = screen.lines().last().unwrap_or_default();
@@ -792,7 +792,7 @@ fn the_add_prompt_will_not_add_a_line_with_an_open_bracket() {
 #[test]
 fn a_question_mark_after_a_sigil_in_the_add_prompt_is_help() {
     let mut model = fixture((110, 40));
-    press_all(&mut model, &chars("aCall +?"));
+    press_all(&mut model, &chars("nCall +?"));
     let screen = draw(&model);
     let status = screen.lines().last().unwrap_or_default();
     assert!(status.starts_with("+ Call + "), "the ? was typed: {status}");
@@ -800,7 +800,7 @@ fn a_question_mark_after_a_sigil_in_the_add_prompt_is_help() {
 
     // In a sentence it is the character.
     let mut model = fixture((110, 40));
-    press_all(&mut model, &chars("aIs that the date?"));
+    press_all(&mut model, &chars("nIs that the date?"));
     let screen = draw(&model);
     let status = screen.lines().last().unwrap_or_default();
     assert!(status.starts_with("+ Is that the date?"), "{status}");

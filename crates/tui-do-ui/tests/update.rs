@@ -122,7 +122,8 @@ fn an_answer_to_a_superseded_query_is_dropped() {
     let stale = model.query_id;
 
     // The user moves on: a new query is issued and gets a new id.
-    let effects = press(&mut model, 't');
+    press(&mut model, 'z');
+    let effects = press(&mut model, 'd');
     let current = loaded_query(&effects).expect("toggling done re-queries");
     assert_ne!(current, stale);
 
@@ -536,7 +537,7 @@ fn the_label_picker_filters_without_moving_the_sidebar_highlight() {
     let before = model.sidebar.selected;
 
     press(&mut model, 'g');
-    press(&mut model, 'l');
+    press(&mut model, 'a');
     press_code(&mut model, KeyCode::Enter);
     assert_eq!(model.query.scope, Scope::Label(LabelId(4)));
     assert_eq!(model.query.filter().label, Some(LabelId(4)));
@@ -563,9 +564,10 @@ fn the_command_palette_runs_an_action_by_name() {
 #[test]
 fn a_command_run_by_name_is_the_same_code_path_as_its_key() {
     // Toggling done tasks through the palette must produce the same effects, and the
-    // same toast, as pressing `t` -- one implementation, not two.
+    // same toast, as pressing `z d` -- one implementation, not two.
     let mut by_key = loaded();
-    let key_effects = press(&mut by_key, 't');
+    press(&mut by_key, 'z');
+    let key_effects = press(&mut by_key, 'd');
 
     let mut by_name = loaded();
     press(&mut by_name, ':');
@@ -605,7 +607,7 @@ fn the_palette_offers_no_motions_and_shows_the_key_beside_each_command() {
         .iter()
         .find(|candidate| candidate.title == "Sync changes")
         .expect("sync is offered");
-    assert_eq!(sync.hint, "r");
+    assert_eq!(sync.hint, "r / F5");
 }
 
 #[test]
@@ -667,7 +669,7 @@ fn quick_add_builds_the_task_the_syntax_describes() {
         }]),
     );
 
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Call the VA *urgent !3 +Personal".chars() {
         press(&mut model, c);
     }
@@ -705,7 +707,7 @@ fn quick_add_assigns_the_users_it_names() {
         &mut model,
         Msg::UsersLoaded(vec![user(3, "alice"), user(4, "Ada"), user(5, "ada")]),
     );
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Review the PR @alice @Ada @ALICE".chars() {
         press(&mut model, c);
     }
@@ -725,7 +727,7 @@ fn quick_add_assigns_the_users_it_names() {
 #[test]
 fn a_task_past_the_servers_limits_is_not_queued() {
     let mut model = loaded();
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "water the cactus every 1000 years".chars() {
         press(&mut model, c);
     }
@@ -739,7 +741,7 @@ fn a_task_past_the_servers_limits_is_not_queued() {
 fn a_user_nobody_has_seen_is_reported_rather_than_dropped() {
     let mut model = loaded();
     update(&mut model, Msg::UsersLoaded(vec![user(3, "alice")]));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Thing @alice @nobody".chars() {
         press(&mut model, c);
     }
@@ -773,7 +775,7 @@ fn a_task_with_no_project_named_lands_where_you_are_looking() {
     press_code(&mut model, KeyCode::Enter);
     assert_eq!(model.query.scope, Scope::Project(ProjectId(3)));
 
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Something".chars() {
         press(&mut model, c);
     }
@@ -790,7 +792,7 @@ fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
     // creates` — but the answer "no" still has to land the task and still has to say what
     // was left off it, which is what this test has always been about.
     let mut model = loaded();
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Thing *nosuchlabel".chars() {
         press(&mut model, c);
     }
@@ -807,7 +809,7 @@ fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
 #[test]
 fn an_empty_quick_add_creates_nothing() {
     let mut model = loaded();
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     let effects = press_code(&mut model, KeyCode::Enter);
     assert!(applied(&effects).is_none());
     assert!(model.undo.is_empty());
@@ -819,7 +821,7 @@ fn marking_done_shows_before_it_is_stored() {
     assert!(!model.selected_task().unwrap().done);
 
     let first = model.selected_task().unwrap().id;
-    let effects = press(&mut model, 'd');
+    let effects = press(&mut model, 't');
 
     // The frame after the keystroke already shows it, without waiting for the store: in a
     // list that hides done tasks, "shows it" means the row has left, the same way `x`
@@ -857,7 +859,7 @@ fn deleting_takes_the_row_out_and_moves_the_cursor_on() {
         .status
         .toast
         .as_ref()
-        .is_some_and(|toast| toast.text.contains("u to undo")));
+        .is_some_and(|toast| toast.text.contains("U to undo")));
 }
 
 #[test]
@@ -875,7 +877,7 @@ fn undoing_a_delete_re_creates_the_task() {
     press(&mut model, 'x');
     assert_eq!(model.data.tasks.len(), 2);
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     assert_eq!(model.data.tasks.len(), 3);
     // Vikunja has no undelete, so the inverse of a delete is a create -- which is why the
     // task comes back with a new id once the server has seen it.
@@ -909,7 +911,7 @@ fn a_task_key_works_from_whichever_pane_has_focus() {
     assert_eq!(model.focus, Focus::Sidebar);
 
     let before = model.data.tasks.len();
-    let effects = press(&mut model, 'd');
+    let effects = press(&mut model, 't');
     assert!(applied(&effects).is_some());
     assert_eq!(
         model.data.tasks.len(),
@@ -922,10 +924,10 @@ fn a_task_key_works_from_whichever_pane_has_focus() {
 fn undo_queues_the_inverse_like_any_other_change() {
     let mut model = loaded();
     let first = model.selected_task().unwrap().clone();
-    press(&mut model, 'd');
+    press(&mut model, 't');
     assert_eq!(model.undo.len(), 1);
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     // The row left the list when it was marked done, so what an undo restores is checked
     // in the mutation it queues. The runtime reloads after every `Effect::Apply`, which
     // is what puts the row back on screen.
@@ -947,8 +949,8 @@ fn undo_queues_the_inverse_like_any_other_change() {
 #[test]
 fn redo_puts_it_back_and_a_new_edit_clears_the_stack() {
     let mut model = loaded();
-    press(&mut model, 'd');
-    press(&mut model, 'u');
+    press(&mut model, 't');
+    press(&mut model, 'U');
     assert_eq!(model.redo.len(), 1);
 
     let effects = update(
@@ -961,8 +963,8 @@ fn redo_puts_it_back_and_a_new_edit_clears_the_stack() {
     }
     assert!(model.redo.is_empty());
 
-    press(&mut model, 'u');
-    press(&mut model, 'd');
+    press(&mut model, 'U');
+    press(&mut model, 't');
     assert!(model.redo.is_empty(), "a new edit clears what was undone");
 }
 
@@ -974,7 +976,7 @@ fn undo_goes_back_as_far_as_the_session_does() {
     // No `j` between them: `d` advances to the next row itself, the way `x` does, so
     // three presses tick off three different tasks.
     for _ in 0..3 {
-        press(&mut model, 'd');
+        press(&mut model, 't');
     }
     assert_eq!(model.undo.len(), 3);
     assert_eq!(model.data.tasks.len(), before - 3);
@@ -982,14 +984,14 @@ fn undo_goes_back_as_far_as_the_session_does() {
     // Each undo queues the inverse write. The rows return with the reload the runtime
     // fires after every `Effect::Apply`, not from here.
     for _ in 0..3 {
-        let effects = press(&mut model, 'u');
+        let effects = press(&mut model, 'U');
         assert!(applied(&effects).is_some());
     }
     assert!(model.undo.is_empty());
     assert_eq!(model.redo.len(), 3);
 
     // And the bottom of the stack says so rather than doing something arbitrary.
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     assert!(applied(&effects).is_none());
     assert!(model
         .status
@@ -1001,7 +1003,7 @@ fn undo_goes_back_as_far_as_the_session_does() {
 #[test]
 fn a_write_is_reloaded_from_the_store_rather_than_trusted() {
     let mut model = loaded();
-    press(&mut model, 'd');
+    press(&mut model, 't');
     // The runtime sends this once the write has landed.
     let effects = update(&mut model, Msg::Reload);
     assert!(loaded_query(&effects).is_some());
@@ -1013,11 +1015,13 @@ fn done_tasks_are_hidden_until_asked_for() {
     let mut model = loaded();
     assert_eq!(model.query.filter().done, Some(false));
 
-    press(&mut model, 't');
+    press(&mut model, 'z');
+    press(&mut model, 'd');
     assert_eq!(model.query.filter().done, None);
     assert!(model.status.toast.is_some());
 
-    press(&mut model, 't');
+    press(&mut model, 'z');
+    press(&mut model, 'd');
     assert_eq!(model.query.filter().done, Some(false));
 }
 
@@ -1271,7 +1275,7 @@ fn an_edit_after_a_create_is_sent_against_the_id_the_server_knows() {
         }),
     );
 
-    let effects = press(&mut model, 'd');
+    let effects = press(&mut model, 't');
     let applied = effects
         .iter()
         .find_map(|effect| match effect {
@@ -1793,7 +1797,7 @@ fn a_reload_carries_a_rename_into_an_open_picker() {
     // offering a name that no longer exists.
     let mut model = with_labels(vec![label(1, "urgent"), label(2, "next")], Vec::new());
     press(&mut model, 'g');
-    press(&mut model, 'l');
+    press(&mut model, 'a');
 
     update(
         &mut model,
@@ -1842,7 +1846,7 @@ fn a_label_that_is_nowhere_on_this_box_says_so_rather_than_opening_a_form() {
     // drawn and the key being pressed.
     let mut model = with_labels(vec![label(1, "urgent")], Vec::new());
     press(&mut model, 'g');
-    press(&mut model, 'l');
+    press(&mut model, 'a');
     update(&mut model, Msg::LabelsLoaded(Vec::new()));
     press_ctrl(&mut model, 'e');
 
@@ -1895,7 +1899,7 @@ fn the_picker_opens_the_same_form_over_the_same_label() {
     // the task form, so both surfaces send the same submission and open the same modal.
     let mut model = with_labels(vec![label(1, "urgent"), label(2, "next")], Vec::new());
     press(&mut model, 'g');
-    press(&mut model, 'l');
+    press(&mut model, 'a');
     // The candidates are sorted by title, so the second row is `urgent`.
     press_code(&mut model, KeyCode::Down);
     press_ctrl(&mut model, 'e');
@@ -2257,7 +2261,7 @@ fn a_rejected_change_is_not_left_on_the_undo_stack() {
     // the store rolled it back, so the inverse now describes undoing something that never
     // happened -- and `u` would queue a write against a state the server never held.
     let mut model = loaded();
-    let effects = press(&mut model, 'd');
+    let effects = press(&mut model, 't');
     assert!(!model.undo.is_empty(), "the edit left an inverse behind");
     let subject = applied(&effects).expect("the toggle was applied").subject();
 
@@ -2339,10 +2343,10 @@ fn an_undo_after_a_rejected_label_create_never_names_its_id() {
     let mut model = attached_to_a_provisional();
     reject_the_create(&mut model);
 
-    let mut effects = press(&mut model, 'u');
+    let mut effects = press(&mut model, 'U');
     effects.extend(press_ctrl(&mut model, 'r'));
-    effects.extend(press(&mut model, 'u'));
-    effects.extend(press(&mut model, 'u'));
+    effects.extend(press(&mut model, 'U'));
+    effects.extend(press(&mut model, 'U'));
 
     let queued = all_applied(&effects);
     assert!(!queued.is_empty(), "nothing was undone at all");
@@ -2359,7 +2363,7 @@ fn an_edit_made_before_the_attach_still_undoes_after_the_prune() {
     let mut model = attached_to_a_provisional();
     reject_the_create(&mut model);
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     match applied(&effects).expect("the priority edit is still undoable") {
         Mutation::UpdateTask { after, .. } => assert_eq!(after.priority, 0),
         other => panic!("wrong mutation: {other:?}"),
@@ -2377,7 +2381,7 @@ fn an_edit_made_after_the_attach_undoes_without_the_dead_label() {
     press_code(&mut model, KeyCode::Enter);
     reject_the_create(&mut model);
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     let mutation = applied(&effects).expect("the later edit is still undoable");
     match mutation {
         Mutation::UpdateTask { after, .. } => assert_eq!(after.priority, 3),
@@ -2398,7 +2402,7 @@ fn undoing_a_delete_made_after_a_rejected_label_create_drops_the_label() {
     reject_the_create(&mut model);
     press(&mut model, 'x');
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     match applied(&effects).expect("the delete is undoable") {
         Mutation::CreateTask { task } => {
             assert_eq!(task.title, "first");
@@ -2418,7 +2422,7 @@ fn undoing_a_delete_made_before_a_rejected_label_create_drops_the_label() {
     press(&mut model, 'x');
     reject_the_create(&mut model);
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     match applied(&effects).expect("the delete is undoable") {
         Mutation::CreateTask { task } => assert!(
             task.labels.iter().all(|held| held.id != LabelId(-1)),
@@ -2468,7 +2472,7 @@ fn a_label_picker_open_across_the_rejection_stops_offering_it() {
         press_code(&mut model, KeyCode::Esc);
     }
     press(&mut model, 'g');
-    press(&mut model, 'l');
+    press(&mut model, 'a');
     reject_the_create(&mut model);
 
     match model.modals.last() {
@@ -2505,7 +2509,7 @@ fn a_rejected_rename_of_a_real_label_leaves_its_attach_undoable() {
         }),
     );
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
     assert!(
         matches!(applied(&effects), Some(Mutation::DetachLabel { label, .. }) if label.id == LabelId(7)),
         "the attach of a label that exists was forgotten: {effects:?}"
@@ -2608,7 +2612,8 @@ fn a_store_failure_is_a_banner_rather_than_a_dead_screen() {
 #[test]
 fn a_toast_expires_on_ticks_because_update_has_no_clock() {
     let mut model = loaded();
-    press(&mut model, 't');
+    press(&mut model, 'z');
+    press(&mut model, 'd');
     assert!(model.status.toast.is_some());
 
     for _ in 0..tui_do_ui::model::Toast::LIFETIME {
@@ -2902,7 +2907,7 @@ fn a_configured_default_project_takes_the_tasks_that_name_none() {
     // says which one it means.
     let mut model = loaded();
     model.default_project = Some("#3".to_string());
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Something".chars() {
         press(&mut model, c);
     }
@@ -2926,7 +2931,7 @@ fn a_hash_id_names_the_project_that_a_shared_title_cannot() {
         &mut model,
         Msg::ProjectsLoaded(vec![project(1, "Inbox", 0), project(12, "Inbox", 0)]),
     );
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Something +#12".chars() {
         press(&mut model, c);
     }
@@ -2951,7 +2956,7 @@ fn a_hash_id_that_names_nothing_falls_back_to_the_title() {
     // So a project genuinely called "#9" stays reachable.
     let mut model = loaded();
     update(&mut model, Msg::ProjectsLoaded(vec![project(3, "#9", 0)]));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Something +#9".chars() {
         press(&mut model, c);
     }
@@ -2978,7 +2983,7 @@ fn the_queued_count_is_read_from_the_store_not_carried_forward() {
         "a refresh must re-read the queue"
     );
 
-    let effects = press(&mut model, 'd');
+    let effects = press(&mut model, 't');
     assert!(
         effects.contains(&Effect::LoadPending),
         "queueing a change must re-read the queue"
@@ -3168,7 +3173,7 @@ fn the_due_prompt_opens_on_what_the_task_already_says() {
     first.due_date = Some(Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()).into();
     answer(&mut model, vec![first]);
 
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     let Some(Modal::Due(state)) = model.modals.last() else {
         panic!("D opens the due prompt: {:?}", model.modals);
     };
@@ -3179,7 +3184,7 @@ fn the_due_prompt_opens_on_what_the_task_already_says() {
 #[test]
 fn a_due_date_goes_through_the_quick_add_parser_not_a_date_format() {
     let mut model = loaded();
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     for c in "tomorrow".chars() {
         press(&mut model, c);
     }
@@ -3202,7 +3207,7 @@ fn an_empty_due_field_clears_the_date_rather_than_cancelling() {
     first.due_date = Some(Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()).into();
     answer(&mut model, vec![first]);
 
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     for _ in 0..30 {
         press_code(&mut model, KeyCode::Backspace);
     }
@@ -3222,7 +3227,7 @@ fn an_empty_due_field_clears_the_date_rather_than_cancelling() {
 #[test]
 fn a_due_date_nobody_can_parse_is_reported_rather_than_silently_dropped() {
     let mut model = loaded();
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     for c in "zzzz".chars() {
         press(&mut model, c);
     }
@@ -3440,7 +3445,7 @@ fn every_quick_key_with_nothing_selected_says_so() {
     update(&mut model, Msg::TasksLoaded { id, tasks: vec![] });
     update(&mut model, Msg::LabelsLoaded(vec![label(1, "urgent")]));
 
-    for key in ['p', 'D', 'm', 'l', ' '] {
+    for key in ['t', 'p', 'd', 'u', 'm', 'l', ' '] {
         model.status.toast = None;
         let effects = update(
             &mut model,
@@ -3487,7 +3492,7 @@ fn ctrl_u_clears_a_prefilled_field_rather_than_making_the_user_backspace_it() {
     first.due_date = Some(Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()).into();
     answer(&mut model, vec![first]);
 
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     update(
         &mut model,
         Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
@@ -3542,7 +3547,7 @@ fn a_date_written_any_of_the_ways_people_write_them_reaches_the_task() {
         ("tomorrow", "2026-08-25"),
     ] {
         let mut model = loaded();
-        press_code(&mut model, KeyCode::Char('D'));
+        press(&mut model, 'd');
         for c in typed.chars() {
             press(&mut model, c);
         }
@@ -3563,7 +3568,7 @@ fn quick_add_leaves_a_key_name_in_the_title_rather_than_acting_on_it() {
     // the title, because `p`, `D` and `l` are *interface keys* and quick-add has its own
     // syntax. The date is the one part of that line the parser should now take.
     let mut model = loaded();
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Buy milk p3 l Scooby".chars() {
         press(&mut model, c);
     }
@@ -3677,7 +3682,7 @@ fn a_due_date_in_the_past_is_allowed_but_said_loudly() {
     // refused. It is not confirmed as though it were ordinary either: `2024` where
     // `2026` was meant is a typo, and a quiet "Due ..." would bless it.
     let mut model = loaded();
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     for c in "27/08/2024".chars() {
         press(&mut model, c);
     }
@@ -3695,7 +3700,7 @@ fn a_due_date_in_the_past_is_allowed_but_said_loudly() {
 #[test]
 fn a_due_date_in_the_future_is_confirmed_quietly() {
     let mut model = loaded();
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     for c in "27/08/2027".chars() {
         press(&mut model, c);
     }
@@ -3715,7 +3720,7 @@ fn every_way_of_setting_a_past_due_date_says_so() {
 
     // `D`, where the date is the subject and leads the message.
     let mut model = loaded();
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     for _ in 0..20 {
         press_code(&mut model, KeyCode::Backspace);
     }
@@ -3745,7 +3750,7 @@ fn every_way_of_setting_a_past_due_date_says_so() {
     // Quick-add, where the date is incidental -- nothing was aimed at a date field, the
     // text simply had a date in it, which makes this the easiest one to do by accident.
     let mut model = loaded();
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "buy stamps 27/08/2024".chars() {
         press(&mut model, c);
     }
@@ -3788,17 +3793,17 @@ fn marking_done_holds_its_place_in_the_list_the_way_deleting_does() {
         "done tasks are hidden by default"
     );
 
-    press(&mut model, 'd');
+    press(&mut model, 't');
     assert_eq!(
         model.selected_task().map(|task| task.id),
         Some(TaskId(2)),
         "the selection should step down to the next row, not jump to the top"
     );
-    press(&mut model, 'd');
+    press(&mut model, 't');
     assert_eq!(model.selected_task().map(|task| task.id), Some(TaskId(3)));
 
     // The last row has nothing below it, so the selection steps up rather than vanishing.
-    press(&mut model, 'd');
+    press(&mut model, 't');
     assert_eq!(model.data.tasks.len(), 0);
     assert_eq!(model.selected_task().map(|task| task.id), None);
 }
@@ -3808,11 +3813,12 @@ fn marking_done_leaves_the_row_in_place_when_done_tasks_are_shown() {
     // The row belongs in this list either way, so it stays put and simply gains a tick.
     let mut model = loaded();
     answer(&mut model, vec![task(1, "first"), task(2, "second")]);
-    press(&mut model, 't');
+    press(&mut model, 'z');
+    press(&mut model, 'd');
     answer(&mut model, vec![task(1, "first"), task(2, "second")]);
     assert!(model.query.include_done);
 
-    press(&mut model, 'd');
+    press(&mut model, 't');
 
     assert_eq!(model.selected_task().map(|task| task.id), Some(TaskId(1)));
     assert!(model.selected_task().expect("still selected").done);
@@ -3844,7 +3850,7 @@ fn undoing_a_label_rename_renames_both_copies_of_the_label() {
         after: Box::new(label(7, "next")),
     });
 
-    let effects = press(&mut model, 'u');
+    let effects = press(&mut model, 'U');
 
     assert_eq!(
         model.data.tasks[0].labels[0].title, "next",
@@ -3895,7 +3901,7 @@ fn confirmation(model: &Model) -> &tui_do_ui::modal::ConfirmLabelsState {
 fn asked_about_waiting() -> (Model, Vec<Effect>) {
     let mut model = loaded();
     update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Call the VA *urgent *waiting".chars() {
         press(&mut model, c);
     }
@@ -4223,7 +4229,7 @@ fn two_unknown_labels_are_one_question_and_the_task_waits_for_both() {
     // agreed to.
     let mut model = loaded();
     update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Call the VA *urgent *waiting *blocked".chars() {
         press(&mut model, c);
     }
@@ -4287,7 +4293,7 @@ fn a_label_named_twice_with_different_case_is_asked_about_and_created_once() {
     // this is the same fold applied to what it reports as missing.
     let mut model = loaded();
     update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Call the VA *waiting *Waiting *WAITING".chars() {
         press(&mut model, c);
     }
@@ -4318,7 +4324,7 @@ fn one_rejected_create_of_two_still_lands_the_task_with_the_other() {
     // nobody can close is not.
     let mut model = loaded();
     update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "Call the VA *urgent *waiting *blocked".chars() {
         press(&mut model, c);
     }
@@ -4616,8 +4622,8 @@ fn a_reload_that_read_the_store_before_a_later_write_does_not_bring_its_row_back
     // landed and still finds second open. Taken wholesale, that put second back on screen
     // and a held `d` pressed it again: 17 duplicate writes in 1,767.
     let mut model = loaded();
-    let (first, _) = write_of(&press(&mut model, 'd'));
-    let (second, _) = write_of(&press(&mut model, 'd'));
+    let (first, _) = write_of(&press(&mut model, 't'));
+    let (second, _) = write_of(&press(&mut model, 't'));
     assert_ne!(first, second, "each write has its own number");
     assert_eq!(selected_title(&model), "third");
 
@@ -4636,7 +4642,7 @@ fn a_reload_that_read_the_store_before_a_later_write_does_not_bring_its_row_back
         "second was marked done on screen and the store has not answered for it yet"
     );
     assert_eq!(selected_title(&model), "third");
-    match write_of(&press(&mut model, 'd')).1 {
+    match write_of(&press(&mut model, 't')).1 {
         Mutation::UpdateTask { after, .. } => {
             assert_eq!(after.id, TaskId(3), "the next press is for the next task");
         }
@@ -4651,8 +4657,8 @@ fn a_stale_reload_at_the_end_of_the_list_leaves_nothing_to_press_twice() {
     // empty selection falls to the first row.
     let mut model = loaded();
     answer(&mut model, vec![task(1, "first"), task(2, "second")]);
-    let (first, _) = write_of(&press(&mut model, 'd'));
-    press(&mut model, 'd');
+    let (first, _) = write_of(&press(&mut model, 't'));
+    press(&mut model, 't');
     assert!(model.data.tasks.is_empty());
 
     let reload = store_answers(&mut model, first);
@@ -4666,7 +4672,7 @@ fn a_stale_reload_at_the_end_of_the_list_leaves_nothing_to_press_twice() {
 
     assert!(model.data.tasks.is_empty(), "{:?}", titles(&model));
     assert!(
-        applied(&press(&mut model, 'd')).is_none(),
+        applied(&press(&mut model, 't')).is_none(),
         "nothing is selected, so a further press writes nothing"
     );
 }
@@ -4677,8 +4683,8 @@ fn once_its_write_is_stored_a_later_load_is_trusted_with_it() {
     // store that held the write, so what it says wins -- here another client has reopened
     // second since, and that has to show.
     let mut model = loaded();
-    let (first, _) = write_of(&press(&mut model, 'd'));
-    let (second, _) = write_of(&press(&mut model, 'd'));
+    let (first, _) = write_of(&press(&mut model, 't'));
+    let (second, _) = write_of(&press(&mut model, 't'));
     store_answers(&mut model, first);
     let reload = store_answers(&mut model, second);
     assert_eq!(
@@ -4712,7 +4718,7 @@ fn a_load_issued_before_the_acknowledgement_is_still_not_trusted() {
     // The acknowledgement arrives while a load is out. That load may have read the store
     // first, so it is laid over like any other until the reload after it answers.
     let mut model = loaded();
-    let (write, _) = write_of(&press(&mut model, 'd'));
+    let (write, _) = write_of(&press(&mut model, 't'));
     let out = model.query_id;
     update(&mut model, Msg::Written(write));
     update(
@@ -4731,7 +4737,7 @@ fn a_write_the_store_refused_is_no_longer_drawn() {
     // Nothing will ever hold it, so the reload after the failure is the truth: first is
     // back, and the user is told.
     let mut model = loaded();
-    let (write, _) = write_of(&press(&mut model, 'd'));
+    let (write, _) = write_of(&press(&mut model, 't'));
     update(
         &mut model,
         Msg::WriteFailed {
@@ -4759,7 +4765,7 @@ fn a_write_the_store_refused_is_no_longer_drawn() {
 #[test]
 fn a_replayed_create_is_not_shown_twice() {
     let mut model = loaded();
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "water the plants".chars() {
         press(&mut model, c);
     }
@@ -4839,8 +4845,8 @@ fn a_replay_does_not_put_back_a_row_the_list_is_not_showing() {
     // and must not invent a row the filter hides, either. Only the newest edit to a task
     // is laid on.
     let mut model = loaded();
-    let (done, _) = write_of(&press(&mut model, 'd'));
-    let (undone, _) = write_of(&press(&mut model, 'u'));
+    let (done, _) = write_of(&press(&mut model, 't'));
+    let (undone, _) = write_of(&press(&mut model, 'U'));
     let reload = store_answers(&mut model, done);
     update(
         &mut model,
@@ -4870,8 +4876,8 @@ fn an_undo_laid_over_a_load_that_missed_it_shows_the_row_reopened() {
     // first open. The newest edit to it is the undo, which puts it back as it was rather
     // than the done taking it away.
     let mut model = loaded();
-    write_of(&press(&mut model, 'd'));
-    write_of(&press(&mut model, 'u'));
+    write_of(&press(&mut model, 't'));
+    write_of(&press(&mut model, 'U'));
     let out = model.query_id;
     update(
         &mut model,
@@ -4891,7 +4897,7 @@ fn a_create_the_list_would_not_show_is_not_replayed_onto_it() {
     // replay must not put it back, though its id is known and the load does not have it.
     let mut model = loaded();
     model.query.scope = Scope::Project(ProjectId(1));
-    press(&mut model, 'a');
+    press(&mut model, 'n');
     for c in "for later +Personal".chars() {
         press(&mut model, c);
     }
@@ -5069,7 +5075,7 @@ fn enter_on_the_unchanged_due_prompt_queues_nothing() {
     let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
     let mut model = due_in_new_york(due);
 
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     let effects = press_code(&mut model, KeyCode::Enter);
     assert!(
         applied(&effects).is_none(),
@@ -5084,7 +5090,7 @@ fn a_date_typed_into_the_due_prompt_still_applies() {
     let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
     let mut model = due_in_new_york(due);
 
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     update(
         &mut model,
         Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
@@ -5113,7 +5119,7 @@ fn the_edit_form_shows_the_due_date_on_the_users_own_day() {
 fn the_due_prompt_shows_the_due_date_on_the_users_own_day() {
     let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
     let mut model = due_in_new_york(due);
-    press_code(&mut model, KeyCode::Char('D'));
+    press(&mut model, 'd');
     let Some(Modal::Due(state)) = model.modals.last() else {
         panic!("D opens the due prompt: {:?}", model.modals);
     };

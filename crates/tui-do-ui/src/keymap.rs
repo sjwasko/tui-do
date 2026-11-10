@@ -98,6 +98,8 @@ impl fmt::Display for Key {
             KeyCode::End => write!(f, "End"),
             KeyCode::PageUp => write!(f, "PgUp"),
             KeyCode::PageDown => write!(f, "PgDn"),
+            KeyCode::Delete => write!(f, "Del"),
+            KeyCode::F(n) => write!(f, "F{n}"),
             other => write!(f, "{other:?}"),
         }
     }
@@ -188,6 +190,8 @@ pub enum Action {
     OpenProject,
     /// Open the selected task.
     OpenTask,
+    /// Show the selected task's project, keeping the task selected.
+    OpenTaskProject,
     /// Show or hide the sidebar.
     ToggleSidebar,
     /// Show or hide the preview pane.
@@ -301,6 +305,16 @@ macro_rules! chord {
 
 /// Every binding in tui-do.
 ///
+/// Where the Vikunja web interface has a shortcut for an action, the key here is the same
+/// one: `t` done, `d` due date, `u` the task's project, `g a` labels, `g p` projects, and
+/// `p`, `m`, `l`, `e` as they read. The omavikunja panel follows Vikunja too, so a key
+/// means one thing in all three. That displaced `u` for undo (now `U`), `a` for add (now
+/// `n`, which omavikunja uses), and showing completed tasks (now `z d`, beside the other
+/// `z` view toggles). Decided 2026-11-09; before then the keys followed vim and cria.
+///
+/// `g g` stays jump-to-top although Vikunja means the Gantt view by it: a terminal has no
+/// Gantt chart to switch to, and the vim meaning is the one a terminal user brings.
+///
 /// Two conflicts with vim are resolved deliberately and should stay resolved:
 ///
 /// - `H` and `L` cycle column layouts, which is cria's meaning, not vim's screen-top and
@@ -384,7 +398,7 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Go to a project",
     },
     Binding {
-        keys: &[chord![Key::char('g'), Key::char('l')]],
+        keys: &[chord![Key::char('g'), Key::char('a')]],
         action: Action::GotoLabel,
         context: Context::Global,
         group: Group::Navigation,
@@ -423,6 +437,13 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Open the selected task",
     },
     Binding {
+        keys: &[chord![Key::char('u')]],
+        action: Action::OpenTaskProject,
+        context: Context::Global,
+        group: Group::Navigation,
+        doc: "Open the task's project",
+    },
+    Binding {
         keys: &[chord![Key::char('z'), Key::char('s')]],
         action: Action::ToggleSidebar,
         context: Context::Global,
@@ -437,7 +458,7 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Show or hide the preview pane",
     },
     Binding {
-        keys: &[chord![Key::char('t')]],
+        keys: &[chord![Key::char('z'), Key::char('d')]],
         action: Action::ToggleDoneTasks,
         context: Context::Global,
         group: Group::View,
@@ -458,7 +479,7 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Previous column layout",
     },
     Binding {
-        keys: &[chord![Key::char('a')]],
+        keys: &[chord![Key::char('n')]],
         action: Action::AddTask,
         context: Context::Global,
         group: Group::Task,
@@ -472,7 +493,7 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Edit the selected task",
     },
     Binding {
-        keys: &[chord![Key::char('d')]],
+        keys: &[chord![Key::char('t')]],
         action: Action::ToggleDone,
         // Global, not list-only: the selected task exists whichever pane has focus, and
         // a key that quietly does nothing because the sidebar is focused is a key the
@@ -489,7 +510,7 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Set priority",
     },
     Binding {
-        keys: &[chord![Key::char('D')]],
+        keys: &[chord![Key::char('d')]],
         action: Action::SetDue,
         context: Context::Global,
         group: Group::Task,
@@ -528,14 +549,14 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Configured quick actions",
     },
     Binding {
-        keys: &[chord![Key::char('x')]],
+        keys: &[chord![Key::char('x')], chord![Key::plain(KeyCode::Delete)]],
         action: Action::DeleteTask,
         context: Context::Global,
         group: Group::Task,
         doc: "Delete the task",
     },
     Binding {
-        keys: &[chord![Key::char('u')]],
+        keys: &[chord![Key::char('U')]],
         action: Action::Undo,
         context: Context::Global,
         group: Group::Task,
@@ -549,7 +570,7 @@ pub const KEYMAP: &[Binding] = &[
         doc: "Redo",
     },
     Binding {
-        keys: &[chord![Key::char('r')]],
+        keys: &[chord![Key::char('r')], chord![Key::plain(KeyCode::F(5))]],
         action: Action::SyncNow,
         context: Context::Global,
         group: Group::Application,

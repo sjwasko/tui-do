@@ -12,17 +12,17 @@ Projects               │ !!! Ship the release    Work                Tomorrow 
                        │                                                        │ The refresh call needs the cookie set
                        │      ┌Run a command─────────────────────────────────────────────┐/login.
                        │      │> la                                                      │
-                       │      │ Go to a label                                        g l │
+                       │      │ Go to a label                                        g a │
                        │      │ Next column layout                                     L │
                        │      │ Previous column layout                                 H │
                        │      │ Add or remove labels                                   l │
-                       │      │ Undo the last change                                   u │
+                       │      │ Undo the last change                                   U │
                        │      │ Back to the list, then out of a search               Esc │
-                       │      │ Show or hide completed tasks                           t │
+                       │      │ Show or hide completed tasks                         z d │
                        │      │ Open the selected task                             Enter │
                        │      │ Edit the selected task                                 e │
                        │      │ Open a link in the selected task                       o │
-                       │      │ Delete the task                                        x │
+                       │      │ Delete the task                                  x / Del │
                        │      │                                                          │
                        │      │                                                          │
                        │      └──────────────────────────────────────────────────────────┘

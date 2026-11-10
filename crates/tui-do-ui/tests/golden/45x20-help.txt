@@ -10,11 +10,11 @@
 │  S-Tab       Focus the previous pane      │
 │  Esc         Back to the list, then out of│
 │  g p         Go to a project              │
-│  g l         Go to a label                │
+│  g a         Go to a label                │
 │  /           Search the current list      │
 │  Enter       Open the selected task       │
+│  u           Open the task's project      │
 │                                           │
 │Tasks                                      │
-│  a           Add a task                   │
-│  e           Edit the selected task       │
+│  n           Add a task                   │
 └───────────────────────────────────────────┘

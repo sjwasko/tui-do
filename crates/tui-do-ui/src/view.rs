@@ -359,7 +359,7 @@ fn empty_message(model: &Model) -> Option<String> {
     } else if model.query.include_done {
         "No tasks here.".to_string()
     } else {
-        "No open tasks here. Press t to include completed ones.".to_string()
+        "No open tasks here. Press z d to include completed ones.".to_string()
     })
 }
 

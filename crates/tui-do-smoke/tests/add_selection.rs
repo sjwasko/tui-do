@@ -95,7 +95,7 @@ async fn the_task_just_added_is_the_one_selected() {
     let mut harness = seeded(&server).await;
 
     // `a`, the title, Enter -- the way a person adds a task.
-    harness.press(KeyCode::Char('a')).await;
+    harness.press(KeyCode::Char('n')).await;
     harness.type_text("the one I just typed").await;
     harness.press(KeyCode::Enter).await;
 
@@ -122,7 +122,7 @@ async fn the_selected_id_is_the_one_the_store_actually_assigned() {
     mount_create(&server, "the one I just typed").await;
     let mut harness = seeded(&server).await;
 
-    harness.press(KeyCode::Char('a')).await;
+    harness.press(KeyCode::Char('n')).await;
     harness.type_text("the one I just typed").await;
     harness.press(KeyCode::Enter).await;
 
@@ -202,7 +202,7 @@ async fn the_new_task_is_still_selected_when_it_does_not_sort_first() {
         .unwrap();
     harness.start().await;
 
-    harness.press(KeyCode::Char('a')).await;
+    harness.press(KeyCode::Char('n')).await;
     harness.type_text("dateless, sorts last").await;
     harness.press(KeyCode::Enter).await;
 

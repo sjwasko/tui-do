@@ -4,7 +4,7 @@
 //! its own. A load can be issued in between -- the reload one write asks for once it has
 //! landed is issued while a *later* write is still on its way to the store -- and its
 //! answer then shows that later task as it was before the user touched it. Taken
-//! wholesale, it put a row the user had just marked done back under a held `d`, which
+//! wholesale, it put a row the user had just marked done back under a held `t`, which
 //! pressed it a second time: 17 duplicate writes in 1,767 when it was measured (BUG-22),
 //! and with the other interleaving a `done = false` that silently undid the first.
 //!
@@ -181,7 +181,7 @@ impl Overlay {
                 Mutation::CreateTask { task }
                     if !query.admits(task) || self.already_loaded(entry, task, tasks) => {}
                 // Only the newest edit to a task says what it should look like now. Laid
-                // on in turn, a `d` followed by its undo would have the first take the
+                // on in turn, a `t` followed by its undo would have the first take the
                 // row away and the second find nothing to put back.
                 Mutation::UpdateTask { after, .. }
                     if later.iter().any(|newer| updates(&newer.mutation, after.id)) => {}
