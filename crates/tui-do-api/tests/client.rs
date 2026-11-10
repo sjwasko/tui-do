@@ -821,6 +821,50 @@ async fn a_task_page_survives_vikunjas_null_collections() {
 }
 
 #[tokio::test]
+async fn a_page_whose_whole_body_is_null_reads_as_empty() {
+    // Go marshals a nil slice as `null`, and that applies to a whole response as much as
+    // to a field in one: a listing with nothing in it can answer `null` rather than `[]`.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .insert_header("x-pagination-total-pages", "1")
+                .insert_header("x-pagination-result-count", "0")
+                .set_body_string("null"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .and(query_param("page", "1"))
+        .and(query_param("s", "nothing"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string("null"),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    let tasks = client
+        .all_tasks(&TaskQuery::new())
+        .await
+        .expect("a null page is an empty one");
+    assert!(tasks.is_empty());
+
+    // The one-page-at-a-time walk, taken when the server sends no page count.
+    let tasks = client
+        .all_tasks(&TaskQuery::new().search("nothing"))
+        .await
+        .expect("a null page is an empty one");
+    assert!(tasks.is_empty());
+}
+
+#[tokio::test]
 async fn a_refresh_is_refused_after_logout() {
     // The refresh cookie survives `logout`'s local session reset, so without a guard a
     // caller could mint a new JWT from a session the user ended. The mock has no refresh
