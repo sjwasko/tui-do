@@ -1272,8 +1272,8 @@ fn quick_actions_body(state: &QuickActionsState, frame: &mut Frame, area: Rect, 
 fn keys_changed_body(frame: &mut Frame, area: Rect, theme: Theme) {
     let mut lines: Vec<Line<'static>> = [
         " Keys now match Vikunja's web shortcuts",
-        " as well as the Omarchy plugin named",
-        " omavikunja to maintain consistency.",
+        " as well as omavikunja, the Omarchy",
+        " plugin, to maintain consistency.",
         "",
     ]
     .into_iter()
