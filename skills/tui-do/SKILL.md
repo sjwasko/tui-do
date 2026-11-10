@@ -184,7 +184,7 @@ it yet. That is the design, not a limitation: the queue drains on the next run.
 
   Completing:
       tui-do done <id>
-    Queues the same UpdateTask the `d` key does, through the same outbox.
+    Queues the same UpdateTask the `t` key does, through the same outbox.
 
   Moving a task across a Kanban board:
       tui-do move <id> --view <view> --bucket <bucket>

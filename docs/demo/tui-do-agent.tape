@@ -105,7 +105,7 @@ Escape
 Sleep 800ms
 
 # --- quick-add: one line sets project, label, priority and a date -----------
-Type "a"
+Type "n"
 Sleep 700ms
 Type@70ms "Draft the quarterly summary +Work *urgent !4 friday"
 Sleep 1500ms
@@ -115,9 +115,9 @@ Sleep 2500ms
 # --- complete something, then undo it ---------------------------------------
 Down@400ms 2
 Sleep 700ms
-Type "d"
+Type "t"
 Sleep 1500ms
-Type "u"
+Type "U"
 Sleep 1500ms
 
 # --- search ------------------------------------------------------------------
