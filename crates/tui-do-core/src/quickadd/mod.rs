@@ -316,7 +316,7 @@ pub fn parse_kept<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: Kept<'_>)
             kind: TokenKind::Repeat,
             range: range.clone(),
         });
-        consumed.push(range);
+        consumed.extend(around(range, &passed));
         remaining.retain(|w| !used.contains(&w.range.start));
     }
 
@@ -340,13 +340,40 @@ pub fn parse_kept<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: Kept<'_>)
     for date in dates.iter().rev() {
         let skipped: Vec<Range<usize>> = consumed.iter().chain(&passed).cloned().collect();
         if ends_the_line(input, date.range.end, &skipped) {
-            consumed.push(date.range.clone());
+            consumed.extend(around(date.range.clone(), &passed));
         }
     }
 
     parsed.tokens.sort_by_key(|t| t.range.start);
     parsed.title = words::remove_ranges(input, &consumed);
     parsed
+}
+
+/// `range` with every `kept` range inside it cut out.
+///
+/// Phrases are matched over the words left once prefixed tokens are taken out, so a date
+/// or repeat phrase can run across a kept `*label` or `@user`: `due *family tomorrow`. The
+/// phrase still leaves the title; the kept word inside it does not, so it stays as typed
+/// exactly as it would beside the phrase, and whether the label exists changes nothing
+/// else about the task.
+fn around(range: Range<usize>, kept: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut inside: Vec<&Range<usize>> = kept
+        .iter()
+        .filter(|k| k.start >= range.start && k.end <= range.end)
+        .collect();
+    inside.sort_by_key(|k| k.start);
+    let mut pieces = Vec::new();
+    let mut cursor = range.start;
+    for k in inside {
+        if k.start > cursor {
+            pieces.push(cursor..k.start);
+        }
+        cursor = cursor.max(k.end);
+    }
+    if cursor < range.end {
+        pieces.push(cursor..range.end);
+    }
+    pieces
 }
 
 /// Whether nothing meaningful follows byte `from` of `input`, so a date ending there may
@@ -509,6 +536,79 @@ mod tests {
                 .to_string()
         })
         .unwrap_or_else(|| "none".to_string())
+    }
+
+    /// Thursday 2026-11-05 22:30, five hours behind UTC: late enough in the day that an
+    /// hour count crosses midnight.
+    fn evening() -> crate::zone::ZonedTime {
+        crate::zone::pinned(
+            FixedOffset::west_opt(5 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 11, 5, 22, 30, 0)
+                .unwrap(),
+        )
+    }
+
+    /// `at` on `evening()`'s wall clock.
+    fn on_evening(at: Option<DateTime<Utc>>) -> String {
+        at.map(|d| {
+            d.with_timezone(&evening().timezone())
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "none".to_string())
+    }
+
+    #[test]
+    fn a_kept_word_inside_a_phrase_stays_in_the_title() {
+        // The phrase was matched over the words left once prefixed tokens were taken out,
+        // so its byte range ran across the kept `*family` and cut it from the title with
+        // the phrase: both lines were saved as just the words before it.
+        let clock = evening();
+        let family = vec!["family".to_string()];
+        let labels = Kept {
+            labels: &family,
+            users: &[],
+        };
+        let users = Kept {
+            labels: &[],
+            users: &family,
+        };
+
+        let parsed = parse_kept("Call mom due *family tomorrow", &clock, labels);
+        assert_eq!(parsed.title, "Call mom *family");
+        assert_eq!(on_evening(parsed.due_date), "2026-11-06 23:59");
+        assert!(parsed.labels.is_empty());
+
+        let parsed = parse_kept("Water plants every *family week", &clock, labels);
+        assert_eq!(parsed.title, "Water plants *family");
+        assert_eq!(
+            parsed.repeat,
+            Some(Repeat {
+                every: 1,
+                unit: Unit::Week
+            })
+        );
+
+        // An unknown `@user` is kept the same way.
+        let parsed = parse_kept("Call mom due @family tomorrow", &clock, users);
+        assert_eq!(parsed.title, "Call mom @family");
+        assert_eq!(on_evening(parsed.due_date), "2026-11-06 23:59");
+
+        // Mid-sentence the date stays whole, and the kept word inside it with it.
+        let parsed = parse_kept("due *family tomorrow buy milk", &clock, labels);
+        assert_eq!(parsed.title, "due *family tomorrow buy milk");
+
+        // So whether the label exists changes nothing but the label: a known one leaves
+        // with the phrase it sits in, and the task is otherwise the same.
+        let parsed = parse("Call mom due *family tomorrow", &clock);
+        assert_eq!(parsed.title, "Call mom");
+        assert_eq!(parsed.labels, vec!["family"]);
+        assert_eq!(on_evening(parsed.due_date), "2026-11-06 23:59");
+        let parsed = parse("Water plants every *family week", &clock);
+        assert_eq!(parsed.title, "Water plants");
+        assert_eq!(parsed.labels, vec!["family"]);
+        assert!(parsed.repeat.is_some());
     }
 
     #[test]
