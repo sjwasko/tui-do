@@ -10,6 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use tui_do_core::models::Task;
 
 use crate::assist::{Aside, QuickAddInput};
 use crate::geometry;
@@ -33,7 +34,8 @@ pub fn view(model: &Model, frame: &mut Frame) {
     if let Some(area) = frames.sidebar {
         draw_sidebar(model, frame, area);
     }
-    list(model, frame, frames.list);
+    // Inside the gutter: the width rows are measured at, in update as here.
+    list(model, frame, frames.list_text());
     if let Some(area) = frames.preview {
         preview(model, frame, area);
     }
@@ -257,15 +259,9 @@ fn sidebar_line(row: &SidebarRow, model: &Model, focused: bool, width: u16) -> L
 /// The task list: column headings, then rows.
 fn list(model: &Model, frame: &mut Frame, area: Rect) {
     let theme = model.theme;
-    if area.height == 0 || area.width < 2 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-    // A column of gutter, so text never sits against the sidebar's border.
-    let area = Rect {
-        x: area.x + 1,
-        width: area.width - 1,
-        ..area
-    };
     let columns = rows::measure(model.layout(), area.width);
 
     // The list sits between the other two panes and owns no border of its own, so its
@@ -406,6 +402,44 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
     let Some(task) = model.selected_task() else {
         return;
     };
+    // Clamped here too, not only in `update`: a resize or a shorter task can leave a
+    // scroll that was in range past the end of what is now there. Rendered once a frame:
+    // unscrolled, only what fits is laid out; scrolled, the whole description is, and the
+    // clamp comes from those same lines rather than from a second render.
+    let height = usize::from(inner.height);
+    let wanted = usize::from(model.list.preview_scroll);
+    let budget = if wanted == 0 { height } else { usize::MAX };
+    let lines = preview_lines(model, task, inner, budget);
+    let scroll = wanted.min(lines.len().saturating_sub(height));
+    let scrolled: Vec<Line<'static>> = lines.into_iter().skip(scroll).collect();
+    frame.render_widget(Paragraph::new(scrolled), inner);
+}
+
+/// Where the preview's content is drawn: the pane less its left border.
+fn preview_inner(model: &Model) -> Option<Rect> {
+    model.frames().preview.map(|area| Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(1),
+        ..area
+    })
+}
+
+/// The furthest the preview can scroll: its last line at the bottom of the pane.
+///
+/// `update` clamps to this and `view` draws with it, from the same lines, so `j` stops
+/// where the content does and `G` lands there.
+#[must_use]
+pub(crate) fn preview_max_scroll(model: &Model) -> u16 {
+    let (Some(task), Some(inner)) = (model.selected_task(), preview_inner(model)) else {
+        return 0;
+    };
+    let total = preview_lines(model, task, inner, usize::MAX).len();
+    u16::try_from(total.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX)
+}
+
+/// Every line the preview shows for `task`, up to `budget` of them.
+fn preview_lines(model: &Model, task: &Task, inner: Rect, budget: usize) -> Vec<Line<'static>> {
+    let theme = model.theme;
     let width = inner.width.saturating_sub(1);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for line in rows::wrap(&task.title, width, 3) {
@@ -463,7 +497,6 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
         // Only what can be seen is laid out. Rendering is cheap -- a median description
         // is 118 bytes -- but pushing every line of a 17 KB one into a vector to draw the
         // dozen that fit is the same waste the task list already avoids.
-        let budget = usize::from(model.list.preview_scroll) + usize::from(inner.height);
         for line in rendered {
             if lines.len() >= budget {
                 break;
@@ -476,12 +509,7 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
             lines.push(Line::from(spans));
         }
     }
-
-    let scrolled: Vec<Line<'static>> = lines
-        .into_iter()
-        .skip(usize::from(model.list.preview_scroll))
-        .collect();
-    frame.render_widget(Paragraph::new(scrolled), inner);
+    lines
 }
 
 fn field(name: &str, value: &str, theme: Theme) -> Line<'static> {
@@ -959,9 +987,12 @@ fn priority_body(state: &PriorityState, frame: &mut Frame, area: Rect, theme: Th
     lines.truncate(usize::from(area.height));
     frame.render_widget(Paragraph::new(lines), area);
     let cursor = rows::display_width(&state.typed);
-    if area.x + 2 + cursor < area.right() {
-        frame.set_cursor_position((area.x + 2 + cursor, area.y));
-    }
+    set_caret(
+        frame,
+        area,
+        area.x.saturating_add(2).saturating_add(cursor),
+        area.y,
+    );
 }
 
 /// The due-date prompt, on the status line.
@@ -1247,9 +1278,7 @@ fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme:
     frame.render_widget(Paragraph::new(lines), area);
     // After the widget, so the cursor is not painted over by it.
     if let Some((x, y)) = caret {
-        if x < area.right() && y < area.bottom() {
-            frame.set_cursor_position((x, y));
-        }
+        set_caret(frame, area, x, y);
     }
 }
 
@@ -1318,8 +1347,11 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
     // *which* field has the keyboard; only a real caret says where in it the next
     // character lands, and a multi-line box without one is unreadable.
     let mut caret: Option<(u16, u16)> = None;
+    // The focused field's rows, so a form taller than the terminal can scroll to it.
+    let mut focused_rows = 0..0;
     for field in EditField::ALL {
         let focused = state.focus == field;
+        let first_row = lines.len();
         let input = state.field(field);
         let width = area.width.saturating_sub(GUTTER + 1);
 
@@ -1383,14 +1415,40 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
             };
             lines.push(Line::from(vec![label, text]));
         }
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-    // After the widget, so the cursor is not painted over by it.
-    if let Some((x, y)) = caret {
-        if x < area.right() && y < area.bottom() {
-            frame.set_cursor_position((x, y));
+        if focused {
+            focused_rows = first_row..lines.len();
         }
     }
+    // A short terminal clips the box from the bottom, so the form scrolls to keep the
+    // focused field on screen -- worked out from the focus alone, every frame, so the
+    // view still only reads the model (Rule 1).
+    let caret_row = caret.map(|(_, y)| usize::from(y.saturating_sub(area.y)));
+    let offset = edit_scroll(focused_rows, caret_row, usize::from(area.height));
+    let offset = u16::try_from(offset).unwrap_or(0);
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), area);
+    // After the widget, so the cursor is not painted over by it.
+    if let Some((x, y)) = caret {
+        if let Some(y) = y.checked_sub(offset) {
+            set_caret(frame, area, x, y);
+        }
+    }
+}
+
+/// How many rows of the edit form to scroll past so the focused field is in view.
+///
+/// The whole field when it fits; when it does not, the row holding the caret.
+fn edit_scroll(focused: std::ops::Range<usize>, caret: Option<usize>, height: usize) -> usize {
+    if height == 0 {
+        return 0;
+    }
+    let mut offset = focused.end.saturating_sub(height).min(focused.start);
+    if let Some(caret) = caret {
+        if caret >= offset + height {
+            offset = caret + 1 - height;
+        }
+        offset = offset.min(caret);
+    }
+    offset
 }
 
 /// A form value, marked while its field has the keyboard.
@@ -1560,9 +1618,19 @@ fn input_line(field: &InputWindow, theme: Theme) -> Line<'static> {
 /// The window already holds the caret inside the field's width, so the check against the
 /// right edge only matters for a field that was given no width at all.
 fn place_cursor(frame: &mut Frame, area: Rect, prefix: u16, field: &InputWindow) {
-    let x = area.x + prefix + field.caret_x;
-    if x < area.right() {
-        frame.set_cursor_position((x, area.y));
+    let x = area.x.saturating_add(prefix).saturating_add(field.caret_x);
+    set_caret(frame, area, x, area.y);
+}
+
+/// Put the terminal's caret at `(x, y)`, but only inside both `area` and the frame.
+///
+/// Every caret goes through here. A box clipped to nothing on a one-row terminal still
+/// has an `area.y`, and that row is outside the buffer; a caret parked there is drawn
+/// wherever the terminal decides.
+fn set_caret(frame: &mut Frame, area: Rect, x: u16, y: u16) {
+    let inside = |rect: Rect| x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom();
+    if inside(area) && inside(frame.area()) {
+        frame.set_cursor_position((x, y));
     }
 }
 

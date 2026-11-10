@@ -28,7 +28,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// A signal that ends tui-do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Signal {
+pub(crate) enum Signal {
     /// SIGTERM: `kill`, a systemd stop.
     Terminate,
     /// SIGHUP: the terminal went away -- a closed window, a dropped SSH connection.
@@ -49,13 +49,13 @@ impl Signal {
 
     /// What tui-do exits with: `128 + signal`, which is what a shell reports for a
     /// process the signal killed, so a script cannot tell the difference.
-    pub(super) const fn exit_code(self) -> i32 {
+    pub(crate) const fn exit_code(self) -> i32 {
         128 + self.number()
     }
 
     /// Whether the terminal is probably gone. Writing to it may fail, or wait on a peer
     /// that will never read, so nothing should depend on reaching it.
-    pub(super) const fn hung_up(self) -> bool {
+    pub(crate) const fn hung_up(self) -> bool {
         matches!(self, Self::Hangup)
     }
 }

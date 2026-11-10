@@ -117,6 +117,15 @@ pub struct Task {
     #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub attachments: Vec<TaskAttachment>,
 
+    /// The attachment shown as the task's cover image; `0` when there is none.
+    ///
+    /// Carried although nothing here displays it, because the update body replaces it:
+    /// measured on dev 2026-11-10, a `POST /tasks/{id}` that omitted it answered `200`
+    /// and reset a cover of attachment 6 to 0. The listing carries it, so a task pulled
+    /// into the store and written back keeps it.
+    #[serde(default)]
+    pub cover_image_attachment_id: AttachmentId,
+
     /// Comments. Only populated by `GET /tasks/{id}`.
     #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub comments: Vec<TaskComment>,
@@ -203,6 +212,7 @@ impl Task {
             created_by,
             reminders,
             attachments,
+            cover_image_attachment_id,
             comments,
             comment_count,
             related_tasks,
@@ -266,6 +276,7 @@ impl Task {
                 created_by: merge!(created_by),
                 reminders: merge!(reminders),
                 attachments: merge!(attachments),
+                cover_image_attachment_id: merge!(cover_image_attachment_id),
                 comments: merge!(comments),
                 comment_count: merge!(comment_count),
                 related_tasks: merge!(related_tasks),
@@ -417,6 +428,86 @@ pub struct TaskReminder {
     /// Offset in seconds from the anchor date, for relative reminders.
     #[serde(default)]
     pub relative_period: i64,
+
+    /// The date `relative_period` is measured from; `None` for an absolute reminder.
+    ///
+    /// Not optional on the wire for a relative reminder. Measured on dev 2026-11-10: a
+    /// `POST /tasks/{id}` carrying `relative_period: -3600` without it, or with `""` or
+    /// `null`, is refused with `400` / 4022 "Please provide what the reminder date is
+    /// relative to" -- so dropping it on read made every later edit of the task fail.
+    /// The server spells "absolute" as `""` and accepts the key absent, which is how
+    /// `None` is sent.
+    #[serde(
+        default,
+        deserialize_with = "ReminderRelation::deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub relative_to: Option<ReminderRelation>,
+}
+
+/// Which of a task's dates a relative reminder is measured from.
+///
+/// The spec's `models.ReminderRelation` enum. A value outside it is kept verbatim, so a
+/// newer server's relation round-trips rather than failing the page or being dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ReminderRelation {
+    /// Relative to `due_date`.
+    DueDate,
+    /// Relative to `start_date`.
+    StartDate,
+    /// Relative to `end_date`.
+    EndDate,
+    /// A relation this client does not know about.
+    Other(String),
+}
+
+impl ReminderRelation {
+    /// The wire spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::DueDate => "due_date",
+            Self::StartDate => "start_date",
+            Self::EndDate => "end_date",
+            Self::Other(other) => other,
+        }
+    }
+
+    /// Read the wire spelling, where `""` means "no relation".
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "" => None,
+            other => Some(Self::from(other.to_string())),
+        }
+    }
+
+    /// serde adapter: absent, `null` and `""` all mean an absolute reminder.
+    fn deserialize_optional<'de, D>(de: D) -> Result<Option<Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw: Option<String> = Option::deserialize(de)?;
+        Ok(raw.as_deref().and_then(Self::parse))
+    }
+}
+
+impl From<String> for ReminderRelation {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "due_date" => Self::DueDate,
+            "start_date" => Self::StartDate,
+            "end_date" => Self::EndDate,
+            _ => Self::Other(value),
+        }
+    }
+}
+
+impl From<ReminderRelation> for String {
+    fn from(value: ReminderRelation) -> Self {
+        value.as_str().to_string()
+    }
 }
 
 /// A file attached to a task.
@@ -588,6 +679,33 @@ mod tests {
         let future: RepeatMode = serde_json::from_str("7").unwrap();
         assert_eq!(future, RepeatMode::Unknown(7));
         assert_eq!(serde_json::to_string(&future).unwrap(), "7");
+    }
+
+    #[test]
+    fn a_reminders_relation_reads_every_spelling_of_absent_and_keeps_unknown_ones() {
+        for raw in [
+            r#"{"relative_period": 0}"#,
+            r#"{"relative_period": 0, "relative_to": null}"#,
+            r#"{"relative_period": 0, "relative_to": ""}"#,
+        ] {
+            let reminder: TaskReminder = serde_json::from_str(raw).unwrap();
+            assert_eq!(reminder.relative_to, None, "{raw}");
+            // Sent absent, which the server accepted for an absolute reminder.
+            let sent = serde_json::to_value(&reminder).unwrap();
+            assert!(sent.get("relative_to").is_none(), "{sent}");
+        }
+        for (raw, expected) in [
+            ("due_date", ReminderRelation::DueDate),
+            ("start_date", ReminderRelation::StartDate),
+            ("end_date", ReminderRelation::EndDate),
+            ("created", ReminderRelation::Other("created".into())),
+        ] {
+            let json = format!(r#"{{"relative_period": -60, "relative_to": "{raw}"}}"#);
+            let reminder: TaskReminder = serde_json::from_str(&json).unwrap();
+            assert_eq!(reminder.relative_to, Some(expected));
+            let sent = serde_json::to_value(&reminder).unwrap();
+            assert_eq!(sent["relative_to"], raw);
+        }
     }
 
     #[test]

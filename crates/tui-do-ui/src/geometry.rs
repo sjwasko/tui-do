@@ -46,7 +46,24 @@ impl Frames {
     pub const fn list_rows(&self) -> usize {
         self.list.height.saturating_sub(LIST_HEADING_HEIGHT) as usize
     }
+
+    /// Where the task list's rows are drawn: the list less its one-column gutter.
+    ///
+    /// The one width rows are both drawn and measured at. The scroll maths measured at
+    /// `list.width` while the view drew one column narrower, so a row that wrapped on
+    /// screen was one line to the maths and the selection walked off the bottom.
+    #[must_use]
+    pub const fn list_text(&self) -> Rect {
+        Rect {
+            x: self.list.x.saturating_add(LIST_GUTTER),
+            width: self.list.width.saturating_sub(LIST_GUTTER),
+            ..self.list
+        }
+    }
 }
+
+/// The column of gutter at the task list's left, so text never sits against a border.
+pub const LIST_GUTTER: u16 = 1;
 
 /// The width the sidebar takes at this terminal width.
 #[must_use]
@@ -70,12 +87,22 @@ pub fn frames(width: u16, height: u16, sidebar: bool, preview: bool) -> Frames {
     /// The narrowest task list worth drawing.
     const LIST_MIN: u16 = 30;
 
-    let header = Rect::new(0, 0, width, HEADER_HEIGHT.min(height));
+    // The status row is claimed first and always sits on the frame's last row. It holds
+    // every prompt and the caret that goes with it; at heights 1-2 it was placed below a
+    // full header, which is below the frame, so a prompt drew nowhere and the caret went
+    // outside the buffer. The header gives up its rows instead.
+    let status_height = STATUS_HEIGHT.min(height);
+    let header = Rect::new(
+        0,
+        0,
+        width,
+        HEADER_HEIGHT.min(height.saturating_sub(status_height)),
+    );
     let body_top = header.height;
     let body_height = height
         .saturating_sub(HEADER_HEIGHT)
         .saturating_sub(STATUS_HEIGHT);
-    let status = Rect::new(0, body_top + body_height, width, STATUS_HEIGHT.min(height));
+    let status = Rect::new(0, body_top + body_height, width, status_height);
 
     let mut left = 0;
     let mut remaining = width;

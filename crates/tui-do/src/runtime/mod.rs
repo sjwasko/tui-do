@@ -41,7 +41,7 @@ use tui_do_ui::theme::{ColorDepth, Theme};
 use tui_do_ui::update::reload_everything;
 use tui_do_ui::{update, view, Effect, Model, Msg};
 
-use signals::Signal;
+pub(crate) use signals::Signal;
 use terminal::TerminalGuard;
 
 /// How often the clock is reported to the model.
@@ -51,7 +51,7 @@ use terminal::TerminalGuard;
 const TICK: Duration = Duration::from_secs(1);
 
 /// How long the input reader waits before checking whether it should stop.
-const INPUT_POLL: Duration = Duration::from_millis(100);
+pub(crate) const INPUT_POLL: Duration = Duration::from_millis(100);
 
 /// The current time, in this machine's zone.
 ///
@@ -596,24 +596,18 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         // terminal is restored on the way out of `run` in every case.
         Effect::OpenUrl(url) => {
             let tx = tx.clone();
-            // `spawn_blocking` rather than `tokio::process`, which would need another
-            // tokio feature for one call. The opener hands the URL to a handler and exits
-            // immediately, so this waits on a fork-exec and not on a browser.
+            // Off the loop for the fork-exec only. The opener is not waited on here --
+            // see `open_detached` for why that matters.
             spawn_blocking_effect(tx.clone(), move || {
-                let result = std::process::Command::new(URL_OPENER)
-                    .arg(&url)
-                    // Inherited handles would let the handler write over the alternate
-                    // screen -- the interface owns this terminal.
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                let failure = match result {
-                    Ok(status) if status.success() => None,
-                    Ok(status) => Some(format!("{URL_OPENER} exited with {status}")),
-                    Err(error) => Some(format!("could not run {URL_OPENER}: {error}")),
-                };
-                if let Some(message) = failure {
+                let reported = tx.clone();
+                let begun = std::time::Instant::now();
+                let started = open_detached(URL_OPENER, &url, move |status| {
+                    if let Some(message) = opener_failure(status, begun.elapsed()) {
+                        let _ = reported.send(Msg::EffectFailed(message));
+                    }
+                });
+                if let Err(error) = started {
+                    let message = format!("could not run {URL_OPENER}: {error}");
                     let _ = tx.send(Msg::EffectFailed(message));
                 }
             });
@@ -727,7 +721,18 @@ const fn again_code(pass: Pass) -> u8 {
     }
 }
 
+/// Set once the quit flush has begun, after which no pass is started.
+///
+/// The flush pushes on its own, outside `spawn_sync`'s `RUNNING` guard, so a pass that
+/// started beside it -- a running pass's `AGAIN` tail, a late `Effect::Apply`, the timer
+/// -- would be a second drain of the same queue, and two drains can each read a create
+/// before either marks it sent. Never cleared: the process is on its way out.
+static SYNC_STOPPED: AtomicBool = AtomicBool::new(false);
+
 fn spawn_sync(sync: Arc<Sync>, tx: LoopTx, pass: Pass, trigger: Trigger) {
+    if SYNC_STOPPED.load(Ordering::SeqCst) {
+        return;
+    }
     /// One pass at a time. Two overlapping passes would push the same queue twice, and
     /// the queue is ordered — an entry sent twice is a task created twice.
     static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -837,6 +842,8 @@ fn in_flight() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
 /// terminal has gone, and `println!` panics on a write that fails (BUG-31). Every write
 /// ignores its error for the same reason.
 async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + Send)) {
+    // Before anything else, so whatever is in flight below is the last pass there is.
+    SYNC_STOPPED.store(true, Ordering::SeqCst);
     let pending = store.pending_count().await.unwrap_or(0);
     if pending <= 0 {
         return;
@@ -889,10 +896,22 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
                 return;
             }
         }
-    } else if let Ok(mut slot) = in_flight().lock() {
-        if let Some(handle) = slot.take() {
+    } else {
+        let handle = in_flight().lock().ok().and_then(|mut slot| slot.take());
+        if let Some(handle) = handle {
             handle.abort();
+            // `abort` only asks. A pass being polled on another worker runs on to its next
+            // await, so it is waited out -- briefly, since cancelling is all that is left
+            // -- before the push below starts beside it.
+            let _ = tokio::time::timeout(FLUSH_TICK, handle).await;
         }
+    }
+    // The slot holds the pass spawned last, which is not always the one running: a
+    // pass's `AGAIN` tail can store its successor before the pass that spawned it has
+    // stored itself. Whatever is still pushing now is a second drain, so walk away.
+    if sync.is_pushing() {
+        let _ = writeln!(out, "Still sending; leaving the rest queued for next time.");
+        return;
     }
 
     let changes = if pending == 1 { "change" } else { "changes" };
@@ -903,7 +922,10 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
     // server the push cannot answer, and a still screen there reads as a hang —
     // which is the one thing this project is not allowed to look like. The dots
     // are also the clock: when the last one lands, the wait is over.
-    let syncer = (*sync).clone();
+    // Listened to for rejections, as `tui-do add` does (BUG-35): a refused entry is
+    // rolled back rather than deferred, so the report alone cannot say why.
+    let (events_tx, mut events) = mpsc::unbounded_channel();
+    let syncer = Sync::clone(sync).with_events(events_tx);
     let push = syncer.push();
     tokio::pin!(push);
     let mut outcome = None;
@@ -918,16 +940,69 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
     }
     let _ = writeln!(out);
 
-    let _ = match outcome {
-        Some(Ok(report)) if report.is_complete() => writeln!(out, "Sent."),
-        Some(Ok(report)) => writeln!(
-            out,
+    let mut heard = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        heard.push(event);
+    }
+    for line in flush_said(outcome, &heard) {
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+/// What the quit flush says once its push has answered, or has not.
+///
+/// A refusal is said first and with the server's reason. `PushReport::is_complete` is
+/// `deferred == 0` and a refused entry is rolled back rather than deferred, so reading
+/// the report alone said "Sent." for a change the server had turned down -- the flush's
+/// half of what BUG-35 was for `tui-do add`.
+fn flush_said(
+    outcome: Option<tui_do_core::Result<tui_do_core::sync::PushReport>>,
+    events: &[SyncEvent],
+) -> Vec<String> {
+    let report = match outcome {
+        Some(Ok(report)) => report,
+        Some(Err(error)) => {
+            return vec![format!(
+                "Still queued — could not reach the server: {error}"
+            )]
+        }
+        None => return vec!["Still queued — the server did not answer in time.".to_string()],
+    };
+    let mut lines = Vec::new();
+    if report.rejected > 0 {
+        let reasons: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SyncEvent::Rejected { message, .. } => Some(printable(message)),
+                _ => None,
+            })
+            .collect();
+        let changes = if report.rejected == 1 {
+            "change"
+        } else {
+            "changes"
+        };
+        lines.push(if reasons.is_empty() {
+            format!("The server refused {} {changes}.", report.rejected)
+        } else {
+            format!(
+                "The server refused {} {changes}: {}",
+                report.rejected,
+                reasons.join("; ")
+            )
+        });
+    }
+    if report.deferred > 0 {
+        lines.push(format!(
             "{} still queued; the next run will send them.",
             report.deferred
-        ),
-        Some(Err(error)) => writeln!(out, "Still queued — could not reach the server: {error}"),
-        None => writeln!(out, "Still queued — the server did not answer in time."),
-    };
+        ));
+    } else if report.rejected == 0 {
+        lines.push("Sent.".to_string());
+    } else if report.sent > 0 {
+        lines.push("The rest were sent.".to_string());
+    }
+    lines
 }
 
 /// Server-written text, made safe to print on one line of a terminal.
@@ -942,7 +1017,7 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
 /// Every control character goes, `\n` and `\t` included, because every caller
 /// interpolates into the middle of a sentence where neither is legitimate -- and a
 /// newline forges a line of output that reads as tui-do's own.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { '\u{fffd}' } else { c })
         .collect()
@@ -1025,7 +1100,7 @@ fn spawn_input(tx: LoopTx, stop: Arc<AtomicBool>) {
 }
 
 /// The next terminal event, or `None` if none arrived within `timeout`.
-fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
+pub(crate) fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
     if crossterm::event::poll(timeout)? {
         crossterm::event::read().map(Some)
     } else {
@@ -1186,6 +1261,65 @@ pub(crate) fn url_action() -> UrlAction {
 pub(crate) const URL_OPENER: &str = "open";
 #[cfg(not(target_os = "macos"))]
 pub(crate) const URL_OPENER: &str = "xdg-open";
+
+/// How long after `o` an opener's failure is still news.
+///
+/// `xdg-open` that cannot open anything fails at once. One that stayed in the foreground
+/// with the browser it started exits when the browser closes, minutes later and sometimes
+/// non-zero, and an error toast about it then lands in the middle of unrelated work.
+const OPENER_FAILS_WITHIN: Duration = Duration::from_secs(10);
+
+/// What to tell the user about an opener that has exited, if anything.
+fn opener_failure(status: std::process::ExitStatus, after: Duration) -> Option<String> {
+    (!status.success() && after < OPENER_FAILS_WITHIN)
+        .then(|| format!("{URL_OPENER} exited with {status}"))
+}
+
+/// Start `program` with `url` as its one argument, and let it go.
+///
+/// Answers the child's pid once it has started; `on_exit` hears its status later, from a
+/// thread of its own that reaps it. Nothing waits on it otherwise. `xdg-open` on Hyprland
+/// can stay in the foreground until the browser it started exits, and the opener used to
+/// run under `spawn_blocking` with `.status()` -- so `q` hung until the browser closed,
+/// because dropping the tokio runtime waits for its blocking tasks. A plain thread is not
+/// waited on when the process exits.
+///
+/// Its own process group, so a SIGHUP or SIGINT meant for tui-do does not reach the
+/// browser, and null stdin, stdout and stderr, so the handler cannot read keys meant for
+/// the interface or write over the alternate screen. The URL is an argument, never a
+/// shell string.
+///
+/// # Errors
+/// The program could not be started.
+pub(crate) fn open_detached(
+    program: &str,
+    url: &str,
+    on_exit: impl FnOnce(std::process::ExitStatus) + Send + 'static,
+) -> io::Result<u32> {
+    let mut command = std::process::Command::new(program);
+    command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    // If no thread can be had, the child is left unreaped until tui-do exits, which costs
+    // a zombie and nothing else.
+    let _ = std::thread::Builder::new()
+        .name("url-opener".to_string())
+        .spawn(move || {
+            if let Ok(status) = child.wait() {
+                on_exit(status);
+            }
+        });
+    Ok(pid)
+}
 
 /// Put text in the clipboard with OSC 52.
 ///
@@ -1372,6 +1506,27 @@ fn token_listing(vocabulary: &tui_do_ui::assist::Vocabulary) -> String {
     out
 }
 
+/// Listen for SIGTERM, SIGHUP and SIGQUIT on `runtime`, for a prompt that holds the
+/// terminal in raw mode outside the interface (BUG-31).
+///
+/// The prompt asks the receiver between keys and gives the terminal back when one has
+/// arrived. Spawned plainly rather than through `spawn_effect`, which reports to an event
+/// loop a prompt does not have; the listener does nothing that could panic. `runtime` must
+/// have worker threads and must outlive the prompt: once the receiver is dropped a signal
+/// ends the process with its code, but only while the listener task is still running --
+/// after the runtime is gone, the handlers tokio installed swallow the signal.
+pub(crate) fn listen_for_signals(runtime: &tokio::runtime::Handle) -> UnboundedReceiver<Signal> {
+    let (to, caught) = mpsc::unbounded_channel();
+    let listener = {
+        let _context = runtime.enter();
+        signals::listen(to)
+    };
+    if let Some(listener) = listener {
+        runtime.spawn(listener);
+    }
+    caught
+}
+
 /// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run
 /// with no text. `None` when the user cancelled.
 ///
@@ -1390,20 +1545,11 @@ pub fn ask_for_task(
     dry_run: bool,
 ) -> anyhow::Result<Option<String>> {
     let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
-    // Before raw mode, as in `run` (BUG-31). Spawned plainly rather than through
-    // `spawn_effect`, which reports to an event loop the prompt does not have; the
-    // listener does nothing that could panic. Its receiver goes when this returns, and a
+    // Before raw mode, as in `run` (BUG-31). Its receiver goes when this returns, and a
     // signal after that ends the process with its code as the default action would --
     // the terminal is no longer raw by then, but `add`'s push may be mid-request
     // (`signals::listen` says what that costs).
-    let (to, mut caught) = mpsc::unbounded_channel();
-    let listener = {
-        let _context = runtime.enter();
-        signals::listen(to)
-    };
-    if let Some(listener) = listener {
-        runtime.spawn(listener);
-    }
+    let mut caught = listen_for_signals(runtime);
     let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
     let answer = prompt::ask(guard.terminal(), &mut prompt, next_event, || {
         caught.try_recv().ok()
@@ -2242,6 +2388,57 @@ mod tests {
             rejected: 1,
             deferred: 0,
         })
+    }
+
+    #[test]
+    fn the_quit_flush_names_a_refusal_instead_of_saying_sent() {
+        // `is_complete` is `deferred == 0`, and a refused entry is rolled back rather than
+        // deferred, so a flush whose only change the server turned down said "Sent.".
+        let task = Subject::Task(tui_do_core::models::TaskId(4));
+        let report = PushReport {
+            sent: 0,
+            rejected: 1,
+            deferred: 0,
+        };
+        let said = flush_said(
+            Some(Ok(report)),
+            &[refused(
+                task,
+                "update_task",
+                "The task title cannot be empty.",
+            )],
+        );
+        assert_eq!(
+            said,
+            vec!["The server refused 1 change: The task title cannot be empty.".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_quit_flush_says_what_went_beside_what_was_refused() {
+        let task = Subject::Task(tui_do_core::models::TaskId(4));
+        let report = PushReport {
+            sent: 2,
+            rejected: 2,
+            deferred: 1,
+        };
+        let said = flush_said(
+            Some(Ok(report)),
+            &[refused(task, "update_task", "no\x1b]52;c;x\x07")],
+        );
+        assert_eq!(
+            said,
+            vec![
+                "The server refused 2 changes: no\u{fffd}]52;c;x\u{fffd}".to_string(),
+                "1 still queued; the next run will send them.".to_string(),
+            ]
+        );
+        let clean = PushReport {
+            sent: 3,
+            rejected: 0,
+            deferred: 0,
+        };
+        assert_eq!(flush_said(Some(Ok(clean)), &[]), vec!["Sent.".to_string()]);
     }
 
     #[test]
@@ -3104,6 +3301,58 @@ mod tests {
         );
     }
 
+    /// The flush pushes outside `spawn_sync`'s one-at-a-time guard, so anything that could
+    /// still start a pass -- a pass's `AGAIN` tail, a late `Effect::Apply`, the timer --
+    /// would push alongside it, and two drains can read the same create before either
+    /// marks it sent. Once the flush has begun, nothing may start another.
+    ///
+    /// The server is a closed loopback port, so a pass that did start shows up as a
+    /// failed attempt on the entry and as events on the loop's channel.
+    #[tokio::test]
+    async fn no_pass_starts_once_the_quit_flush_has_begun() {
+        let store = scratch_store();
+        let client = Client::builder("http://127.0.0.1:9")
+            .credentials(tui_do_api::Credentials::api_token("tk_test"))
+            .build()
+            .unwrap();
+        let sync = Arc::new(Sync::new(client, store.clone()));
+        // Nothing queued yet, so the flush itself sends nothing.
+        flush_on_exit(&store, &sync, &mut io::sink()).await;
+
+        store
+            .upsert_tasks(vec![tui_do_core::models::Task {
+                id: tui_do_core::models::TaskId(4),
+                project_id: ProjectId(1),
+                title: "late".to_string(),
+                ..tui_do_core::models::Task::default()
+            }])
+            .await
+            .unwrap();
+        store
+            .queue(Mutation::DeleteTask {
+                before: Box::new(
+                    store
+                        .task(tui_do_core::models::TaskId(4))
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                ),
+            })
+            .await
+            .unwrap();
+        let (tx, mut rx) = LoopTx::channel();
+        spawn_sync(Arc::clone(&sync), tx, Pass::Push, Trigger::Scheduled);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert!(
+            rx.msg.try_recv().is_err(),
+            "a pass started after the flush began"
+        );
+        let queued = store.pending(None).await.unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].attempts, 0, "a pass pushed after the flush began");
+    }
+
     /// A store with nothing in it, for a test to queue against without touching
     /// `~/.local/share/tui-do`.
     fn scratch_store() -> Store {
@@ -3194,5 +3443,65 @@ mod tests {
             1,
             "one name, one label: {queued:?}"
         );
+    }
+
+    /// The opener is started and let go: `open_detached` answers before the program has
+    /// finished, the child leads a process group of its own rather than sharing tui-do's,
+    /// and it holds no handle on the terminal. `sleep 30` stands in for an `xdg-open`
+    /// that stays in the foreground until the browser exits.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_url_opener_runs_detached_in_its_own_process_group() {
+        let started = std::time::Instant::now();
+        let (exited, heard) = std::sync::mpsc::channel();
+        let pid = open_detached("sleep", "30", move |status| {
+            let _ = exited.send(status);
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited on the opener"
+        );
+
+        let field = |stat: &str, n: usize| -> i64 {
+            // The command name is in parentheses and may hold spaces; count after it.
+            let after = &stat[stat.rfind(')').unwrap() + 2..];
+            after.split(' ').nth(n).unwrap().parse().unwrap()
+        };
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let own = std::fs::read_to_string("/proc/self/stat").unwrap();
+        // Fields after the name: state, ppid, pgrp.
+        let (group, own_group) = (field(&stat, 2), field(&own, 2));
+        let stdin = std::fs::read_link(format!("/proc/{pid}/fd/0"));
+        let stdout = std::fs::read_link(format!("/proc/{pid}/fd/1"));
+
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+        let status = heard.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        assert_eq!(group, i64::from(pid), "not the leader of its own group");
+        assert_ne!(group, own_group, "shares tui-do's process group");
+        assert_eq!(stdin.unwrap(), std::path::Path::new("/dev/null"));
+        assert_eq!(stdout.unwrap(), std::path::Path::new("/dev/null"));
+        assert!(!status.success(), "the reaper reports how it ended");
+    }
+
+    /// A program that is not there is reported at once, as before.
+    #[test]
+    fn an_opener_failing_late_is_not_reported() {
+        // Found reviewing 1.2.2: an opener that waited on the browser reported its exit
+        // status whenever the browser closed, as an error toast out of nowhere.
+        use std::os::unix::process::ExitStatusExt as _;
+        let failed = std::process::ExitStatus::from_raw(1 << 8);
+        assert!(opener_failure(failed, Duration::from_secs(1)).is_some());
+        assert!(opener_failure(failed, Duration::from_secs(600)).is_none());
+        let fine = std::process::ExitStatus::from_raw(0);
+        assert!(opener_failure(fine, Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn an_opener_that_cannot_start_is_an_error() {
+        assert!(open_detached("tui-do-no-such-opener", "https://example.com", |_| {}).is_err());
     }
 }

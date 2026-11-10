@@ -18,7 +18,7 @@
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, LOCATION, RETRY_AFTER};
 use reqwest::{Method, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -219,11 +219,12 @@ impl ClientBuilder {
             // `POST /user/token/refresh` reads the refresh cookie set by `POST /login`;
             // without a jar it answers "No refresh token provided."
             .cookie_store(true)
+            // Never follow a redirect. The default policy answers a `POST` that got a
+            // `301` or `302` by sending a `GET`, whose `200` then reads as the write's
+            // success. A 3xx becomes `ApiError::Redirected` instead.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|source| ApiError::Transport {
-                url: base.to_string(),
-                source,
-            })?;
+            .map_err(|source| ApiError::transport(base.to_string(), source))?;
 
         let session = match self.credentials {
             Some(Credentials::ApiToken(token)) => Session::ApiToken(token),
@@ -1115,10 +1116,10 @@ impl Client {
             }
         }
 
-        let response = request.send().await.map_err(|source| ApiError::Transport {
-            url: call.url.to_string(),
-            source,
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|source| ApiError::transport(call.url.to_string(), source))?;
 
         let status = response.status();
         let headers = response.headers().clone();
@@ -1181,10 +1182,7 @@ async fn read_bounded(mut response: reqwest::Response, url: &Url, limit: usize) 
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|source| ApiError::Transport {
-            url: url.to_string(),
-            source,
-        })?
+        .map_err(|source| ApiError::transport(url.to_string(), source))?
     {
         if body.len() + chunk.len() > limit {
             return Err(ApiError::ResponseTooLarge {
@@ -1201,20 +1199,61 @@ async fn read_bounded(mut response: reqwest::Response, url: &Url, limit: usize) 
 
 /// Interpret a failing response.
 fn classify(status: u16, headers: &HeaderMap, body: &str) -> ApiError {
-    ApiError::from_status(status, &ErrorBody::parse(body), retry_after(headers))
+    if (300..=399).contains(&status) {
+        return ApiError::Redirected {
+            status,
+            location: redirect_target(headers),
+        };
+    }
+    // A 5xx takes only `Retry-After`. `x-ratelimit-reset` is the rate limiter's window,
+    // and says nothing about when a failing server will be back. A zero wait -- `0`, or a
+    // date already past, which clock skew alone can produce -- is no advice here: taken
+    // as given, it replaced the backoff with an immediate retry on every pass against a
+    // server that is down.
+    let wait = if (500..=599).contains(&status) {
+        explicit_retry_after(headers).filter(|wait| !wait.is_zero())
+    } else {
+        retry_after(headers)
+    };
+    ApiError::from_status(status, &ErrorBody::parse(body), wait)
+}
+
+/// Where a redirect pointed, for the error message: the `Location` header without its
+/// query string, which may carry the search text the request did.
+fn redirect_target(headers: &HeaderMap) -> String {
+    let Some(location) = headers.get(LOCATION).and_then(|v| v.to_str().ok()) else {
+        return "(nowhere)".to_string();
+    };
+    let path = location.split(['?', '#']).next().unwrap_or_default().trim();
+    if path.is_empty() {
+        "(nowhere)".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// `Retry-After`, in either form RFC 9110 allows: delay-seconds or an HTTP-date.
+///
+/// A date already past is a zero wait -- "retry now" -- rather than no advice. Only the
+/// IMF-fixdate form is read (`Sun, 06 Nov 1994 08:49:37 GMT`), which is the one senders
+/// are required to generate; the two obsolete forms read as no advice.
+fn explicit_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    let wait = at.signed_duration_since(chrono::Utc::now());
+    Some(wait.to_std().unwrap_or(Duration::ZERO))
 }
 
 /// How long the server asked us to wait, from either header it might use.
 ///
 /// Vikunja's rate limiter sends `x-ratelimit-reset` as an absolute unix timestamp; a
-/// proxy in front of it may send a plain `Retry-After` in seconds.
+/// proxy in front of it may send a `Retry-After`, which wins when both are present.
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    if let Some(seconds) = headers
-        .get(RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok())
-    {
-        return Some(Duration::from_secs(seconds));
+    if let Some(wait) = explicit_retry_after(headers) {
+        return Some(wait);
     }
 
     let reset = headers
@@ -1487,6 +1526,20 @@ mod tests {
     }
 
     #[test]
+    fn a_server_error_with_a_zero_wait_keeps_the_backoff() {
+        // Found reviewing 1.2.2: `503 Retry-After: 0` turned the exponential backoff into a
+        // retry on every pass.
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, "0".parse().expect("a header"));
+        assert_eq!(classify(503, &headers, "").retry_after(), None);
+        headers.insert(RETRY_AFTER, "120".parse().expect("a header"));
+        assert_eq!(
+            classify(503, &headers, "").retry_after(),
+            Some(Duration::from_secs(120))
+        );
+    }
+
+    #[test]
     fn retry_after_prefers_the_explicit_header() {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
@@ -1525,6 +1578,48 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-ratelimit-reset", HeaderValue::from_static("30"));
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_retry_after_http_date_is_read_as_the_wait_until_then() {
+        // RFC 9110 allows either form, and a proxy in front of Vikunja is the likely
+        // sender of a 503 -- which is where the date form shows up.
+        let then = chrono::Utc::now() + chrono::TimeDelta::seconds(120);
+        let date = then.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_str(&date).unwrap());
+        let wait = retry_after(&headers).expect("a wait");
+        assert!(
+            wait > Duration::from_secs(100) && wait <= Duration::from_secs(120),
+            "{date} read as {wait:?}"
+        );
+
+        // A date already past means "now", not "no advice".
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_server_error_keeps_its_retry_after_but_not_a_rate_limit_window() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("45"));
+        assert_eq!(
+            classify(503, &headers, "").retry_after(),
+            Some(Duration::from_secs(45))
+        );
+
+        // `x-ratelimit-reset` describes the rate limiter's window, which says nothing
+        // about when a failing server will be back.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-reset", HeaderValue::from_static("30"));
+        assert_eq!(classify(500, &headers, "").retry_after(), None);
+        assert_eq!(
+            classify(429, &headers, "").retry_after(),
+            Some(Duration::from_secs(30))
+        );
     }
 
     #[test]

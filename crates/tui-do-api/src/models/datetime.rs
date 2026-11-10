@@ -18,12 +18,22 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The wire form Vikunja uses for an unset date: Go's zero `time.Time`.
 const ZERO: &str = "0001-01-01T00:00:00Z";
 
-/// Any parsed timestamp at or before this year is treated as "unset".
+/// Whether a parsed instant is Go's zero time, possibly in another zone's clothing.
 ///
-/// The zero value is year 1, but Vikunja has been observed to round-trip it through
-/// timezone conversion, which can shift it by hours and, at year 1, across the year
-/// boundary. A generous cutoff costs nothing: no real task has a date before 1970.
-const MIN_REAL_YEAR: i32 = 1900;
+/// The zero instant can arrive rendered in another zone -- `0000-12-31T19:00:00-05:00`,
+/// or with a local-mean-time offset that RFC 3339 truncates, leaving it seconds short of
+/// the zero. An offset is never as much as a day, so anything that is still on or before
+/// 1 January of year 1 in UTC is the zero in disguise. Everything after is a real date.
+///
+/// This was a cutoff at the year 1900, on the reasoning that "no real task has a date
+/// before 1970". A date is the user's to choose, though, and reading one as unset made
+/// the next update send the zero time and clear it on the server. On 2026-11-10 the dev
+/// server spelled unset as the literal UTC `0001-01-01T00:00:00Z` while rendering real
+/// dates at `-04:00`, so the shifted forms are tolerated rather than expected.
+fn is_zero_time(instant: DateTime<Utc>) -> bool {
+    use chrono::Datelike;
+    instant.year() < 1 || (instant.year() == 1 && instant.ordinal() == 1)
+}
 
 /// Parse a Vikunja timestamp, mapping its several spellings of "unset" to `None`.
 #[must_use]
@@ -32,11 +42,10 @@ pub fn parse(raw: &str) -> Option<DateTime<Utc>> {
     if trimmed.is_empty() || trimmed == ZERO {
         return None;
     }
-    let parsed = DateTime::parse_from_rfc3339(trimmed).ok()?;
-    if chrono::Datelike::year(&parsed) <= MIN_REAL_YEAR {
-        return None;
-    }
-    Some(parsed.with_timezone(&Utc))
+    let parsed = DateTime::parse_from_rfc3339(trimmed)
+        .ok()?
+        .with_timezone(&Utc);
+    (!is_zero_time(parsed)).then_some(parsed)
 }
 
 /// Render a timestamp for Vikunja, using its zero value for `None`.
@@ -148,6 +157,29 @@ mod tests {
         // an equality check against the literal.
         assert_eq!(parse("0001-01-01T05:00:00+05:00"), None);
         assert_eq!(parse("0000-12-31T19:00:00-05:00"), None);
+    }
+
+    #[test]
+    fn a_real_date_at_or_before_1900_is_kept() {
+        // It read as unset, so the next update sent the zero time and cleared a real
+        // date on the server. Only Go's zero instant means unset.
+        for raw in [
+            "1900-01-01T00:00:00Z",
+            "1899-06-15T12:00:00Z",
+            "1066-10-14T09:00:00Z",
+            "0002-01-01T00:00:00Z",
+        ] {
+            let parsed = parse(raw);
+            assert!(parsed.is_some(), "{raw} read as unset");
+            assert_eq!(parse(&render(parsed)), parsed, "{raw}");
+        }
+    }
+
+    #[test]
+    fn the_zero_instant_in_go_local_mean_time_is_still_unset() {
+        // Go renders the zero instant in America/New_York with the zone's LMT offset,
+        // -4:56:02, which RFC 3339 truncates to -04:56: two seconds short of the zero.
+        assert_eq!(parse("0000-12-31T19:03:58-04:56"), None);
     }
 
     #[test]

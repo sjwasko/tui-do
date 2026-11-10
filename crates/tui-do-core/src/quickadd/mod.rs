@@ -316,7 +316,7 @@ pub fn parse_kept<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: Kept<'_>)
             kind: TokenKind::Repeat,
             range: range.clone(),
         });
-        consumed.push(range);
+        consumed.extend(around(range, &passed));
         remaining.retain(|w| !used.contains(&w.range.start));
     }
 
@@ -340,13 +340,40 @@ pub fn parse_kept<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: Kept<'_>)
     for date in dates.iter().rev() {
         let skipped: Vec<Range<usize>> = consumed.iter().chain(&passed).cloned().collect();
         if ends_the_line(input, date.range.end, &skipped) {
-            consumed.push(date.range.clone());
+            consumed.extend(around(date.range.clone(), &passed));
         }
     }
 
     parsed.tokens.sort_by_key(|t| t.range.start);
     parsed.title = words::remove_ranges(input, &consumed);
     parsed
+}
+
+/// `range` with every `kept` range inside it cut out.
+///
+/// Phrases are matched over the words left once prefixed tokens are taken out, so a date
+/// or repeat phrase can run across a kept `*label` or `@user`: `due *family tomorrow`. The
+/// phrase still leaves the title; the kept word inside it does not, so it stays as typed
+/// exactly as it would beside the phrase, and whether the label exists changes nothing
+/// else about the task.
+fn around(range: Range<usize>, kept: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut inside: Vec<&Range<usize>> = kept
+        .iter()
+        .filter(|k| k.start >= range.start && k.end <= range.end)
+        .collect();
+    inside.sort_by_key(|k| k.start);
+    let mut pieces = Vec::new();
+    let mut cursor = range.start;
+    for k in inside {
+        if k.start > cursor {
+            pieces.push(cursor..k.start);
+        }
+        cursor = cursor.max(k.end);
+    }
+    if cursor < range.end {
+        pieces.push(cursor..range.end);
+    }
+    pieces
 }
 
 /// Whether nothing meaningful follows byte `from` of `input`, so a date ending there may
@@ -435,8 +462,21 @@ fn prefixed(word: &str) -> Option<(TokenKind, String)> {
         '!' => TokenKind::Priority,
         _ => return None,
     };
-    let rest = chars.as_str();
-    Some((kind, unquote(rest)))
+    Some((kind, value_of(chars.as_str())))
+}
+
+/// A token's value from what follows its sigil.
+///
+/// Quoted or bracketed, everything inside. Otherwise without the punctuation that ends a
+/// sentence, which [`words::Word::trimmed`] reads keywords without: `*groceries.` at the
+/// end of a line was a label called `groceries.`. The punctuation still leaves the title
+/// with the token, as a date's does.
+fn value_of(rest: &str) -> String {
+    let inner = unquote(rest);
+    if inner != rest {
+        return inner;
+    }
+    rest.trim_end_matches(words::TRAILING).to_string()
 }
 
 /// Strip a matched pair of quotes or brackets.
@@ -450,38 +490,44 @@ fn unquote(value: &str) -> String {
 }
 
 /// Recognise `every 2 weeks`, `every week`, `every 3 days`.
+///
+/// Every `every` is tried and the last one that forms a phrase wins. Only the first used to
+/// be, so an ordinary `every` earlier in the line hid the real repeat: `Check every box
+/// every week` had none. The last, because that is where the recommended form puts it,
+/// and an `every` in the title then cannot take its place.
 fn repeat_phrase(words: &[words::Word]) -> Option<(Repeat, Range<usize>, Vec<usize>)> {
-    let start = words.iter().position(|w| w.is("every"))?;
+    (0..words.len())
+        .rev()
+        .filter(|&start| words[start].is("every"))
+        .find_map(|start| repeat_at(words, start))
+}
+
+/// The repeat phrase starting with the `every` at `start`, if one does.
+fn repeat_at(words: &[words::Word], start: usize) -> Option<(Repeat, Range<usize>, Vec<usize>)> {
+    let next = words.get(start + 1)?;
 
     // `every week`
-    if let Some(next) = words.get(start + 1) {
-        if let Some(unit) = dates::unit(next.trimmed()) {
-            return Some((
-                Repeat { every: 1, unit },
-                words[start].range.start..next.range.end,
-                vec![words[start].range.start, next.range.start],
-            ));
-        }
-
-        // `every 2 weeks`
-        if let (Ok(every), Some(unit_word)) = (next.trimmed().parse::<u32>(), words.get(start + 2))
-        {
-            if let Some(unit) = dates::unit(unit_word.trimmed()) {
-                if every > 0 {
-                    return Some((
-                        Repeat { every, unit },
-                        words[start].range.start..unit_word.range.end,
-                        vec![
-                            words[start].range.start,
-                            next.range.start,
-                            unit_word.range.start,
-                        ],
-                    ));
-                }
-            }
-        }
+    if let Some(unit) = dates::unit(next.trimmed()) {
+        return Some((
+            Repeat { every: 1, unit },
+            words[start].range.start..next.range.end,
+            vec![words[start].range.start, next.range.start],
+        ));
     }
-    None
+
+    // `every 2 weeks`
+    let every = next.trimmed().parse::<u32>().ok().filter(|&n| n > 0)?;
+    let unit_word = words.get(start + 2)?;
+    let unit = dates::unit(unit_word.trimmed())?;
+    Some((
+        Repeat { every, unit },
+        words[start].range.start..unit_word.range.end,
+        vec![
+            words[start].range.start,
+            next.range.start,
+            unit_word.range.start,
+        ],
+    ))
 }
 
 #[cfg(test)]
@@ -509,6 +555,268 @@ mod tests {
                 .to_string()
         })
         .unwrap_or_else(|| "none".to_string())
+    }
+
+    /// Thursday 2026-11-05 22:30, five hours behind UTC: late enough in the day that an
+    /// hour count crosses midnight.
+    fn evening() -> crate::zone::ZonedTime {
+        crate::zone::pinned(
+            FixedOffset::west_opt(5 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 11, 5, 22, 30, 0)
+                .unwrap(),
+        )
+    }
+
+    /// `at` on `evening()`'s wall clock.
+    fn on_evening(at: Option<DateTime<Utc>>) -> String {
+        at.map(|d| {
+            d.with_timezone(&evening().timezone())
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "none".to_string())
+    }
+
+    #[test]
+    fn a_kept_word_inside_a_phrase_stays_in_the_title() {
+        // The phrase was matched over the words left once prefixed tokens were taken out,
+        // so its byte range ran across the kept `*family` and cut it from the title with
+        // the phrase: both lines were saved as just the words before it.
+        let clock = evening();
+        let family = vec!["family".to_string()];
+        let labels = Kept {
+            labels: &family,
+            users: &[],
+        };
+        let users = Kept {
+            labels: &[],
+            users: &family,
+        };
+
+        let parsed = parse_kept("Call mom due *family tomorrow", &clock, labels);
+        assert_eq!(parsed.title, "Call mom *family");
+        assert_eq!(on_evening(parsed.due_date), "2026-11-06 23:59");
+        assert!(parsed.labels.is_empty());
+
+        let parsed = parse_kept("Water plants every *family week", &clock, labels);
+        assert_eq!(parsed.title, "Water plants *family");
+        assert_eq!(
+            parsed.repeat,
+            Some(Repeat {
+                every: 1,
+                unit: Unit::Week
+            })
+        );
+
+        // An unknown `@user` is kept the same way.
+        let parsed = parse_kept("Call mom due @family tomorrow", &clock, users);
+        assert_eq!(parsed.title, "Call mom @family");
+        assert_eq!(on_evening(parsed.due_date), "2026-11-06 23:59");
+
+        // Mid-sentence the date stays whole, and the kept word inside it with it.
+        let parsed = parse_kept("due *family tomorrow buy milk", &clock, labels);
+        assert_eq!(parsed.title, "due *family tomorrow buy milk");
+
+        // So whether the label exists changes nothing but the label: a known one leaves
+        // with the phrase it sits in, and the task is otherwise the same.
+        let parsed = parse("Call mom due *family tomorrow", &clock);
+        assert_eq!(parsed.title, "Call mom");
+        assert_eq!(parsed.labels, vec!["family"]);
+        assert_eq!(on_evening(parsed.due_date), "2026-11-06 23:59");
+        let parsed = parse("Water plants every *family week", &clock);
+        assert_eq!(parsed.title, "Water plants");
+        assert_eq!(parsed.labels, vec!["family"]);
+        assert!(parsed.repeat.is_some());
+    }
+
+    #[test]
+    fn a_weekday_abbreviation_needs_a_keyword() {
+        // `sun`, `sat` and `wed` are words, and taken bare they cut the end off a title and
+        // set a due date nobody asked for. The mirror of BUG-24's digits rule.
+        let clock = evening();
+        for input in [
+            "Water plants in the sun",
+            "the cat sat",
+            "get wed",
+            "c'mon mon",
+            "next sat",
+            "this sun",
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, input, "{input:?} lost text to a weekday");
+            assert_eq!(on_evening(parsed.due_date), "none", "{input:?}");
+            assert!(!parsed.has_magic(), "{input:?}");
+        }
+
+        // After `due` or `start` an abbreviation is a weekday. `evening()` is a Thursday.
+        for (input, due, start) in [
+            ("Water plants due sun", "2026-11-08 23:59", "none"),
+            ("Water plants due sat at 9am", "2026-11-07 09:00", "none"),
+            ("Water plants due next fri", "2026-11-06 23:59", "none"),
+            ("Water plants start mon", "none", "2026-11-09 00:00"),
+            ("Water plants start:wed", "none", "2026-11-11 00:00"),
+            // A full name needs nothing, in every form the README shows.
+            ("Water plants sunday", "2026-11-08 23:59", "none"),
+            ("Water plants next friday", "2026-11-06 23:59", "none"),
+            ("Water plants due friday", "2026-11-06 23:59", "none"),
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, "Water plants", "{input:?}");
+            assert_eq!(on_evening(parsed.due_date), due, "{input:?}");
+            assert_eq!(on_evening(parsed.start_date), start, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn in_hours_is_that_many_hours_from_now() {
+        // It was always today at 23:59, so at 22:30 `in 30 hours` was due in 89 minutes.
+        let clock = evening();
+        for (input, due) in [
+            ("call in 30 hours", "2026-11-07 04:30"),
+            ("call in 1 hour", "2026-11-05 23:30"),
+            ("call in 2 hours", "2026-11-06 00:30"),
+            ("call due in 48 hours", "2026-11-07 22:30"),
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, "call", "{input:?}");
+            assert_eq!(on_evening(parsed.due_date), due, "{input:?}");
+        }
+        let parsed = parse("call start in 3 hours", &clock);
+        assert_eq!(on_evening(parsed.start_date), "2026-11-06 01:30");
+
+        // An exact instant, to the minute, so the canonical line names it and reads back.
+        let seconds = crate::zone::pinned(
+            FixedOffset::west_opt(5 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 11, 5, 22, 30, 41)
+                .unwrap(),
+        );
+        let parsed = parse("call in 30 hours", &seconds);
+        assert_eq!(
+            parsed.due_date,
+            Some(Utc.with_ymd_and_hms(2026, 11, 7, 9, 30, 0).unwrap())
+        );
+        let line = parsed.canonical(&seconds.timezone());
+        assert_eq!(line, "call due 2026-11-07 at 04:30");
+        assert!(parse(&line, &seconds).same_fields(&parsed));
+    }
+
+    #[test]
+    fn the_colon_form_takes_its_time_out_of_the_title() {
+        // `at 9am` set the time but was not counted in the phrase, so the whole of it
+        // stayed in the title and the canonical line repeated it.
+        let clock = evening();
+        let parsed = parse("Fix it start:monday at 9am", &clock);
+        assert_eq!(parsed.title, "Fix it");
+        assert_eq!(on_evening(parsed.start_date), "2026-11-09 09:00");
+        assert_eq!(
+            parsed.canonical(&clock.timezone()),
+            "Fix it start 2026-11-09 at 09:00"
+        );
+        let token = &parsed.tokens[0];
+        assert_eq!(
+            &"Fix it start:monday at 9am"[token.range.clone()],
+            "start:monday at 9am"
+        );
+
+        // Without a time it is one word, as before.
+        let parsed = parse("Fix it start:monday", &clock);
+        assert_eq!(parsed.title, "Fix it");
+        assert_eq!(on_evening(parsed.start_date), "2026-11-09 00:00");
+    }
+
+    #[test]
+    fn the_last_every_that_forms_a_repeat_is_the_repeat() {
+        // Only the first `every` was tried, so an ordinary one earlier in the line hid
+        // the real repeat and both stayed in the title.
+        let clock = evening();
+        let weekly = Some(Repeat {
+            every: 1,
+            unit: Unit::Week,
+        });
+        for (input, title) in [
+            ("Check every box every week", "Check every box"),
+            ("check every room every week", "check every room"),
+            ("every day counts every week", "every day counts"),
+            ("do it every day every week", "do it every day"),
+            ("check every room every week +Home", "check every room"),
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.repeat, weekly, "{input:?}");
+            assert_eq!(parsed.title, title, "{input:?}");
+        }
+
+        // An `every` after the repeat that forms nothing does not displace it.
+        let parsed = parse("every 2 days check every room", &clock);
+        assert_eq!(
+            parsed.repeat,
+            Some(Repeat {
+                every: 2,
+                unit: Unit::Day
+            })
+        );
+        assert_eq!(parsed.title, "check every room");
+    }
+
+    #[test]
+    fn feb_29_without_a_year_is_the_next_one_there_is() {
+        // 2026 and 2027 have none, so it was silently not a date and stayed in the title.
+        let clock = evening();
+        for input in [
+            "Leap day due feb 29",
+            "Leap day due 29 feb",
+            "Leap day due february 29th",
+            "Leap day due 29/02",
+            "Leap day due 29feb",
+            "Leap day feb 29",
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, "Leap day", "{input:?}");
+            assert_eq!(on_evening(parsed.due_date), "2028-02-29 23:59", "{input:?}");
+        }
+        // A day no month has is still not a date.
+        let parsed = parse("Odd one due feb 30", &clock);
+        assert_eq!(on_evening(parsed.due_date), "none");
+        assert_eq!(parsed.title, "Odd one due feb 30");
+    }
+
+    #[test]
+    fn a_name_does_not_keep_the_sentences_punctuation() {
+        // `*groceries.` attached a label called `groceries.`. The punctuation goes with the
+        // token, as a date's own does (`call mom tomorrow.` is `call mom`).
+        let clock = evening();
+        let parsed = parse("Buy milk *groceries.", &clock);
+        assert_eq!(parsed.labels, vec!["groceries"]);
+        assert_eq!(parsed.title, "Buy milk");
+
+        let parsed = parse("Call @alice, then file it +Admin!", &clock);
+        assert_eq!(parsed.assignees, vec!["alice"]);
+        assert_eq!(parsed.project.as_deref(), Some("Admin"));
+        assert_eq!(parsed.title, "Call then file it");
+
+        let parsed = parse("Ship it !3.", &clock);
+        assert_eq!(parsed.priority, Some(3));
+        assert_eq!(parsed.title, "Ship it");
+
+        // A quoted or bracketed name keeps everything inside it.
+        let parsed = parse(r#"Tag it *"v1." +[Q3?]"#, &clock);
+        assert_eq!(parsed.labels, vec!["v1."]);
+        assert_eq!(parsed.project.as_deref(), Some("Q3?"));
+        assert_eq!(parsed.title, "Tag it");
+
+        // Punctuation and nothing else is not a name, so it stays as text.
+        let parsed = parse("Huh *?! +...", &clock);
+        assert!(parsed.labels.is_empty());
+        assert_eq!(parsed.project, None);
+        assert_eq!(parsed.title, "Huh *?! +...");
+
+        // And a name that ends in punctuation is written back in brackets, so it reads
+        // back whole.
+        let parsed = parse(r#"Tag it *"v1.""#, &clock);
+        let line = parsed.canonical(&clock.timezone());
+        assert_eq!(line, "Tag it *[v1.]");
+        assert!(parse(&line, &clock).same_fields(&parsed));
     }
 
     #[test]

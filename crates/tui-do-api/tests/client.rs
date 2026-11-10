@@ -821,6 +821,86 @@ async fn a_task_page_survives_vikunjas_null_collections() {
 }
 
 #[tokio::test]
+async fn a_page_whose_whole_body_is_null_reads_as_empty() {
+    // Go marshals a nil slice as `null`, and that applies to a whole response as much as
+    // to a field in one: a listing with nothing in it can answer `null` rather than `[]`.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .insert_header("x-pagination-total-pages", "1")
+                .insert_header("x-pagination-result-count", "0")
+                .set_body_string("null"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .and(query_param("page", "1"))
+        .and(query_param("s", "nothing"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string("null"),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    let tasks = client
+        .all_tasks(&TaskQuery::new())
+        .await
+        .expect("a null page is an empty one");
+    assert!(tasks.is_empty());
+
+    // The one-page-at-a-time walk, taken when the server sends no page count.
+    let tasks = client
+        .all_tasks(&TaskQuery::new().search("nothing"))
+        .await
+        .expect("a null page is an empty one");
+    assert!(tasks.is_empty());
+}
+
+#[tokio::test]
+async fn a_redirected_write_fails_instead_of_becoming_a_read() {
+    // reqwest's default policy follows a 301 or 302 on a POST by sending a GET, so an
+    // update answered with a redirect came back as the GET's 200 and read as success.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(
+            ResponseTemplate::new(301).insert_header("location", "/api/v1/tasks/8?s=secret"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 8})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let task = tui_do_api::models::Task {
+        id: TaskId(7),
+        title: "kept".into(),
+        ..Default::default()
+    };
+    match client(&server).update_task(&task).await {
+        Err(err @ ApiError::Redirected { status: 301, .. }) => {
+            let shown = err.to_string();
+            assert!(shown.contains("301"), "{shown}");
+            assert!(shown.contains("/api/v1/tasks/8"), "names where: {shown}");
+            assert!(!shown.contains("secret"), "{shown}");
+        }
+        other => panic!("expected Redirected, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_refresh_is_refused_after_logout() {
     // The refresh cookie survives `logout`'s local session reset, so without a guard a
     // caller could mint a new JWT from a session the user ended. The mock has no refresh
@@ -1061,4 +1141,127 @@ async fn a_collection_that_grows_while_it_is_read_is_still_read_to_the_end() {
         vec![1, 2, 3],
         "the page that appeared mid-walk was dropped"
     );
+}
+
+/// The body of the one `POST` the mock server received.
+async fn posted_body(server: &MockServer) -> serde_json::Value {
+    let sent = server.received_requests().await.expect("recorded");
+    sent.iter()
+        .find(|r| r.method.as_str() == "POST")
+        .expect("the update")
+        .body_json()
+        .expect("json body")
+}
+
+#[tokio::test]
+async fn a_relative_reminder_keeps_what_it_is_relative_to_through_an_update() {
+    // Measured on dev 2026-11-10: a `POST /tasks/{id}` carrying a reminder with
+    // `relative_period: -3600` and no `relative_to` is refused outright -- `400`, code
+    // 4022, "Please provide what the reminder date is relative to". `""` and `null` are
+    // refused the same way. So a task read and written back must carry the relation, or
+    // every edit to a task with a relative reminder is rolled back.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7,
+            "title": "renew the passport",
+            "due_date": "2026-12-01T12:00:00Z",
+            "reminders": [
+                {"reminder": "2026-12-01T11:00:00Z", "relative_period": -3600, "relative_to": "due_date"},
+                {"reminder": "2026-12-02T10:00:00Z", "relative_period": 0, "relative_to": ""}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    let mut task = client.task(TaskId(7)).await.expect("read");
+    task.title = "renew the passport, today".into();
+    client.update_task(&task).await.expect("update");
+
+    let body = posted_body(&server).await;
+    let reminders = body["reminders"].as_array().expect("reminders sent");
+    assert_eq!(reminders[0]["relative_to"], "due_date", "{body}");
+    assert_eq!(reminders[0]["relative_period"], -3600);
+    // An absolute reminder has no relation, and the server accepted it with the key
+    // absent (measured the same day; it echoes `""` back).
+    assert!(reminders[1].get("relative_to").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn a_transport_error_does_not_repeat_the_search_text() {
+    // reqwest's own Display appends ` for url (...)` with the query string, which put
+    // the user's search text into a toast that `url_for_error` promises never sees it.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([]))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::builder(server.uri())
+        .credentials(Credentials::api_token("tk_test"))
+        .timeout(std::time::Duration::from_millis(200))
+        .build()
+        .expect("client");
+
+    let query = TaskQuery::new().search("divorce lawyer");
+    match client.all_tasks(&query).await {
+        Err(err @ ApiError::Transport { .. }) => {
+            let mut shown = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(cause) = source {
+                shown.push_str(&format!(" / {cause}"));
+                source = cause.source();
+            }
+            assert!(!shown.contains("divorce"), "{shown}");
+            assert!(!shown.contains("lawyer"), "{shown}");
+            assert!(
+                shown.contains("/api/v1/tasks"),
+                "still names the endpoint: {shown}"
+            );
+        }
+        other => panic!("expected Transport, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_update_carries_the_cover_image_back() {
+    // Measured on dev 2026-11-10: with attachment 6 set as the cover, a
+    // `POST /tasks/{id}` that omitted `cover_image_attachment_id` answered `200` and
+    // reset it to 0. So a task read and written back must carry it.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7,
+            "title": "with a cover",
+            "cover_image_attachment_id": 6
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    let mut task = client.task(TaskId(7)).await.expect("read");
+    task.title = "with a cover, renamed".into();
+    client.update_task(&task).await.expect("update");
+
+    let body = posted_body(&server).await;
+    assert_eq!(body["cover_image_attachment_id"], 6, "{body}");
 }

@@ -234,6 +234,24 @@ a relation and an attachment **untouched**, where the same shape deletes reminde
 | `labels` | no; attached and detached through their own endpoints |
 | `positions` (2.8.0) | no — measured 2026-11-08: omitted and `[]` both left list and kanban order untouched |
 
+**A relative reminder must carry `relative_to`, or the whole update is refused.** Measured on
+dev 2026-11-10 (probe task 4375): a reminder sent with `relative_period: -3600` and no
+`relative_to` answered `400`, code `4022`, "Please provide what the reminder date is
+relative to" — and `null` and `""` answered the same. `TaskReminder` had no such field until
+1.2.2, so it was dropped on read, and **every edit to a task with a relative reminder was
+refused and rolled back**. An absolute reminder (`relative_period: 0`) is accepted without
+it, and the server echoes `"relative_to": ""`, its spelling of "absolute". Stored since
+schema v7, where it is part of `task_reminders`' key.
+
+**`cover_image_attachment_id` is a scalar the body clears.** Same session: set to 6, then an
+update that omitted it answered `200` with `0`. It is on `Task` and in the store since 1.2.2
+for that reason — the partial-body rule applies to every scalar the model does not carry,
+and a field missing from `Task` is invisible to `merge_onto`'s exhaustive destructure.
+
+**Redirects are not followed.** reqwest's default turns a `POST` answered `301` into a `GET`
+and reports the redirect target's body as success. The client sets `Policy::none()` and a 3xx
+is `ApiError::Redirected`, kept queued rather than rolled back.
+
 So each collection is its own question and the answer only comes from asking the server.
 `a_task_update_leaves_relations_alone` in `tests/live.rs` pins the relations half; the
 attachment half was measured by hand, because uploading one needs a multipart request the
@@ -671,12 +689,13 @@ attaches both tarballs plus `SHA256SUMS` to a GitHub Release. A tag containing a
 (`v1.0.0-rc.1`) publishes as a pre-release; one without publishes as a full release, which
 is the whole of the difference between an rc and GA.
 
-The version lives in **six** places — `[workspace.package] version` and the three internal
+The version lives in **seven** places — `[workspace.package] version` and the three internal
 path dependencies in `Cargo.toml`, which carry a literal version because `cargo-deny`'s
 `wildcards = "deny"` rejects a versionless path dependency, plus the explicit `version` in
-`crates/tui-do-core/Cargo.toml` and `crates/tui-do-ui/Cargo.toml`. Since 1.1.0 those two
-are on 2.x for breaking API changes while the binary and `tui-do-api` stay on 1.x, so each
-path dependency's version matches its own crate, not the workspace. The
+`crates/tui-do-api/Cargo.toml`, `crates/tui-do-core/Cargo.toml` and
+`crates/tui-do-ui/Cargo.toml`. Core and ui went to 2.x in 1.1.0 and api in 1.2.2, for
+breaking API changes, while the binary stays on 1.x, so each path dependency's version
+matches its own crate, not the workspace. The
 obvious `sed` one-liner using `|` as both delimiter and alternation **silently bumps only
 the first and exits 0** — verified 2026-09-06. Use line-addressed substitution.
 

@@ -219,7 +219,6 @@ impl Store {
     fn open_blocking(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
                 // SEC-1. The store holds every task title, description and queued
                 // mutation, and `create_dir_all` uses the process umask -- so this was
                 // `0755` around a `0644` database, readable by every account on the
@@ -229,7 +228,14 @@ impl Store {
                 // itself, at umask, on every open, so a mode set on the database file is
                 // undone by the next one. A directory nobody else can traverse holds
                 // whatever SQLite puts inside it, now and later.
-                crate::config::restrict_to_owner(parent);
+                //
+                // Only a directory tui-do makes, or its own default one, is tightened. A
+                // `TUI_DO_DB` aimed into a directory that already exists is aimed into
+                // somebody's directory, whose mode is theirs: the files below are still
+                // made private, and the sidecars SQLite recreates are as private as that
+                // directory's owner chose.
+                let ours = dirs::data_dir().is_some_and(|dir| dir.join("tui-do") == parent);
+                crate::config::create_private_dir(parent, ours)?;
             }
         }
         let mut connection = Connection::open(&path)?;
@@ -433,6 +439,30 @@ mod tests {
                 entry.file_name()
             );
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `TUI_DO_DB` pointed into a directory that already exists leaves the directory's
+    /// mode alone: it is somebody else's, and tightening it could lock other accounts out
+    /// of it. The database file is still private.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_store_in_an_existing_directory_leaves_its_mode_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("tui-do-shared-db-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("scratch.db");
+
+        let store = Store::open(&path).await.unwrap();
+        drop(store);
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o755, "opening the store changed its directory");
+        assert_eq!(mode(&path), 0o600);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -28,7 +28,7 @@ pub use info::{ServerInfo, DEFAULT_MAX_ITEMS_PER_PAGE};
 pub use label::{Label, LabelMerge, LabelTask};
 pub use project::{Project, ProjectView, ViewKind};
 pub use task::{
-    Bucket, Merged, RelationKind, RepeatMode, Task, TaskAttachment, TaskComment, TaskRelation,
-    TaskReminder,
+    Bucket, Merged, RelationKind, ReminderRelation, RepeatMode, Task, TaskAttachment, TaskComment,
+    TaskRelation, TaskReminder,
 };
 pub use user::{TaskAssignee, User};

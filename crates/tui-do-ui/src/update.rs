@@ -18,9 +18,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
-    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled, PriorityState,
-    QuickActionsState, SearchState, Submission,
+    split_label_names, Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState,
+    LabelEditState, LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled,
+    PriorityState, QuickActionsState, SearchState, Submission,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -105,7 +105,26 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // answer, and it arrives before the reload so `TasksLoaded` finds the row and
             // leaves the selection alone. The drawn copy learns it too, so a replay over a
             // load that already has the row recognises it rather than adding another.
-            model.unconfirmed.created(write, id);
+            //
+            // The undo and redo stacks learn it here too. `edit` pushed the create's
+            // inverse before the store had allocated anything, so it names the placeholder
+            // `TaskId(0)` -- and adoption only moves the provisional id to the server's, so
+            // an inverse still on `0` deleted nothing on `U` and `C-r` then made a second
+            // task. Once this has run, adoption carries it the rest of the way.
+            if let Some(drawn) = model.unconfirmed.created(write, id) {
+                for stack in [&mut model.undo, &mut model.redo] {
+                    name_created(stack, &drawn, id);
+                }
+                // The row on screen and a dialog opened on it before this arrived hold the
+                // placeholder too; left alone, the dialog would answer "That task is gone"
+                // about the task just made, until the reload renumbered the row.
+                if let Some(row) = model.data.tasks.iter_mut().find(|row| **row == drawn) {
+                    row.id = id;
+                }
+                for modal in &mut model.modals {
+                    modal.retarget_task(drawn.id, id);
+                }
+            }
             model.list.selected = Some(id);
             model.list.preview_scroll = 0;
             Vec::new()
@@ -115,7 +134,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::WriteFailed { write, message } => {
-            model.unconfirmed.failed(write);
+            // A create the store never wrote leaves its inverse on the undo stack naming
+            // the placeholder `TaskId(0)`, which `U` refuses as still saving -- for good,
+            // and with every older entry stuck behind it. It undoes nothing, so it goes.
+            if let Some(drawn) = model.unconfirmed.failed(write) {
+                for stack in [&mut model.undo, &mut model.redo] {
+                    stack.retain(|mutation| !carries_create(mutation, &drawn));
+                }
+            }
             update(model, Msg::StoreFailed(message))
         }
         Msg::EffectFailed(message) => {
@@ -543,9 +569,9 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
         }
         Submission::Add(text) => add_task(model, &text, Unknown::Ask),
         Submission::Edited(draft) => apply_edit(model, *draft, Unknown::Ask),
-        Submission::Priority(value) => set_priority(model, value),
-        Submission::Due(due) => set_due(model, &due),
-        Submission::Labels(chosen) => set_labels(model, &chosen),
+        Submission::Priority { task, value } => set_priority(model, task, value),
+        Submission::Due { task, due } => set_due(model, task, &due),
+        Submission::Labels { task, chosen } => set_labels(model, task, &chosen),
         Submission::CreateLabel(title) => create_label(model, title),
         Submission::CreateLabels(titles) => create_labels(model, titles),
         Submission::WithoutLabels(pending) => resume(model, *pending),
@@ -555,14 +581,14 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             title,
             hex_color,
         } => rename_label(model, *before, title, hex_color),
-        Submission::QuickAction(index) => run_quick_action(model, index),
+        Submission::QuickAction { task, index } => run_quick_action(model, task, index),
         Submission::DismissKeysNotice => {
             model.toast(Toast::info("Won't show that again — ? lists every key"));
             vec![Effect::DismissKeysNotice]
         }
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
-        Submission::Picked(Pick::MoveTo(id)) => move_task(model, id),
+        Submission::Picked(Pick::MoveTo { project, task }) => move_task(model, task, project),
         Submission::Picked(Pick::Url(url)) => follow_link(model, url),
         // A command chosen by name does exactly what its key does. One implementation,
         // so the two can never disagree about what "toggle the sidebar" means.
@@ -577,7 +603,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
     // over two screens of tasks for every one it showed.
     let page = rows::fit(
         &model.data.tasks,
-        &rows::measure(model.layout(), model.frames().list.width),
+        &rows::measure(model.layout(), model.frames().list_text().width),
         row_context(model),
         model.list.offset,
         body_height(model),
@@ -608,6 +634,13 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             if model.selected_task().is_some() {
                 model.panes.preview = crate::model::PaneState::Shown;
                 model.focus = Focus::Preview;
+                // Asking for the pane does not make room for it. On a narrow terminal it
+                // is not drawn, and focus left on it sent `j` and `k` to scroll something
+                // nobody could see -- so the keys stay on the list, and the user is told.
+                settle_focus(model);
+                if !model.preview_showing() {
+                    model.toast(Toast::info(no_room(Pane::Preview, model)));
+                }
             }
             Vec::new()
         }
@@ -759,12 +792,13 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                     None.into()
                 };
                 let text = if after.done { "Done" } else { "Not done" };
+                let back = undo_of_done(task, &after, model.now.with_timezone(&Utc));
                 let mutation = Mutation::UpdateTask {
                     before: Box::new(task.clone()),
                     after: Box::new(after),
                 };
                 model.toast(Toast::info(text));
-                edit(model, mutation)
+                edit_undoing(model, mutation, Some(back))
             }
             None => nothing_selected(model),
         },
@@ -772,7 +806,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             Some(task) => {
                 model
                     .modals
-                    .push(Modal::Priority(PriorityState::new(task.priority)));
+                    .push(Modal::Priority(PriorityState::new(task.id, task.priority)));
                 Vec::new()
             }
             None => nothing_selected(model),
@@ -780,7 +814,9 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         Action::SetDue => match model.selected_task() {
             Some(task) => {
                 let current = quickadd::due_text(task.due_date.get(), &model.now);
-                model.modals.push(Modal::Due(DueState::new(&current)));
+                model
+                    .modals
+                    .push(Modal::Due(DueState::new(task.id, &current)));
                 Vec::new()
             }
             None => nothing_selected(model),
@@ -830,6 +866,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 // Pseudo-projects reject writes, so the ones the server invents -- `-1`
                 // Favorites and the rest -- must not be offered as somewhere to move to.
                 let current = task.project_id;
+                let moving = task.id;
                 let candidates = model
                     .data
                     .projects
@@ -837,7 +874,10 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                     .filter(|project| project.id.get() > 0 && !project.is_archived)
                     .map(|project| {
                         Candidate::hinted(
-                            Pick::MoveTo(project.id),
+                            Pick::MoveTo {
+                                project: project.id,
+                                task: moving,
+                            },
                             &project.title,
                             if project.id == current { "current" } else { "" },
                         )
@@ -870,15 +910,15 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 // which is exactly the case that message was written for.
                 model
                     .modals
-                    .push(Modal::Labels(LabelsState::new(labels, held)));
+                    .push(Modal::Labels(LabelsState::new(task.id, labels, held)));
                 Vec::new()
             }
             None => nothing_selected(model),
         },
         Action::QuickAction => {
-            if model.selected_task().is_none() {
+            let Some(task) = model.selected_task().map(|task| task.id) else {
                 return nothing_selected(model);
-            }
+            };
             if model.quick_actions.is_empty() {
                 // Named as configuration rather than as a missing feature: the key works,
                 // there is simply nothing bound under it yet.
@@ -894,9 +934,11 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 .collect();
             model
                 .modals
-                .push(Modal::QuickActions(QuickActionsState::new(rows)));
+                .push(Modal::QuickActions(QuickActionsState::new(task, rows)));
             Vec::new()
         }
+        Action::Undo if model.undo.last().is_some_and(unnamed) => still_saving(model),
+        Action::Redo if model.redo.last().is_some_and(unnamed) => still_saving(model),
         Action::Undo => match model.undo.pop() {
             Some(mutation) => {
                 // Everything on the undo stack came from `edit`, which only pushes what
@@ -904,7 +946,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 // exhaustive, so a mutation that cannot be inverted is skipped rather
                 // than unwrapped.
                 if let Some(back) = mutation.inverse() {
-                    model.redo.push(back);
+                    model.redo.push(redo_of(back));
                 }
                 model.toast(Toast::info(undo_text(&mutation)));
                 apply(model, mutation)
@@ -916,7 +958,17 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         },
         Action::Redo => match model.redo.pop() {
             Some(mutation) => {
-                if let Some(back) = mutation.inverse() {
+                // A redone done on a repeating task is undone the way the first one was,
+                // with the predicted dates, or the second `U` changes nothing.
+                let back = match &mutation {
+                    Mutation::UpdateTask { before, after }
+                        if after.done && !before.done && before.repeats() =>
+                    {
+                        Some(undo_of_done(before, after, model.now.with_timezone(&Utc)))
+                    }
+                    other => other.inverse(),
+                };
+                if let Some(back) = back {
                     model.undo.push(back);
                 }
                 apply(model, mutation)
@@ -962,12 +1014,19 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
         Action::CommandPalette => {
             // Built from the keymap, in the focused pane's context, so the palette and
             // the help modal list the same things for the same reason.
+            //
+            // A task command is the exception, offered from every pane while a task is
+            // selected: it acts on the selection, which exists whichever pane has focus.
+            // That is what lets `:` reach "Add or remove labels" from the sidebar and the
+            // preview, where `l` is taken or unbound -- the promise its binding makes.
+            let task_selected = model.selected_task().is_some();
             let candidates = KEYMAP
                 .iter()
                 .filter(|binding| {
                     binding.action.is_command()
                         && (binding.context == crate::keymap::Context::Global
-                            || binding.context == model.context())
+                            || binding.context == model.context()
+                            || (task_selected && binding.group == crate::keymap::Group::Task))
                 })
                 .map(|binding| {
                     Candidate::hinted(
@@ -1009,8 +1068,11 @@ fn quit(model: &mut Model) -> Vec<Effect> {
 fn step(model: &mut Model, delta: isize) -> Vec<Effect> {
     match model.focus {
         Focus::Preview => {
+            // Bounded by the content, not by u16: past the last line is an empty pane and
+            // as many presses of `k` again to come back from it.
+            let max = crate::view::preview_max_scroll(model);
             let scroll = i64::from(model.list.preview_scroll) + delta as i64;
-            model.list.preview_scroll = scroll.clamp(0, i64::from(u16::MAX)) as u16;
+            model.list.preview_scroll = scroll.clamp(0, i64::from(max)) as u16;
             Vec::new()
         }
         Focus::List => {
@@ -1052,9 +1114,11 @@ fn step(model: &mut Model, delta: isize) -> Vec<Effect> {
 fn jump(model: &mut Model, first: bool) -> Vec<Effect> {
     match model.focus {
         Focus::Preview => {
-            if first {
-                model.list.preview_scroll = 0;
-            }
+            model.list.preview_scroll = if first {
+                0
+            } else {
+                crate::view::preview_max_scroll(model)
+            };
             Vec::new()
         }
         Focus::List => {
@@ -1351,19 +1415,24 @@ fn build_task(
     task
 }
 
-/// Change the selected task through `change`, and toast `told` when it changed anything.
+/// Change `task` through `change`, and toast `told` when it changed anything.
 ///
 /// Every quick key ends here rather than building its own mutation: the `before`/`after`
-/// pair, the "nothing selected" answer and the "that is what it already said" answer are
+/// pair, the "that task has gone" answer and the "that is what it already said" answer are
 /// the same three cases each time, and writing them five times is five chances to write
 /// one of them differently.
-fn change_selected(
+///
+/// `task` is the one the dialog was opened on, never the selection as it stands when the
+/// dialog closes. A reload under an open dialog can drop that task and move the cursor to
+/// the first row, and Enter then changed a task the user had not chosen.
+fn change_task(
     model: &mut Model,
+    task: TaskId,
     told: impl FnOnce(&Task) -> Toast,
     change: impl FnOnce(&mut Task),
 ) -> Vec<Effect> {
-    let Some(before) = model.selected_task().cloned() else {
-        return nothing_selected(model);
+    let Some(before) = task_named(model, task).cloned() else {
+        return task_gone(model);
     };
     let mut after = before.clone();
     change(&mut after);
@@ -1381,10 +1450,11 @@ fn change_selected(
     )
 }
 
-/// Set the selected task's priority.
-fn set_priority(model: &mut Model, value: i64) -> Vec<Effect> {
-    change_selected(
+/// Set `task`'s priority.
+fn set_priority(model: &mut Model, task: TaskId, value: i64) -> Vec<Effect> {
+    change_task(
         model,
+        task,
         |task| {
             Toast::info(if task.priority == 0 {
                 "Priority cleared".to_string()
@@ -1400,30 +1470,31 @@ fn set_priority(model: &mut Model, value: i64) -> Vec<Effect> {
     )
 }
 
-/// Move the selected task into `project`.
-fn move_task(model: &mut Model, project: ProjectId) -> Vec<Effect> {
+/// Move `task` into `project`.
+fn move_task(model: &mut Model, task: TaskId, project: ProjectId) -> Vec<Effect> {
     let name = model.project(project).map_or_else(
         || format!("#{}", project.get()),
         |project| project.title.clone(),
     );
-    change_selected(
+    change_task(
         model,
+        task,
         |_| Toast::info(format!("Moved to {name}")),
         |task| task.project_id = project,
     )
 }
 
-/// Set the selected task's due date from `due`, which is empty to clear it.
+/// Set `task`'s due date from `due`, which is empty to clear it.
 ///
 /// Enter on the unchanged prefill keeps the stored instant: re-reading it gives back a
 /// day at 23:59, not the time the task had, and was how a prefill in the wrong zone
 /// moved a date a day per press (BUG-30).
-fn set_due(model: &mut Model, due: &Prefilled) -> Vec<Effect> {
+fn set_due(model: &mut Model, task: TaskId, due: &Prefilled) -> Vec<Effect> {
     let text = due.text();
+    if task_named(model, task).is_none() {
+        return task_gone(model);
+    }
     if due.is_untouched() {
-        if model.selected_task().is_none() {
-            return nothing_selected(model);
-        }
         model.toast(Toast::info("Nothing changed"));
         return Vec::new();
     }
@@ -1449,8 +1520,9 @@ fn set_due(model: &mut Model, due: &Prefilled) -> Vec<Effect> {
         }
     };
     let now = model.now;
-    change_selected(
+    change_task(
         model,
+        task,
         move |task| match task.due_date.get() {
             // A date in the past is allowed -- overdue is a real state, and backdating a
             // task you have been carrying is a real thing to want. It is *loud*, though:
@@ -1467,10 +1539,13 @@ fn set_due(model: &mut Model, due: &Prefilled) -> Vec<Effect> {
     )
 }
 
-/// Make `chosen`, exactly `chosen`, the selected task's labels.
-fn set_labels(model: &mut Model, chosen: &[LabelId]) -> Vec<Effect> {
-    let Some(task) = model.selected_task().cloned() else {
-        return nothing_selected(model);
+/// Make `chosen`, exactly `chosen`, the labels of `task`.
+///
+/// `task` is the one the form was opened on. `chosen` is a whole answer, so replayed as a
+/// set difference against some other task it would detach every label that task carries.
+fn set_labels(model: &mut Model, task: TaskId, chosen: &[LabelId]) -> Vec<Effect> {
+    let Some(task) = task_named(model, task).cloned() else {
+        return task_gone(model);
     };
     // Labels do not travel in the task body -- they are attached and detached through
     // their own endpoints -- so this is a set difference against what the task holds,
@@ -1712,15 +1787,11 @@ fn resume_confirmed(model: &mut Model) -> Vec<Effect> {
 
 /// The label names an edit form's Labels field asks for.
 ///
-/// Comma-separated and trimmed, and empty entries dropped so a trailing comma is not a
-/// label called "". Shared by the resolution and the question so the two cannot disagree
-/// about what was typed.
+/// Read by [`split_label_names`], the inverse of how the form wrote them: a title with a
+/// comma in it is quoted, so `"Q1, 2027"` is one label and not two nobody has. Shared by
+/// the resolution and the question so the two cannot disagree about what was typed.
 fn label_names(field: &str) -> Vec<String> {
-    field
-        .split(',')
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .collect()
+    split_label_names(field)
 }
 
 /// Open the label form over `id`, from whichever list asked.
@@ -1827,10 +1898,10 @@ fn plural(count: usize) -> &'static str {
     }
 }
 
-/// Attach `label` to the selected task, or detach it if it is already on.
-fn toggle_label(model: &mut Model, label: &Label) -> Vec<Effect> {
-    let Some(task) = model.selected_task().cloned() else {
-        return nothing_selected(model);
+/// Attach `label` to `task`, or detach it if it is already on.
+fn toggle_label(model: &mut Model, task: TaskId, label: &Label) -> Vec<Effect> {
+    let Some(task) = task_named(model, task).cloned() else {
+        return task_gone(model);
     };
     let held = task.labels.iter().any(|on| on.id == label.id);
     let mutation = if held {
@@ -1868,14 +1939,14 @@ fn quick_action_doc(kind: &QuickActionKind) -> String {
 /// Resolving happens here rather than when the config is read, because a project or a
 /// label named in the config may not exist -- and the honest moment to say so is when the
 /// key is pressed, not at startup where it would be one more line nobody reads.
-fn run_quick_action(model: &mut Model, index: usize) -> Vec<Effect> {
+fn run_quick_action(model: &mut Model, task: TaskId, index: usize) -> Vec<Effect> {
     let Some(QuickAction { kind, .. }) = model.quick_actions.get(index).cloned() else {
         return Vec::new();
     };
     match kind {
-        QuickActionKind::Priority(value) => set_priority(model, i64::from(value)),
+        QuickActionKind::Priority(value) => set_priority(model, task, i64::from(value)),
         QuickActionKind::Project(name) => match resolve_project(&model.data.projects, &name) {
-            Some(id) => move_task(model, id),
+            Some(id) => move_task(model, task, id),
             None => {
                 model.toast(Toast::error(format!("No project called {name:?}")));
                 Vec::new()
@@ -1886,7 +1957,7 @@ fn run_quick_action(model: &mut Model, index: usize) -> Vec<Effect> {
                 .first()
                 .map(|label| (*label).clone())
             {
-                Some(label) => toggle_label(model, &label),
+                Some(label) => toggle_label(model, task, &label),
                 None => {
                     model.toast(Toast::error(format!("No label called {name:?}")));
                     Vec::new()
@@ -1920,7 +1991,17 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
         model.toast(Toast::error("A task needs a title"));
         return Vec::new();
     }
-    let wanted = label_names(&draft.labels);
+    // A label title is a name, not a key, exactly as a project's is below: two labels can
+    // both read "urgent". Resolving an untouched field by name answered with whichever
+    // came first and swapped it for the one the task held -- attach 12, detach 13 -- on
+    // every save of any field. So an untouched field resolves nothing, and the task's own
+    // label ids stand.
+    let labels_untouched = draft.labels.trim() == draft.labels_was.trim();
+    let wanted = if labels_untouched {
+        Vec::new()
+    } else {
+        label_names(&draft.labels)
+    };
     let (_, missing) = resolve_labels(&model.data.labels, &wanted);
     if unknown == Unknown::Ask && !missing.is_empty() {
         model
@@ -1992,7 +2073,11 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     // parsed, while the question had to be asked *before* any of that so a refused
     // submission does not report three unrelated complaints alongside it. Both calls are
     // pure and read the same pool, so they cannot disagree.
-    let (resolved, missing) = resolve_labels(&model.data.labels, &wanted);
+    let (resolved, missing) = if labels_untouched {
+        (before.labels.clone(), Vec::new())
+    } else {
+        resolve_labels(&model.data.labels, &wanted)
+    };
     // Reachable only on the resumed run: the first one stopped and asked. What is left
     // here is a label the user declined, or one whose create the server rejected -- in
     // both cases they have already been told, and this says what it cost them.
@@ -2388,6 +2473,20 @@ fn nothing_selected(model: &mut Model) -> Vec<Effect> {
     Vec::new()
 }
 
+/// The task in the list with this id, if the list still has it.
+fn task_named(model: &Model, id: TaskId) -> Option<&Task> {
+    model.data.tasks.iter().find(|task| task.id == id)
+}
+
+/// Say why a dialog's Enter did nothing: the task it was opened on has left the list.
+///
+/// Closed rather than redirected. The cursor has moved to some other row by now, and
+/// acting on that one is a change to a task the user never chose.
+fn task_gone(model: &mut Model) -> Vec<Effect> {
+    model.toast(Toast::info("That task is gone"));
+    Vec::new()
+}
+
 /// What a [`Subject`] is called, for a message the user has to act on.
 ///
 /// The kind always, the title only when this box can honestly supply one: the list is
@@ -2427,13 +2526,133 @@ fn truncated(title: &str) -> String {
 /// Every edit goes through here, so the undo stack cannot fall out of step with what was
 /// done — and a new edit clears the redo stack, as everywhere else.
 fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
+    let back = mutation.inverse();
+    edit_undoing(model, mutation, back)
+}
+
+/// [`edit`], with the undo given rather than derived, for the one change whose plain
+/// inverse would not undo it: see [`undo_of_done`].
+fn edit_undoing(model: &mut Model, mutation: Mutation, back: Option<Mutation>) -> Vec<Effect> {
+    if unnamed(&mutation) {
+        return still_saving(model);
+    }
     // A mutation with no inverse -- creating a label -- is simply not remembered, so `U`
     // reaches past it to the last change that can be taken back.
-    if let Some(back) = mutation.inverse() {
+    if let Some(back) = back {
         model.undo.push(back);
     }
     model.redo.clear();
     apply(model, mutation)
+}
+
+/// The undo of `t`, which took `before` to `after`.
+///
+/// For most tasks that is the plain inverse. A *repeating* task marked done is the
+/// exception, because the server does not mark it done: it moves its dates on by the
+/// interval and leaves it open. The plain inverse says `done: true -> false` with every
+/// date equal on both sides, and `Task::merge_onto` takes a field as the user's only where
+/// `before != after` -- so it kept the server's moved dates, sent a `done` the server
+/// already held, and the undo changed nothing.
+///
+/// So the undo's `before` carries the dates as the server will have moved them, which
+/// makes putting them back the user's change, and the merge sends the old ones. The moved
+/// value is a prediction and only has to differ from the old one: it is never sent by the
+/// undo, which sends `after`. Reminders move too and are not restored.
+fn undo_of_done(before: &Task, after: &Task, now: DateTime<Utc>) -> Mutation {
+    let mut moved = after.clone();
+    if after.done && !before.done && before.repeats() {
+        for date in [
+            &mut moved.due_date,
+            &mut moved.start_date,
+            &mut moved.end_date,
+        ] {
+            if let Some(at) = date.get() {
+                *date = Some(moved_on(at, before, now)).into();
+            }
+        }
+    }
+    Mutation::UpdateTask {
+        before: Box::new(moved),
+        after: Box::new(before.clone()),
+    }
+}
+
+/// The redo of an undo, which is the undo's inverse -- except for a repeating task's done.
+///
+/// [`undo_of_done`] carries predicted moved dates as its `before`, so the undo sends the old
+/// ones. Inverted, those predictions become the redo's `after` and would be sent with
+/// `done: true`, and the server would move the dates on again from there: a weekly task
+/// two weeks ahead. A redo is pressing `t` again, so it carries the dates it started from.
+fn redo_of(mutation: Mutation) -> Mutation {
+    match mutation {
+        Mutation::UpdateTask { before, mut after }
+            if after.done && !before.done && before.repeats() =>
+        {
+            after.due_date = before.due_date;
+            after.start_date = before.start_date;
+            after.end_date = before.end_date;
+            Mutation::UpdateTask { before, after }
+        }
+        other => other,
+    }
+}
+
+/// Roughly where marking `task` done moves a date of its `at`: a month on, an interval on
+/// from now, or an interval on from `at`, by its repeat mode. Never `at` itself.
+fn moved_on(at: DateTime<Utc>, task: &Task, now: DateTime<Utc>) -> DateTime<Utc> {
+    use tui_do_core::models::RepeatMode;
+    let interval = chrono::Duration::seconds(task.repeat_after.max(1));
+    let moved = match task.repeat_mode {
+        RepeatMode::Monthly => at.checked_add_months(chrono::Months::new(1)),
+        RepeatMode::FromCurrentDate => now.checked_add_signed(interval),
+        RepeatMode::AfterAmount | RepeatMode::Unknown(_) => at.checked_add_signed(interval),
+    };
+    match moved {
+        Some(moved) if moved != at => moved,
+        _ => at + chrono::Duration::seconds(1),
+    }
+}
+
+/// Whether `mutation` acts on a task the store has not numbered yet.
+///
+/// Between Enter in `n` and `Msg::TaskCreated` the new row carries the placeholder
+/// `TaskId(0)`, which the store reads as "allocate an id here" and nothing else. A write
+/// queued against it names no task anywhere, so it is refused rather than sent. A create
+/// is the exception: `0` is exactly what a create is meant to carry.
+fn unnamed(mutation: &Mutation) -> bool {
+    !matches!(mutation, Mutation::CreateTask { .. })
+        && mutation.subject() == Subject::Task(TaskId(0))
+}
+
+/// Say why a key aimed at a task still being saved did nothing.
+///
+/// The window is one local write, so waiting a moment is the whole remedy.
+fn still_saving(model: &mut Model) -> Vec<Effect> {
+    model.toast(Toast::info("Still saving that task — try again"));
+    Vec::new()
+}
+
+/// Point the inverse of the create that made `drawn` at the id the store gave it.
+///
+/// One entry and the oldest that matches, found by the task it carries rather than by the
+/// placeholder alone: two creates made before either is numbered both hold `TaskId(0)`,
+/// and retargeting every `0` would hand the first one's id to both.
+fn name_created(stack: &mut [Mutation], drawn: &Task, id: TaskId) {
+    if let Some(mutation) = stack
+        .iter_mut()
+        .find(|mutation| carries_create(mutation, drawn))
+    {
+        mutation.retarget(drawn.id, id);
+    }
+}
+
+/// Whether `mutation` is the inverse (or the redo) of the create that drew `drawn`.
+fn carries_create(mutation: &Mutation, drawn: &Task) -> bool {
+    match mutation {
+        Mutation::DeleteTask { before } => **before == *drawn,
+        Mutation::CreateTask { task } => **task == *drawn,
+        _ => false,
+    }
 }
 
 /// Swap a provisional id for the one the server gave it.
@@ -2481,6 +2700,10 @@ fn adopt_task(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<E
     }
     for mutation in model.undo.iter_mut().chain(model.redo.iter_mut()) {
         mutation.retarget(provisional, assigned);
+    }
+    // Every dialog that changes a task holds the id it was opened on.
+    for modal in &mut model.modals {
+        modal.retarget_task(provisional, assigned);
     }
     // The store now holds the server's own copy of the row -- its identifier, its index,
     // its created stamp -- which the optimistic one never had.
@@ -2639,10 +2862,21 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
         // where `x` holds its place. Removing it here means the selection moves down
         // one, exactly as a delete does: to the row that slid up into the gap, or the one
         // above if it was last.
+        //
+        // Only when the row that left *was* the selection, though. An undo or redo can
+        // remove some other row -- `U` after a create deletes the new task, wherever the
+        // cursor has gone since -- and moving then took the cursor off a task the change
+        // never touched.
         Landed::Removed(at) => {
             let tasks = &model.data.tasks;
-            let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
-            model.list.selected = next.map(|task| task.id);
+            let still_here = model
+                .list
+                .selected
+                .is_some_and(|id| tasks.iter().any(|task| task.id == id));
+            if !still_here {
+                let next = tasks.get(at).or_else(|| tasks.get(at.saturating_sub(1)));
+                model.list.selected = next.map(|task| task.id);
+            }
         }
         // A rename or a recolour has to reach *two* snapshots, because the model keeps
         // two copies of every label and neither is a view of the other:
@@ -2931,7 +3165,7 @@ fn keep_selection_visible(model: &mut Model) {
     // that had decided it was already showing everything.
     let first = rows::first_visible(
         &model.data.tasks,
-        &rows::measure(model.layout(), model.frames().list.width),
+        &rows::measure(model.layout(), model.frames().list_text().width),
         row_context(model),
         index,
         body_height(model),

@@ -2438,6 +2438,11 @@ must exit non-zero and print the message, and must not print `Sent.`.
     always ends in a newline); its help now names the CRLF rule too. **Decided 2026-11-10:**
     a file's CRLF stays converted, for files written in Windows editors under WSL.
 - **Found by the 2026-11-10 whole-repo review**, not yet fixed:
+  - `crates/tui-do-ui/src/markdown.rs` (`redraw_prefixes`, 1.2.2) — the swap of the ASCII
+    list and quote prefixes for `•` and `│` cannot tell html2text's prefix from content
+    that starts a line with `* ` or `| `: a plain-text table row or a `| grep` line has its
+    `|` drawn as `│`, and a wrapped `a * b` can show `• b`. On screen only; the stored text
+    is untouched. A fix needs html2text to say which columns it added.
   - `crates/tui-do-ui/src/urls.rs:38-40` — a bare URL inside Markdown emphasis keeps the
     emphasis: `**https://x.com**` opens `https://x.com**`, `_https://x.com_` keeps the
     underscore, and `(see https://x.com/a.)` keeps the full stop because `balance` runs after
@@ -2493,6 +2498,64 @@ must exit non-zero and print the message, and must not print `Sent.`.
   `match modal` sites in `update.rs`.
 
 ---
+
+## Fixed in 1.2.2 — the whole-repo review of 2026-11-10
+
+Seven read-only reviews covered every crate in full; six fix branches, each test-first, were
+merged into 1.2.2. Kept here as one list because each item is small and was found the same
+day; the commits carry the detail.
+
+**Data:**
+- Every edit to a task with a relative reminder was refused (`400`/`4022`) and rolled back:
+  `TaskReminder` dropped `relative_to`. Stored from schema v7 (see `CLAUDE.md`).
+- A task's cover image was cleared by any edit: `cover_image_attachment_id` was not on `Task`.
+- Descriptions with a bulleted list or a quote rendered blank in release builds and panicked
+  in debug: html2text sized the `•`/`│` prefixes by bytes. ASCII prefixes are drawn, then
+  replaced; deep nesting no longer fails, and a render error falls back to plain text.
+- `U` straight after `n` deleted nothing and `C-r` then duplicated the task: the undo named
+  id 0. A key on a task the store has not named yet is refused with a toast.
+- `p`, `d`, `l`, `m` and Space applied to whatever was selected when they closed, and `l`
+  could detach another task's labels. They carry the task they were opened on.
+- The edit form swapped a label for another with the same title, and a label with a comma
+  in its title broke every save on its task.
+- A rejected label rename discarded every queued attach and detach of that label, and a
+  failing one held them back on every task. Only a pending `CreateLabel` does either now.
+- A task deleted before its create was sent came back until the next full pull.
+- An entry queued mid-pass survived its create's rejection and restored a phantom.
+- A quick-add `*label` or `@user` left off inside a date or repeat phrase was deleted from
+  the title; `sun`, `sat` and `wed` were read as weekdays.
+- `tui-do login --config other.yaml` overwrote the token file the main config reads.
+- Dates at or before 1900 read as unset, so the next edit cleared them on the server.
+
+**Behaviour:**
+- Quitting said `Sent.` when the server had refused the change; a second push could run
+  beside the quit flush.
+- A pull overwrote a queued label rename on screen, and a write's answer could overwrite an
+  edit queued after it (now one transaction).
+- An entry held back for its label did not hold back its own task.
+- `in N hours` resolved to today at 23:59; `start:monday at 9am` stayed in the title; an
+  earlier `every` cancelled the real repeat; Feb 29 in a non-leap year was ignored; a
+  name kept trailing punctuation; a skipped 23:xx hour wrapped to the same morning.
+- With wrapping on, the selection could scroll off screen; tabs misplaced the caret; a
+  deletion could leave the cursor inside a merged glyph; the edit form hid the focused
+  field on short terminals; preview scrolling had no end; 1-2 row terminals lost the prompt.
+- Enter on a narrow terminal focused an undrawn preview; undo of a repeating task's done did
+  nothing; an undo that removed another row moved the cursor; the palette hid the labels
+  command outside the list.
+- `o` could stop `q` exiting while the browser ran, and shared tui-do's process group.
+- Saving the config tightened the permissions of the folder it sat in.
+- The login prompt left raw mode on after a signal, and printed the user name unfiltered.
+- `Retry-After` was ignored on a 5xx; transport errors printed the search text in the URL;
+  a `null` page body failed; redirects turned a `POST` into a `GET` reported as success.
+
+**From the review of the 1.2.2 branch itself:** redo of a repeating task's done sent the
+predicted dates and moved it twice; a create whose store write failed left an undo stuck on
+id 0; a dialog opened on a new row before the store named it said "That task is gone"; a
+`Retry-After: 0` on a 5xx disabled the backoff; a `dev.yaml` from an older login kept
+sharing `config.yaml`'s token file; an opener reported its exit when the browser closed;
+the preview rendered a description twice a frame; the pending-label check was prepared
+anew for every label in a pull. Its claim that core and ui 2.0.0 were already on
+crates.io was checked and is wrong: crates.io has only 1.0.1.
 
 ## Structure: where the code is hard to troubleshoot
 

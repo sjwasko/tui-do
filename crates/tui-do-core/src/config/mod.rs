@@ -312,11 +312,11 @@ impl Config {
     /// [`CoreError::Config`] on any I/O or serialization failure.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CoreError::Config {
+            let ours = Self::config_dir().is_ok_and(|dir| dir == parent);
+            create_private_dir(parent, ours).map_err(|e| CoreError::Config {
                 path: parent.display().to_string(),
                 reason: e.to_string(),
             })?;
-            restrict_to_owner(parent);
         }
         let yaml = self.to_yaml()?;
         write_private(path, yaml.as_bytes()).map_err(|e| CoreError::Config {
@@ -336,6 +336,17 @@ impl Config {
     /// token file cannot be read, or when it is empty.
     pub fn api_token(&self, config_path: &Path) -> Result<Option<String>> {
         Ok(self.resolve_token(config_path)?.token)
+    }
+
+    /// Where `server.token_file` points, resolved the way [`Config::resolve_token`] reads
+    /// it: `~` expanded, a relative path taken against the config's directory. `None` when
+    /// the config names no token file.
+    #[must_use]
+    pub fn token_file_path(&self, config_path: &Path) -> Option<PathBuf> {
+        self.server
+            .token_file
+            .as_deref()
+            .map(|file| resolve_relative(file, config_path))
     }
 
     /// The API token, and where it came from.
@@ -571,11 +582,11 @@ pub const TOKEN_FILE: &str = "token";
 /// [`CoreError::Config`] when the parent directory cannot be created or the write fails.
 pub fn write_token_file(path: &Path, token: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| CoreError::Config {
+        let ours = Config::config_dir().is_ok_and(|dir| dir == parent);
+        create_private_dir(parent, ours).map_err(|e| CoreError::Config {
             path: parent.display().to_string(),
             reason: format!("could not create the directory for the API token file: {e}"),
         })?;
-        restrict_to_owner(parent);
     }
     write_private(path, token.as_bytes()).map_err(|e| CoreError::Config {
         path: path.display().to_string(),
@@ -608,6 +619,37 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     file.write_all(contents)?;
     // An existing file keeps the mode it already had, so tighten it too.
     restrict_to_owner(path);
+    Ok(())
+}
+
+/// Make sure `dir` exists, private if tui-do is the one making it.
+///
+/// Whatever this call creates is created 0700 (less the umask, which can only take bits
+/// away), every missing ancestor included. A directory that was already there is left as
+/// it was unless `ours` says it is tui-do's own -- the default XDG `tui-do` directory --
+/// which is tightened as before, so one an older version made permissive is still fixed.
+/// Anything else belongs to somebody else: `--config /home/u/shared/tui.yaml` used to set
+/// `shared/` to 0700, and `TUI_DO_CONFIG=/etc/tui-do.yaml` as root would have done it to
+/// `/etc`. The files tui-do writes inside are 0600 either way.
+///
+/// # Errors
+/// The directory could not be created.
+pub(crate) fn create_private_dir(dir: &Path, ours: bool) -> std::io::Result<()> {
+    if dir.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let existed = dir.is_dir();
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)?;
+    if ours || !existed {
+        restrict_to_owner(dir);
+    }
     Ok(())
 }
 
@@ -934,6 +976,48 @@ quick_actions:
     target: away
 ";
         assert!(Config::from_yaml(yaml).is_err());
+    }
+
+    /// A config or token written into a directory that already exists leaves that
+    /// directory's mode alone. `tui-do login --config /home/u/shared/tui.yaml` used to set
+    /// `shared/` to 0700, and as root `TUI_DO_CONFIG=/etc/tui-do.yaml` would have done it
+    /// to `/etc`. The files themselves are still 0600, and a directory tui-do creates for
+    /// them is still 0700.
+    #[cfg(unix)]
+    #[test]
+    fn writing_into_an_existing_directory_leaves_its_mode_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = std::env::temp_dir().join(format!("tui-do-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let shared = root.join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let config_path = shared.join("tui.yaml");
+        minimal().save(&config_path).unwrap();
+        assert_eq!(
+            mode(&shared),
+            0o755,
+            "save changed a directory it did not make"
+        );
+        assert_eq!(mode(&config_path), 0o600);
+
+        let token_path = shared.join("tui-token");
+        write_token_file(&token_path, "tk_secret").unwrap();
+        assert_eq!(mode(&shared), 0o755, "the token write changed it");
+        assert_eq!(mode(&token_path), 0o600);
+
+        // A directory tui-do made is its own, and is private.
+        let made = root.join("made").join("here");
+        minimal().save(&made.join("config.yaml")).unwrap();
+        assert_eq!(mode(&made), 0o700);
+        let made_for_token = root.join("token-dir");
+        write_token_file(&made_for_token.join("token"), "tk_secret").unwrap();
+        assert_eq!(mode(&made_for_token), 0o700);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]

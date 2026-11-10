@@ -414,6 +414,9 @@ fn escape_closes_a_modal_before_it_touches_focus() {
 #[test]
 fn enter_opens_the_preview_and_motion_scrolls_it() {
     let mut model = loaded();
+    // Long enough to scroll: the preview stops at the end of its content, so a task whose
+    // preview already fits does not move at all.
+    model.data.tasks[0].description = (1..=100).map(|n| format!("line {n}\n")).collect();
     press_code(&mut model, KeyCode::Enter);
     assert_eq!(model.focus, Focus::Preview);
 
@@ -425,6 +428,23 @@ fn enter_opens_the_preview_and_motion_scrolls_it() {
     press(&mut model, 'k');
     press(&mut model, 'k');
     assert_eq!(model.list.preview_scroll, 0, "scrolling stops at the top");
+}
+
+#[test]
+fn enter_with_no_room_for_the_preview_leaves_the_keys_on_the_list() {
+    // At 50 columns the preview is not drawn, and focus moved to it anyway: `j` and `k`
+    // then scrolled a pane nobody could see.
+    let mut model = loaded();
+    update(&mut model, Msg::Resize(50, 40));
+    assert!(!model.preview_showing());
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.focus, Focus::List);
+    let toast = model.status.toast.as_ref().expect("the user is told why");
+    assert!(toast.text.contains("No room"), "{}", toast.text);
+
+    press(&mut model, 'j');
+    assert_eq!(selected_title(&model), "second", "the list moved");
+    assert_eq!(model.list.preview_scroll, 0);
 }
 
 #[test]
@@ -636,6 +656,50 @@ fn the_palette_offers_the_focused_panes_commands() {
         .candidates
         .iter()
         .any(|candidate| candidate.title == "Collapse, or move to the parent"));
+}
+
+#[test]
+fn the_palette_offers_labels_from_every_pane_while_a_task_is_selected() {
+    // `l` is list-only because the sidebar's `l` expands, and its comment promised `:`
+    // would reach it from anywhere. The palette filtered by the focused pane, so it did
+    // not.
+    for focus in [Focus::Sidebar, Focus::Preview] {
+        let mut model = loaded();
+        model.focus = focus;
+        press(&mut model, ':');
+        let Some(Modal::Picker(palette)) = model.modals.last() else {
+            panic!("the palette did not open");
+        };
+        assert!(
+            palette
+                .candidates
+                .iter()
+                .any(|candidate| candidate.title == "Add or remove labels"),
+            "not offered from {focus:?}"
+        );
+        for c in "Add or remove labels".chars() {
+            press(&mut model, c);
+        }
+        press_code(&mut model, KeyCode::Enter);
+        assert!(
+            matches!(model.modals.last(), Some(Modal::Labels(_))),
+            "{:?}",
+            model.modals.last()
+        );
+    }
+
+    // With no task to act on there is nothing for it to do, so it is not offered.
+    let mut model = loaded();
+    answer(&mut model, Vec::new());
+    model.focus = Focus::Sidebar;
+    press(&mut model, ':');
+    let Some(Modal::Picker(palette)) = model.modals.last() else {
+        panic!("the palette did not open");
+    };
+    assert!(!palette
+        .candidates
+        .iter()
+        .any(|candidate| candidate.title == "Add or remove labels"));
 }
 
 #[test]
@@ -1732,6 +1796,7 @@ fn an_adoption_leaves_a_label_it_does_not_name_alone() {
     // Then the form the label was made in, opened with the task's own label already
     // ticked -- which is the `chosen` entry this test is here to leave alone.
     model.modals.push(Modal::Labels(LabelsState::new(
+        TaskId(1),
         model.data.labels.clone(),
         vec![LabelId(-1)],
     )));
@@ -5432,4 +5497,505 @@ fn the_keys_notice_swallows_other_keys() {
     let effects = press(&mut model, 't');
     assert!(applied(&effects).is_none());
     assert!(matches!(model.modals.last(), Some(Modal::KeysChanged(_))));
+}
+
+/// `n`, a title, Enter: the create as the user makes it, and the write it asked for.
+fn add_by_keys(model: &mut Model, text: &str) -> tui_do_ui::WriteSeq {
+    press(model, 'n');
+    for c in text.chars() {
+        press(model, c);
+    }
+    write_of(&press_code(model, KeyCode::Enter)).0
+}
+
+#[test]
+fn undo_straight_after_a_create_deletes_the_task_the_server_named() {
+    // The inverse of a create is built before the store has allocated an id, so it named
+    // `TaskId(0)`. `TaskCreated` fixed the selection and left the stacks, and adoption only
+    // moves the provisional id -- so `U` deleted nothing and `C-r` made a second task.
+    let mut model = loaded();
+    let write = add_by_keys(&mut model, "buy milk");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Task(TaskId(-1)),
+            assigned: Subject::Task(TaskId(99)),
+        }),
+    );
+    match model.undo.last() {
+        Some(Mutation::DeleteTask { before }) => assert_eq!(before.id, TaskId(99)),
+        other => panic!("the create's inverse is a delete, not {other:?}"),
+    }
+
+    match applied(&press(&mut model, 'U')) {
+        Some(Mutation::DeleteTask { before }) => assert_eq!(before.id, TaskId(99)),
+        other => panic!("`U` deletes the task, not {other:?}"),
+    }
+    match applied(&press_ctrl(&mut model, 'r')) {
+        Some(Mutation::CreateTask { task }) => assert_eq!(
+            task.id,
+            TaskId(99),
+            "a redo re-creates the task it removed, not a fresh one beside it"
+        ),
+        other => panic!("`C-r` re-creates the task, not {other:?}"),
+    }
+}
+
+#[test]
+fn a_second_create_keeps_its_own_undo_when_the_first_is_named() {
+    // Two creates before either is named: each inverse learns its own id, not both the
+    // first one's.
+    let mut model = loaded();
+    let first = add_by_keys(&mut model, "buy milk");
+    let second = add_by_keys(&mut model, "buy eggs");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write: first,
+            id: TaskId(-1),
+        },
+    );
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write: second,
+            id: TaskId(-2),
+        },
+    );
+    let ids: Vec<(String, TaskId)> = model
+        .undo
+        .iter()
+        .filter_map(|mutation| match mutation {
+            Mutation::DeleteTask { before } => Some((before.title.clone(), before.id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            ("buy milk".to_string(), TaskId(-1)),
+            ("buy eggs".to_string(), TaskId(-2))
+        ]
+    );
+}
+
+#[test]
+fn a_task_key_before_the_store_has_named_a_new_task_does_nothing() {
+    // Between Enter and `TaskCreated` the new row carries the placeholder id, and a write
+    // queued against it names a task no store or server has.
+    let mut model = loaded();
+    add_by_keys(&mut model, "buy milk");
+    assert_eq!(model.list.selected, Some(TaskId(0)));
+    for key in ['t', 'x', 'U'] {
+        let effects = press(&mut model, key);
+        assert!(
+            applied(&effects).is_none(),
+            "`{key}` queued {:?}",
+            applied(&effects)
+        );
+    }
+    assert_eq!(selected_title(&model), "buy milk");
+}
+
+/// Open a task dialog on the second row, then let a reload take that row away so the
+/// selection falls to the first. Returns the effects of `confirm`.
+fn confirm_after_the_task_is_gone(
+    model: &mut Model,
+    open: impl FnOnce(&mut Model),
+    confirm: impl FnOnce(&mut Model) -> Vec<Effect>,
+) -> Vec<Effect> {
+    press(model, 'j');
+    assert_eq!(selected_title(model), "second");
+    open(model);
+    assert!(!model.modals.is_empty(), "the dialog opened");
+    let mut first = model.data.tasks[0].clone();
+    first.labels = vec![label(7, "keep me")];
+    answer(model, vec![first, task(3, "third")]);
+    assert_eq!(
+        selected_title(model),
+        "first",
+        "the selection fell to the top"
+    );
+    confirm(model)
+}
+
+fn assert_gone(model: &Model, effects: &[Effect]) {
+    assert!(
+        applied(effects).is_none(),
+        "acted on another task: {:?}",
+        applied(effects)
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("gone"), "{}", toast.text);
+    assert!(model.modals.is_empty(), "{:?}", model.modals);
+}
+
+#[test]
+fn a_priority_set_on_a_task_that_has_gone_changes_no_other_task() {
+    let mut model = loaded();
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'p');
+        },
+        |model| {
+            press(model, '5');
+            press_code(model, KeyCode::Enter)
+        },
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_due_date_set_on_a_task_that_has_gone_changes_no_other_task() {
+    let mut model = loaded();
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'd');
+        },
+        |model| {
+            for c in "tomorrow".chars() {
+                press(model, c);
+            }
+            press_code(model, KeyCode::Enter)
+        },
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn labels_ticked_on_a_task_that_has_gone_are_not_replayed_onto_another() {
+    // The worst of them: `chosen` is a whole answer, so replayed as a set difference on
+    // the first task it detached the label that task carried.
+    let mut model = with_labels(vec![label(7, "keep me")], vec![]);
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'l');
+        },
+        |model| press_code(model, KeyCode::Enter),
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_move_picked_for_a_task_that_has_gone_moves_no_other_task() {
+    let mut model = loaded();
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, 'm');
+        },
+        |model| {
+            for c in "Personal".chars() {
+                press(model, c);
+            }
+            press_code(model, KeyCode::Enter)
+        },
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_quick_action_for_a_task_that_has_gone_changes_no_other_task() {
+    let mut model = loaded();
+    model.quick_actions = vec![tui_do_core::config::QuickAction {
+        key: 'i',
+        kind: tui_do_core::config::QuickActionKind::Priority(5),
+    }];
+    let effects = confirm_after_the_task_is_gone(
+        &mut model,
+        |model| {
+            press(model, ' ');
+        },
+        |model| press(model, 'i'),
+    );
+    assert_gone(&model, &effects);
+}
+
+#[test]
+fn a_dialog_follows_its_task_through_adoption() {
+    // The id a dialog was opened on can be the provisional one; the server naming it
+    // while the dialog is open must not turn it into "that task is gone".
+    let mut model = loaded();
+    model.data.tasks.insert(0, task(-1, "new task"));
+    model.list.selected = Some(TaskId(-1));
+    press(&mut model, 'p');
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Task(TaskId(-1)),
+            assigned: Subject::Task(TaskId(3901)),
+        }),
+    );
+    press(&mut model, '4');
+    match applied(&press_code(&mut model, KeyCode::Enter)) {
+        Some(Mutation::UpdateTask { after, .. }) => {
+            assert_eq!(after.id, TaskId(3901));
+            assert_eq!(after.priority, 4);
+        }
+        other => panic!("the priority is set: {other:?}"),
+    }
+}
+
+#[test]
+fn saving_an_edit_keeps_a_label_that_shares_its_title_with_another() {
+    // Titles are not unique. With 12 and 13 both called "urgent" and the task holding
+    // 13, an untouched Labels field resolved "urgent" to 12 on every save and swapped
+    // the two: attach 12, detach 13.
+    let mut model = with_labels(
+        vec![label(12, "urgent"), label(13, "urgent")],
+        vec![label(13, "urgent")],
+    );
+    press(&mut model, 'e');
+    press(&mut model, '!');
+    let effects = press_ctrl(&mut model, 's');
+    let writes = all_applied(&effects);
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    match writes[0] {
+        Mutation::UpdateTask { after, .. } => {
+            assert_eq!(after.title, "first!");
+            assert_eq!(after.labels, [label(13, "urgent")]);
+        }
+        other => panic!("only the title changed: {other:?}"),
+    }
+}
+
+#[test]
+fn a_label_with_a_comma_in_its_title_survives_an_edited_labels_field() {
+    // The form joined names with ", " and split on ",", so "Q1, 2027" came back as two
+    // labels nobody had -- and answering `n` to creating them detached the real one.
+    let mut model = with_labels(
+        vec![label(5, "Q1, 2027"), label(6, "urgent")],
+        vec![label(5, "Q1, 2027")],
+    );
+    press(&mut model, 'e');
+    for _ in 0..5 {
+        press_code(&mut model, KeyCode::Tab);
+    }
+    for c in ", urgent".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_ctrl(&mut model, 's');
+    assert!(
+        !matches!(model.modals.last(), Some(Modal::ConfirmLabels(_))),
+        "asked about labels that exist: {:?}",
+        model.modals.last()
+    );
+    let writes = all_applied(&effects);
+    assert!(
+        writes.iter().any(|mutation| matches!(
+            mutation,
+            Mutation::AttachLabel { label, .. } if label.id == LabelId(6)
+        )),
+        "{writes:?}"
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::DetachLabel { .. })),
+        "{writes:?}"
+    );
+}
+
+#[test]
+fn undoing_a_done_on_a_repeating_task_puts_its_due_date_back() {
+    // The server does not mark a repeating task done: it moves its dates on by the
+    // interval and leaves it open. The inverse was `done: true -> false` with the dates
+    // equal on both sides, so the merge kept the server's moved date and sent a `done`
+    // the server already held -- the undo changed nothing at all.
+    let mut model = loaded();
+    let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
+    let mut daily = task(1, "water the plants");
+    daily.repeat_after = 86_400;
+    daily.due_date = Some(due).into();
+    answer(&mut model, vec![daily.clone(), task(2, "second")]);
+
+    press(&mut model, 't');
+    let Some(Mutation::UpdateTask { before, after }) = model.undo.last().cloned() else {
+        panic!("a done leaves an update to undo: {:?}", model.undo.last());
+    };
+    assert_eq!(
+        after.due_date.get(),
+        Some(due),
+        "the undo asks for the old date"
+    );
+    assert_ne!(
+        before.due_date, after.due_date,
+        "and the date is the user's change, so the merge sends it"
+    );
+
+    // What the server holds once the done has gone through.
+    let mut server = daily;
+    server.due_date = Some(due + chrono::Duration::days(1)).into();
+    let merged = after.merge_onto(&before, server);
+    assert_eq!(merged.task.due_date.get(), Some(due));
+    assert!(!merged.task.done);
+}
+
+#[test]
+fn redoing_a_done_on_a_repeating_task_sends_its_own_dates() {
+    // Found reviewing 1.2.2: the redo was the undo's inverse, so it carried the predicted
+    // moved dates with `done: true`, and the server moved them on a second time -- a weekly
+    // task ended two weeks ahead. A redo is pressing `t` again: the original dates, done.
+    let mut model = loaded();
+    let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
+    let mut weekly = task(1, "water the plants");
+    weekly.repeat_after = 7 * 86_400;
+    weekly.due_date = Some(due).into();
+    answer(&mut model, vec![weekly, task(2, "second")]);
+
+    press(&mut model, 't');
+    press(&mut model, 'U');
+    let Some(Mutation::UpdateTask { before, after }) = model.redo.last().cloned() else {
+        panic!("an undo leaves a redo: {:?}", model.redo.last());
+    };
+    assert!(after.done && !before.done);
+    assert_eq!(
+        after.due_date.get(),
+        Some(due),
+        "the redo sends the date as it was"
+    );
+
+    // And undoing the redo still puts the date back, as the first undo did.
+    press_ctrl(&mut model, 'r');
+    let Some(Mutation::UpdateTask { before, after }) = model.undo.last().cloned() else {
+        panic!("a redo leaves an undo: {:?}", model.undo.last());
+    };
+    assert_eq!(after.due_date.get(), Some(due));
+    assert_ne!(before.due_date, after.due_date);
+}
+
+#[test]
+fn undoing_a_done_on_a_task_that_does_not_repeat_leaves_its_dates_alone() {
+    let mut model = loaded();
+    let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
+    let mut once = task(1, "file taxes");
+    once.due_date = Some(due).into();
+    answer(&mut model, vec![once, task(2, "second")]);
+
+    press(&mut model, 't');
+    let Some(Mutation::UpdateTask { before, after }) = model.undo.last() else {
+        panic!("a done leaves an update to undo");
+    };
+    assert_eq!(before.due_date, after.due_date);
+}
+
+#[test]
+fn an_undo_that_removes_another_row_leaves_the_cursor_where_it_is() {
+    // `U` after a create deletes the new row. The cursor had moved on to "second", and
+    // the removal moved it to whatever slid into the gap -- "first" -- as though the
+    // removed row had been the selected one.
+    let mut model = loaded();
+    let write = add_by_keys(&mut model, "buy milk");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    let mut created = task(-1, "buy milk");
+    created.project_id = ProjectId(1);
+    answer(
+        &mut model,
+        vec![
+            created,
+            task(1, "first"),
+            task(2, "second"),
+            task(3, "third"),
+        ],
+    );
+    press(&mut model, 'j');
+    press(&mut model, 'j');
+    assert_eq!(selected_title(&model), "second");
+
+    match applied(&press(&mut model, 'U')) {
+        Some(Mutation::DeleteTask { before }) => assert_eq!(before.id, TaskId(-1)),
+        other => panic!("`U` deletes the new task: {other:?}"),
+    }
+    assert_eq!(titles(&model), ["first", "second", "third"]);
+    assert_eq!(selected_title(&model), "second");
+}
+
+#[test]
+fn an_undo_that_removes_the_selected_row_moves_to_the_one_below() {
+    let mut model = loaded();
+    let write = add_by_keys(&mut model, "buy milk");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    let mut created = task(-1, "buy milk");
+    created.project_id = ProjectId(1);
+    answer(
+        &mut model,
+        vec![created, task(1, "first"), task(2, "second")],
+    );
+    assert_eq!(selected_title(&model), "buy milk");
+    press(&mut model, 'U');
+    assert_eq!(selected_title(&model), "first");
+}
+
+#[test]
+fn a_create_the_store_never_wrote_leaves_nothing_to_undo() {
+    // Found reviewing 1.2.2: the create's inverse named the placeholder id 0 and stayed on
+    // the stack when the write failed, so `U` answered "still saving" for good.
+    let mut model = loaded();
+    press(&mut model, 'n');
+    for c in "buy milk".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    update(
+        &mut model,
+        Msg::WriteFailed {
+            write,
+            message: "disk full".to_string(),
+        },
+    );
+    assert!(model.undo.is_empty(), "{:?}", model.undo);
+    press(&mut model, 'U');
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert_eq!(toast.text, "Nothing to undo");
+}
+
+#[test]
+fn a_dialog_opened_on_a_new_task_follows_it_when_the_store_names_it() {
+    // Found reviewing 1.2.2: `p` on the new row before `TaskCreated` held id 0, and Enter
+    // then said "That task is gone" about the task just made.
+    let mut model = loaded();
+    press(&mut model, 'n');
+    for c in "buy milk".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    press(&mut model, 'p');
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    press(&mut model, '4');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the priority was set") {
+        Mutation::UpdateTask { after, .. } => {
+            assert_eq!(after.id, TaskId(-1));
+            assert_eq!(after.priority, 4);
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
 }

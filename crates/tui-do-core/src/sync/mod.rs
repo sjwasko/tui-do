@@ -54,7 +54,8 @@ use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
 use crate::store::{
-    Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
+    is_provisional_label, Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL,
+    LAST_RECONCILE, PAGE_CAP,
 };
 use queue::DrainQueue;
 
@@ -574,14 +575,19 @@ impl Sync {
             }
             let candidate = queue.next_candidate(|queued, mutation| {
                 let subject = queued.subject;
-                if attempted.contains(&queued.id)
-                    || blocked.contains(&subject)
-                    || mutation.is_some_and(|mutation| {
-                        blocked_labels
-                            .iter()
-                            .any(|label| references(mutation, *label))
-                    })
-                {
+                if attempted.contains(&queued.id) || blocked.contains(&subject) {
+                    return false;
+                }
+                if mutation.is_some_and(|mutation| {
+                    blocked_labels
+                        .iter()
+                        .any(|label| references(mutation, *label))
+                }) {
+                    // Held back by its label, and so in the way of its own task exactly as
+                    // a deferred entry is: otherwise a `DeleteTask` queued behind this
+                    // attach overtakes it, and the attach follows it to a task the server
+                    // no longer has.
+                    blocked.insert(subject);
                     return false;
                 }
                 if backoff == Backoff::Respect && !queued.is_due(now) {
@@ -593,8 +599,14 @@ impl Sync {
                     // create as not due and send the attach behind it, which is the whole
                     // failure the two sets above exist to prevent, reached a pass later.
                     blocked.insert(subject);
+                    // Only an id still waiting to be defined. The row holds no payload, but
+                    // a provisional label id is one only a queued `CreateLabel` can settle,
+                    // so it stands in for the kind. A real label's rename in its backoff
+                    // leaves the id as valid as it ever was.
                     if let Subject::Label(id) = subject {
-                        blocked_labels.insert(id);
+                        if is_provisional_label(id) {
+                            blocked_labels.insert(id);
+                        }
                     }
                     return false;
                 }
@@ -615,6 +627,8 @@ impl Sync {
                 .iter()
                 .any(|label| references(&entry.mutation, *label))
             {
+                // As in the scan: what waits for its label waits in front of its task.
+                blocked.insert(entry.mutation.subject());
                 queue.keep(entry.id, entry.mutation);
                 continue;
             }
@@ -650,19 +664,33 @@ impl Sync {
                     // discard for a rejected task, whose blast radius stays exactly the
                     // entries that share its subject.
                     //
+                    // Only for a create. A refused *rename* of a real label says nothing
+                    // about attaching that label elsewhere: the id is as valid as it was,
+                    // and widening on any `Subject::Label` took every queued attach and
+                    // detach of it, on every task, down with the rename.
+                    //
                     // The whole queue is read here, payloads and all, because the
                     // rollback needs every doomed entry's mutation. A rejection is rare,
                     // and `seen()` keeps the set to what this pass had already looked at,
                     // as the snapshot it used to take before every entry did.
+                    let created_label = match &entry.mutation {
+                        Mutation::CreateLabel { label } => Some(label.id),
+                        _ => None,
+                    };
                     let doomed: Vec<OutboxEntry> = self
                         .store
                         .pending(None)
                         .await?
                         .into_iter()
                         .filter(|queued| {
-                            queued.id <= queue.seen()
+                            // A refused create's id will never be issued, so what names it
+                            // goes however recently it was queued. An edit made while the
+                            // create was on the wire otherwise went out against the
+                            // provisional id, and its rollback put back a phantom.
+                            (queued.id <= queue.seen() || entry.mutation.is_create())
                                 && (queued.mutation.subject() == subject
-                                    || matches!(subject, Subject::Label(id) if references(&queued.mutation, id)))
+                                    || created_label
+                                        .is_some_and(|id| references(&queued.mutation, id)))
                         })
                         .collect();
                     report.rejected += doomed.len();
@@ -688,9 +716,11 @@ impl Sync {
                     // And, for a label, everything that would *send* the id this entry
                     // was going to define -- which is not the same set as everything
                     // sharing its subject. See the note where `blocked_labels` is
-                    // declared.
-                    if let Subject::Label(id) = subject {
-                        blocked_labels.insert(id);
+                    // declared. Only for a create: a failing rename of a real label
+                    // defines nothing, and blocking its id held back that label's
+                    // attaches and detaches on every unrelated task.
+                    if let Mutation::CreateLabel { label } = &entry.mutation {
+                        blocked_labels.insert(label.id);
                     }
                     tracing::debug!(%subject, error = %message, "deferring this task's queue");
                     self.emit(SyncEvent::Failed {
@@ -757,16 +787,19 @@ impl Sync {
                     assigned: Subject::Label(named),
                 });
             }
-            (Sent::Updated(updated), Mutation::UpdateTask { after, .. }) => {
+            (Sent::Updated(updated), Mutation::UpdateTask { .. }) => {
                 self.store.complete(entry.id).await?;
                 // The server fills in `updated`, `index` and `identifier`, so its answer
                 // is worth keeping -- but only once nothing else is queued for this
                 // task, or storing it would briefly undo an edit already made.
-                if !self.store.is_pending(after.id).await? {
-                    self.store.upsert_tasks(vec![*updated]).await?;
-                }
+                //
+                // Asked and written in one transaction. As two calls, an edit queued
+                // between the check and the write was overwritten on screen by this
+                // answer, which predates it. A pull's write already makes the check
+                // inside its transaction, and this is the same question.
+                self.store.upsert_tasks_from_server(vec![*updated]).await?;
             }
-            (Sent::LabelUpdated(updated), Mutation::UpdateLabel { after, .. }) => {
+            (Sent::LabelUpdated(updated), Mutation::UpdateLabel { .. }) => {
                 self.store.complete(entry.id).await?;
                 // Worth keeping for the same reason the task answer is, and with the same
                 // guard. The answer carries the *merged* label -- including whatever
@@ -774,10 +807,8 @@ impl Sync {
                 // it is how the user's picker learns about the colour someone else set,
                 // instead of waiting for the next pull. And only once nothing else is
                 // queued for this label, or the first of two renames would put its title
-                // back over the second.
-                if !self.store.is_pending_label(after.id).await? {
-                    self.store.upsert_labels(vec![*updated]).await?;
-                }
+                // back over the second. One transaction, as for a task.
+                self.store.upsert_labels_from_server(vec![*updated]).await?;
             }
             _ => self.store.complete(entry.id).await?,
         }
@@ -1081,7 +1112,7 @@ impl Sync {
 
         let labels = self.client.all_labels().await?;
         let label_ids = labels.iter().map(|label| label.id).collect();
-        report.labels = self.store.upsert_labels(labels).await?;
+        report.labels = self.store.upsert_labels_from_server(labels).await?;
         report.removed += self.store.retain_labels(label_ids).await?;
         self.emit(SyncEvent::Progress {
             stage: Stage::Labels,
@@ -1424,6 +1455,16 @@ mod tests {
                 "{status} decided nothing, so the edit must stay queued"
             );
         }
+    }
+
+    /// A redirect is a misconfigured URL, not a refusal, so the edit stays queued until
+    /// the config is fixed rather than being rolled back.
+    #[test]
+    fn a_redirect_is_not_the_servers_final_answer() {
+        assert!(!is_permanent(&ApiError::Redirected {
+            status: 301,
+            location: "https://vikunja.example/api/v1/tasks/1".into(),
+        }));
     }
 
     /// The refusals that *are* final still are, including the 403 that reaches here.
