@@ -2244,7 +2244,7 @@ fn project_for(
 ///
 /// A reference that looks like an id but names no project falls through to the title
 /// match rather than failing, so a project genuinely called `#12` is still reachable.
-fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
+pub(crate) fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
     let spec = spec.trim();
     let real = || {
         projects
@@ -2339,14 +2339,9 @@ fn resolve_users(known: &[User], wanted: &[String]) -> (Vec<User>, Vec<String>) 
     let mut missing: Vec<String> = Vec::new();
     for name in wanted {
         let trimmed = name.trim();
-        let user = known
-            .iter()
-            .find(|user| user.username == trimmed)
-            .or_else(|| {
-                known
-                    .iter()
-                    .find(|user| user.username.eq_ignore_ascii_case(trimmed))
-            });
+        let user = named(known, trimmed, |user| &user.username)
+            .first()
+            .copied();
         match user {
             Some(user) if found.iter().any(|seen| seen.id == user.id) => {}
             Some(user) => found.push(user.clone()),

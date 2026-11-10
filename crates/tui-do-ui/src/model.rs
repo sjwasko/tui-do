@@ -507,21 +507,16 @@ pub fn landing_scope(
     remembered: Option<ProjectId>,
     projects: &[Project],
 ) -> Scope {
-    if let Some(spec) = view.default_project.as_deref() {
-        let spec = spec.trim();
-        let real = || projects.iter().filter(|project| project.id.get() > 0);
-        // `#12` names a project by id. Two projects may share a title, so a title alone
-        // cannot always say which one was meant.
-        let found = spec
-            .strip_prefix('#')
-            .and_then(|n| n.parse::<i64>().ok())
-            .and_then(|id| real().find(|project| project.id.get() == id))
-            // Exactly as written first, as quick-add's `+project` matches.
-            .or_else(|| real().find(|project| project.title == spec))
-            .or_else(|| real().find(|project| project.title.eq_ignore_ascii_case(spec)));
-        if let Some(project) = found {
-            return Scope::Project(project.id);
-        }
+    // The same lookup `n` uses to file a task under this setting -- `#12` by id, then the
+    // title exactly, then ignoring case, archived projects skipped -- so the view lands
+    // where new tasks go. A copy of the rule here had already drifted: it kept archived
+    // projects, and landed in one that `n` then refused to file into.
+    if let Some(id) = view
+        .default_project
+        .as_deref()
+        .and_then(|spec| crate::update::resolve_project(projects, spec))
+    {
+        return Scope::Project(id);
     }
     match remembered {
         Some(id) if projects.iter().any(|project| project.id == id) => Scope::Project(id),
@@ -586,6 +581,29 @@ mod tests {
             Scope::Project(ProjectId(1))
         );
         assert_eq!(landing_scope(&stale, None, &projects), Scope::All);
+    }
+
+    #[test]
+    fn the_landing_skips_an_archived_project_as_filing_does() {
+        // Found by the 2026-11-10 review: the landing kept its own copy of the lookup,
+        // which did not skip archived projects, so the view landed in one that `n` then
+        // would not file into.
+        let mut archive = project(3, "Archive");
+        archive.is_archived = true;
+        let projects = vec![project(1, "Work"), archive];
+        let view = ViewConfig {
+            default_project: Some("Archive".to_string()),
+            ..ViewConfig::default()
+        };
+        assert_eq!(
+            landing_scope(&view, Some(ProjectId(1)), &projects),
+            Scope::Project(ProjectId(1))
+        );
+        let by_id = ViewConfig {
+            default_project: Some("#3".to_string()),
+            ..ViewConfig::default()
+        };
+        assert_eq!(landing_scope(&by_id, None, &projects), Scope::All);
     }
 
     #[test]
