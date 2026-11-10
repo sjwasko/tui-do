@@ -5802,3 +5802,53 @@ fn a_label_with_a_comma_in_its_title_survives_an_edited_labels_field() {
         "{writes:?}"
     );
 }
+
+#[test]
+fn undoing_a_done_on_a_repeating_task_puts_its_due_date_back() {
+    // The server does not mark a repeating task done: it moves its dates on by the
+    // interval and leaves it open. The inverse was `done: true -> false` with the dates
+    // equal on both sides, so the merge kept the server's moved date and sent a `done`
+    // the server already held -- the undo changed nothing at all.
+    let mut model = loaded();
+    let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
+    let mut daily = task(1, "water the plants");
+    daily.repeat_after = 86_400;
+    daily.due_date = Some(due).into();
+    answer(&mut model, vec![daily.clone(), task(2, "second")]);
+
+    press(&mut model, 't');
+    let Some(Mutation::UpdateTask { before, after }) = model.undo.last().cloned() else {
+        panic!("a done leaves an update to undo: {:?}", model.undo.last());
+    };
+    assert_eq!(
+        after.due_date.get(),
+        Some(due),
+        "the undo asks for the old date"
+    );
+    assert_ne!(
+        before.due_date, after.due_date,
+        "and the date is the user's change, so the merge sends it"
+    );
+
+    // What the server holds once the done has gone through.
+    let mut server = daily;
+    server.due_date = Some(due + chrono::Duration::days(1)).into();
+    let merged = after.merge_onto(&before, server);
+    assert_eq!(merged.task.due_date.get(), Some(due));
+    assert!(!merged.task.done);
+}
+
+#[test]
+fn undoing_a_done_on_a_task_that_does_not_repeat_leaves_its_dates_alone() {
+    let mut model = loaded();
+    let due = Utc.with_ymd_and_hms(2026, 8, 25, 9, 0, 0).unwrap();
+    let mut once = task(1, "file taxes");
+    once.due_date = Some(due).into();
+    answer(&mut model, vec![once, task(2, "second")]);
+
+    press(&mut model, 't');
+    let Some(Mutation::UpdateTask { before, after }) = model.undo.last() else {
+        panic!("a done leaves an update to undo");
+    };
+    assert_eq!(before.due_date, after.due_date);
+}

@@ -776,12 +776,13 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                     None.into()
                 };
                 let text = if after.done { "Done" } else { "Not done" };
+                let back = undo_of_done(task, &after, model.now.with_timezone(&Utc));
                 let mutation = Mutation::UpdateTask {
                     before: Box::new(task.clone()),
                     after: Box::new(after),
                 };
                 model.toast(Toast::info(text));
-                edit(model, mutation)
+                edit_undoing(model, mutation, Some(back))
             }
             None => nothing_selected(model),
         },
@@ -2494,16 +2495,71 @@ fn truncated(title: &str) -> String {
 /// Every edit goes through here, so the undo stack cannot fall out of step with what was
 /// done — and a new edit clears the redo stack, as everywhere else.
 fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
+    let back = mutation.inverse();
+    edit_undoing(model, mutation, back)
+}
+
+/// [`edit`], with the undo given rather than derived, for the one change whose plain
+/// inverse would not undo it: see [`undo_of_done`].
+fn edit_undoing(model: &mut Model, mutation: Mutation, back: Option<Mutation>) -> Vec<Effect> {
     if unnamed(&mutation) {
         return still_saving(model);
     }
     // A mutation with no inverse -- creating a label -- is simply not remembered, so `U`
     // reaches past it to the last change that can be taken back.
-    if let Some(back) = mutation.inverse() {
+    if let Some(back) = back {
         model.undo.push(back);
     }
     model.redo.clear();
     apply(model, mutation)
+}
+
+/// The undo of `t`, which took `before` to `after`.
+///
+/// For most tasks that is the plain inverse. A *repeating* task marked done is the
+/// exception, because the server does not mark it done: it moves its dates on by the
+/// interval and leaves it open. The plain inverse says `done: true -> false` with every
+/// date equal on both sides, and `Task::merge_onto` takes a field as the user's only where
+/// `before != after` -- so it kept the server's moved dates, sent a `done` the server
+/// already held, and the undo changed nothing.
+///
+/// So the undo's `before` carries the dates as the server will have moved them, which
+/// makes putting them back the user's change, and the merge sends the old ones. The moved
+/// value is a prediction and only has to differ from the old one: it is never sent by the
+/// undo, which sends `after`. Reminders move too and are not restored.
+fn undo_of_done(before: &Task, after: &Task, now: DateTime<Utc>) -> Mutation {
+    let mut moved = after.clone();
+    if after.done && !before.done && before.repeats() {
+        for date in [
+            &mut moved.due_date,
+            &mut moved.start_date,
+            &mut moved.end_date,
+        ] {
+            if let Some(at) = date.get() {
+                *date = Some(moved_on(at, before, now)).into();
+            }
+        }
+    }
+    Mutation::UpdateTask {
+        before: Box::new(moved),
+        after: Box::new(before.clone()),
+    }
+}
+
+/// Roughly where marking `task` done moves a date of its `at`: a month on, an interval on
+/// from now, or an interval on from `at`, by its repeat mode. Never `at` itself.
+fn moved_on(at: DateTime<Utc>, task: &Task, now: DateTime<Utc>) -> DateTime<Utc> {
+    use tui_do_core::models::RepeatMode;
+    let interval = chrono::Duration::seconds(task.repeat_after.max(1));
+    let moved = match task.repeat_mode {
+        RepeatMode::Monthly => at.checked_add_months(chrono::Months::new(1)),
+        RepeatMode::FromCurrentDate => now.checked_add_signed(interval),
+        RepeatMode::AfterAmount | RepeatMode::Unknown(_) => at.checked_add_signed(interval),
+    };
+    match moved {
+        Some(moved) if moved != at => moved,
+        _ => at + chrono::Duration::seconds(1),
+    }
 }
 
 /// Whether `mutation` acts on a task the store has not numbered yet.
