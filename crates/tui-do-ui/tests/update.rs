@@ -759,15 +759,23 @@ fn quick_add_prefers_the_label_and_project_spelled_exactly() {
 
 #[test]
 fn a_task_past_the_servers_limits_is_not_queued() {
-    let mut model = loaded();
-    press(&mut model, 'a');
-    for c in "water the cactus every 1000 years".chars() {
-        press(&mut model, c);
+    for line in [
+        "water the cactus every 1000 years",
+        // A date the server cannot store. The model's clock is at UTC here, so the year
+        // 10000 cannot be reached from a typed date; the core test covers it.
+        "party due 0001-01-01",
+        "party start 0001-06-01",
+    ] {
+        let mut model = loaded();
+        press(&mut model, 'a');
+        for c in line.chars() {
+            press(&mut model, c);
+        }
+        let effects = press_code(&mut model, KeyCode::Enter);
+        assert!(applied(&effects).is_none(), "{line:?}: {effects:?}");
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
     }
-    let effects = press_code(&mut model, KeyCode::Enter);
-    assert!(applied(&effects).is_none(), "{effects:?}");
-    let toast = model.status.toast.as_ref().expect("the user is told");
-    assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
 }
 
 #[test]

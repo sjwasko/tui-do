@@ -2386,9 +2386,12 @@ must exit non-zero and print the message, and must not print `Sent.`.
   - ~~`*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
     and ignores an exact one.~~ **Fixed 2026-11-10** — labels and projects match exactly
     first and ignore case only when nothing does, as `@user` already did.
-  - `due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
+  - ~~`due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
     server ends up with no due date: the first is Go's zero time, which means unset, and the
-    second is year 10000 in UTC once 23:59 local is converted.
+    second is year 10000 in UTC once 23:59 local is converted.~~ **Fixed 2026-11-10** —
+    `Parsed::server_refusal` refuses a due or start date outside the years 2 to 9999 in UTC,
+    so `tui-do add`, its dry run and the interface all refuse it before anything is queued.
+    The edit form's Due field and `D` go through `parse_due` and are not checked yet.
   - The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
     `Parsed` line already passes it through `printable`.
   - A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not

@@ -139,9 +139,17 @@ pub const TITLE_MAX_CHARS: usize = 1_000;
 /// `4029`, "The task repeat interval must be between 0 and 315360000 seconds (10 years)."
 pub const REPEAT_MAX_SECONDS: i64 = 315_360_000;
 
+/// The years a date may fall in, in UTC, for Vikunja to keep it.
+///
+/// Found by the 2026-11-09 smoke test: `due 0001-01-01` and `due 9999-12-31` were both
+/// accepted and the server ended up with no due date. The year 1 is Go's zero time,
+/// which Vikunja reads as unset, and 23:59 on 9999-12-31 anywhere west of UTC is in the
+/// year 10000 once converted, past what a four-digit year can hold.
+pub const DATE_YEARS: std::ops::RangeInclusive<i32> = 2..=9999;
+
 impl Parsed {
     /// Why the server would refuse this task, if it is known to: a title or a repeat over
-    /// Vikunja's limits.
+    /// Vikunja's limits, or a date it cannot store ([`DATE_YEARS`]).
     ///
     /// Checked before anything is queued (BUG-35). A refused create is rolled back, so a
     /// line that breaks a limit would otherwise be accepted locally, sent, and lost, and
@@ -161,6 +169,19 @@ impl Parsed {
                     "`{}` repeats less often than once in 10 years, the longest interval \
                      Vikunja takes",
                     repeat.phrase()
+                ));
+            }
+        }
+        for (name, at) in [("due", self.due_date), ("start", self.start_date)] {
+            let Some(year) = at.map(|at| chrono::Datelike::year(&at)) else {
+                continue;
+            };
+            if !DATE_YEARS.contains(&year) {
+                return Some(format!(
+                    "the {name} date falls in the year {year} in UTC, and Vikunja keeps only \
+                     dates between the years {} and {}",
+                    DATE_YEARS.start(),
+                    DATE_YEARS.end()
                 ));
             }
         }
@@ -505,6 +526,30 @@ mod tests {
         assert!(p("x every 11 years").server_refusal().is_some());
         assert!(p("x every 122 months").server_refusal().is_some());
         assert_eq!(p("x every 121 months").server_refusal(), None);
+    }
+
+    #[test]
+    fn a_date_the_server_cannot_store_is_refused() {
+        // Found by the 2026-11-09 smoke test: both were reported and the server ended up
+        // with no date. Year 1 is Go's zero time, which Vikunja reads as unset, and 23:59
+        // on 9999-12-31 at -05:00 is in the year 10000 in UTC.
+        let zero = p("party due 0001-01-01").server_refusal().unwrap();
+        assert!(zero.contains("due date"), "{zero}");
+        assert!(zero.contains("year 1"), "{zero}");
+        assert!(zero.contains("between the years 2 and 9999"), "{zero}");
+        let far = p("party due 9999-12-31").server_refusal().unwrap();
+        assert!(far.contains("due date"), "{far}");
+        assert!(far.contains("year 10000"), "{far}");
+        let start = p("party start 0001-06-01").server_refusal().unwrap();
+        assert!(start.contains("start date"), "{start}");
+        assert!(p("party start 9999-12-31 at 20:00")
+            .server_refusal()
+            .is_some());
+
+        // Just inside, either way.
+        assert_eq!(p("party due 0002-01-01").server_refusal(), None);
+        assert_eq!(p("party due 9999-12-30").server_refusal(), None);
+        assert_eq!(p("party start 9999-12-31").server_refusal(), None);
     }
 
     #[test]
