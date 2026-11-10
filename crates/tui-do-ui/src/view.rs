@@ -1313,8 +1313,11 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
     // *which* field has the keyboard; only a real caret says where in it the next
     // character lands, and a multi-line box without one is unreadable.
     let mut caret: Option<(u16, u16)> = None;
+    // The focused field's rows, so a form taller than the terminal can scroll to it.
+    let mut focused_rows = 0..0;
     for field in EditField::ALL {
         let focused = state.focus == field;
+        let first_row = lines.len();
         let input = state.field(field);
         let width = area.width.saturating_sub(GUTTER + 1);
 
@@ -1378,14 +1381,42 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
             };
             lines.push(Line::from(vec![label, text]));
         }
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-    // After the widget, so the cursor is not painted over by it.
-    if let Some((x, y)) = caret {
-        if x < area.right() && y < area.bottom() {
-            frame.set_cursor_position((x, y));
+        if focused {
+            focused_rows = first_row..lines.len();
         }
     }
+    // A short terminal clips the box from the bottom, so the form scrolls to keep the
+    // focused field on screen -- worked out from the focus alone, every frame, so the
+    // view still only reads the model (Rule 1).
+    let caret_row = caret.map(|(_, y)| usize::from(y.saturating_sub(area.y)));
+    let offset = edit_scroll(focused_rows, caret_row, usize::from(area.height));
+    let offset = u16::try_from(offset).unwrap_or(0);
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), area);
+    // After the widget, so the cursor is not painted over by it.
+    if let Some((x, y)) = caret {
+        if let Some(y) = y.checked_sub(offset) {
+            if x < area.right() && y < area.bottom() {
+                frame.set_cursor_position((x, y));
+            }
+        }
+    }
+}
+
+/// How many rows of the edit form to scroll past so the focused field is in view.
+///
+/// The whole field when it fits; when it does not, the row holding the caret.
+fn edit_scroll(focused: std::ops::Range<usize>, caret: Option<usize>, height: usize) -> usize {
+    if height == 0 {
+        return 0;
+    }
+    let mut offset = focused.end.saturating_sub(height).min(focused.start);
+    if let Some(caret) = caret {
+        if caret >= offset + height {
+            offset = caret + 1 - height;
+        }
+        offset = offset.min(caret);
+    }
+    offset
 }
 
 /// A form value, marked while its field has the keyboard.

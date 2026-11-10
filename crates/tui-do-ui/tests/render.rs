@@ -1142,6 +1142,47 @@ fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
 }
 
 #[test]
+fn a_clipped_edit_form_scrolls_to_the_focused_field() {
+    // At 80x10 the form is clipped from the bottom and Labels went with it, while Tab
+    // still focused it and typing landed somewhere nobody could see.
+    let mut model = fixture((80, 10));
+    let task = tui_do_core::models::Task {
+        id: tui_do_core::models::TaskId(1),
+        project_id: tui_do_core::models::ProjectId(1),
+        title: "short screen".to_string(),
+        ..Default::default()
+    };
+    model.modals.push(tui_do_ui::modal::Modal::Edit(Box::new(
+        tui_do_ui::modal::EditState::new(&task, "Alpha", &model.now),
+    )));
+    let key = |model: &mut Model, code: KeyCode| {
+        update(model, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+    for _ in 0..5 {
+        key(&mut model, KeyCode::Tab);
+    }
+    for c in "zzq".chars() {
+        key(&mut model, KeyCode::Char(c));
+    }
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    terminal.draw(|frame| view(&model, frame)).unwrap();
+    let screen = draw(&model);
+    let row = screen
+        .lines()
+        .position(|line| line.contains("Labels") && line.contains("zzq"))
+        .unwrap_or_else(|| panic!("the focused Labels field is off screen:\n{screen}"));
+    let cursor = terminal.get_cursor_position().unwrap();
+    assert_eq!(usize::from(cursor.y), row, "the caret is on the Labels row");
+    assert!(cursor.x < 80, "{cursor:?}");
+
+    // And back to the top: the title is reachable again.
+    key(&mut model, KeyCode::Tab);
+    let screen = draw(&model);
+    assert!(screen.contains("short screen"), "{screen}");
+}
+
+#[test]
 fn a_clipped_modal_scrolls_to_its_highlight_rather_than_truncating() {
     // *This was broken:* every list modal is sized to its content and then clipped by
     // `centered` to whatever the terminal has. On a short window the bottom rows went
