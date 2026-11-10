@@ -1483,3 +1483,39 @@ fn the_due_prompt_says_a_date_cannot_be_stored_before_enter_does() {
     );
     assert!(!screen.contains("Enter:set"), "{screen}");
 }
+
+#[test]
+fn a_terminal_one_or_two_rows_tall_keeps_the_prompt_and_caret_inside_it() {
+    // The status row sat below the header, and at heights 1-2 that is below the frame:
+    // a prompt drew nowhere and the caret went outside the buffer.
+    for (width, height) in [(1, 1), (2, 1), (80, 1), (1, 2), (80, 2), (80, 3), (3, 3)] {
+        for keys in ["", "/", "n", "d", "e", ":", "?", "p", "/xq", "nabc"] {
+            let mut model = fixture((width, height));
+            for c in keys.chars() {
+                update(
+                    &mut model,
+                    Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                );
+            }
+            let status = model.frames().status;
+            assert!(
+                status.bottom() <= height,
+                "{width}x{height}: status at {status:?}"
+            );
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| view(&model, frame)).unwrap();
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(
+                cursor.x < width && cursor.y < height,
+                "{width}x{height} after {keys:?}: caret at {cursor:?}"
+            );
+            if width >= 80 && keys == "/xq" {
+                let screen = draw(&model);
+                assert!(
+                    screen.contains("xq"),
+                    "{width}x{height}: the prompt drew nowhere:\n{screen}"
+                );
+            }
+        }
+    }
+}

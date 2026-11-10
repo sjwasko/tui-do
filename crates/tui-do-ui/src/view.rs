@@ -982,9 +982,12 @@ fn priority_body(state: &PriorityState, frame: &mut Frame, area: Rect, theme: Th
     lines.truncate(usize::from(area.height));
     frame.render_widget(Paragraph::new(lines), area);
     let cursor = rows::display_width(&state.typed);
-    if area.x + 2 + cursor < area.right() {
-        frame.set_cursor_position((area.x + 2 + cursor, area.y));
-    }
+    set_caret(
+        frame,
+        area,
+        area.x.saturating_add(2).saturating_add(cursor),
+        area.y,
+    );
 }
 
 /// The due-date prompt, on the status line.
@@ -1270,9 +1273,7 @@ fn label_edit_body(state: &LabelEditState, frame: &mut Frame, area: Rect, theme:
     frame.render_widget(Paragraph::new(lines), area);
     // After the widget, so the cursor is not painted over by it.
     if let Some((x, y)) = caret {
-        if x < area.right() && y < area.bottom() {
-            frame.set_cursor_position((x, y));
-        }
+        set_caret(frame, area, x, y);
     }
 }
 
@@ -1423,9 +1424,7 @@ fn edit_body(state: &EditState, frame: &mut Frame, area: Rect, theme: Theme) {
     // After the widget, so the cursor is not painted over by it.
     if let Some((x, y)) = caret {
         if let Some(y) = y.checked_sub(offset) {
-            if x < area.right() && y < area.bottom() {
-                frame.set_cursor_position((x, y));
-            }
+            set_caret(frame, area, x, y);
         }
     }
 }
@@ -1614,9 +1613,19 @@ fn input_line(field: &InputWindow, theme: Theme) -> Line<'static> {
 /// The window already holds the caret inside the field's width, so the check against the
 /// right edge only matters for a field that was given no width at all.
 fn place_cursor(frame: &mut Frame, area: Rect, prefix: u16, field: &InputWindow) {
-    let x = area.x + prefix + field.caret_x;
-    if x < area.right() {
-        frame.set_cursor_position((x, area.y));
+    let x = area.x.saturating_add(prefix).saturating_add(field.caret_x);
+    set_caret(frame, area, x, area.y);
+}
+
+/// Put the terminal's caret at `(x, y)`, but only inside both `area` and the frame.
+///
+/// Every caret goes through here. A box clipped to nothing on a one-row terminal still
+/// has an `area.y`, and that row is outside the buffer; a caret parked there is drawn
+/// wherever the terminal decides.
+fn set_caret(frame: &mut Frame, area: Rect, x: u16, y: u16) {
+    let inside = |rect: Rect| x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom();
+    if inside(area) && inside(frame.area()) {
+        frame.set_cursor_position((x, y));
     }
 }
 
