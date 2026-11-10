@@ -3022,3 +3022,59 @@ async fn a_refused_search_does_not_reject_the_label_create_it_guards() {
     assert_eq!(labels.len(), 1, "{labels:?}");
     assert_eq!(labels[0].id, LabelId(41));
 }
+
+#[tokio::test]
+async fn a_retry_adopts_its_own_task_even_after_a_pull_has_stored_it() {
+    // Found by the 2026-11-10 review. The paused-server case BUG-19 was found by: the create
+    // times out, the server makes the task anyway, and the same pass's pull stores it. The
+    // retry's search then finds a task the store already knows, and "the store knows it" was
+    // read as "it is somebody else's", so a second task was made. A task created on the
+    // server after this create was queued, with nothing of its own queued here, is ours.
+    let server = MockServer::start().await;
+    let mut ours = task_json(3915, "whiskey");
+    ours["created"] = json!(chrono::Utc::now().to_rfc3339());
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .and(query_param("s", "whiskey"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![ours.clone()]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(3916, "whiskey")))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+    store
+        .defer(
+            created.id,
+            "timed out".into(),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+    // What the pull in the same pass did with the task the timed-out request made.
+    let mut pulled = task(3915, "whiskey");
+    pulled.created = Some(chrono::Utc::now()).into();
+    store.upsert_tasks_from_server(vec![pulled]).await.unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+    assert!(store.task(provisional).await.unwrap().is_none());
+    assert!(store.task(TaskId(3915)).await.unwrap().is_some());
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}

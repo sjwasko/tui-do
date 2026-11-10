@@ -807,10 +807,11 @@ impl Sync {
     /// - the title matches byte for byte (`Client::tasks_named`), because a retry re-sends
     ///   the same bytes;
     /// - the project matches, because the same title in another project is another task;
-    /// - **the local store has never heard of it**, which is the one that matters. Our own
-    ///   lost create is by construction a task this box has no row for — it still holds the
-    ///   provisional id. Anything the store already knows is older than this attempt, and
-    ///   adopting it would quietly merge a new task into an existing one.
+    /// - **the local store has never heard of it, or heard of it only after this create was
+    ///   queued.** Our own lost create has no row here unless a pull stored it before the
+    ///   retry, which the pull in the same pass does; so a known task is still ours when the
+    ///   server made it after the entry was queued and nothing is queued against it. Anything
+    ///   older is someone else's, and adopting it would quietly merge a new task into it.
     ///
     /// A store failure means the third check cannot be made, so nothing is adopted and the
     /// create goes ahead: a duplicate is visible and deletable, a wrong adoption is
@@ -834,6 +835,18 @@ impl Sync {
                         );
                         return Ok(candidate);
                     }
+                    // Known here, but possibly only because a pull stored it between the
+                    // lost answer and this retry -- the pull in the same pass does exactly
+                    // that. Ours if the server made it after this create was queued and
+                    // nothing of this box's is queued against it.
+                    Ok(Some(_)) if self.made_after_queueing(entry, &candidate).await => {
+                        tracing::warn!(
+                            id = candidate.id.get(),
+                            title = %task.title,
+                            "adopting the task a lost response already created, which a pull had stored"
+                        );
+                        return Ok(candidate);
+                    }
                     Ok(Some(_)) => continue,
                     Err(error) => {
                         tracing::warn!(
@@ -847,6 +860,21 @@ impl Sync {
             }
         }
         self.client.create_task(task.project_id, task).await
+    }
+
+    /// Whether `candidate`, a task the store already holds, is the one `entry` itself made.
+    ///
+    /// The server's `created` must fall after the entry was queued, less the same clock-skew
+    /// allowance the incremental pull uses, and nothing may be queued against the candidate:
+    /// a task this box has edited is one it knew before, not the answer it lost. Anything
+    /// unreadable answers no, so the create goes ahead -- a duplicate is visible and
+    /// deletable, a wrong adoption is neither.
+    async fn made_after_queueing(&self, entry: &OutboxEntry, candidate: &Task) -> bool {
+        let Some(made) = candidate.created.get() else {
+            return false;
+        };
+        let since = entry.created - chrono::TimeDelta::seconds(CLOCK_SKEW_MARGIN_SECONDS);
+        made >= since && matches!(self.store.is_pending(candidate.id).await, Ok(false))
     }
 
     /// Make the request, and nothing else.

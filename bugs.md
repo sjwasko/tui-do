@@ -2243,7 +2243,11 @@ answered deletes its row, and a deferral bumps `attempts`, which arms the read a
 label read is weaker than the task one, which checks the local row: it adopts any exact
 title, so a kill before the `PUT` landed can now adopt another box's same-titled label.
 That is the trade the `CreateLabel` arm already documents for a connect failure, reached
-one more way. A database at v6 is refused by v1.1.0 and older,
+one more way. **Widened 2026-11-10, from review:** a pull between the lost answer and the
+retry stores the server's copy, which the "no local row" check then read as someone
+else's, so the paused-server case still duplicated. A known task is now adopted when the
+server made it after the entry was queued (less the two-minute skew allowance) and nothing
+is queued against it (`Sync::made_after_queueing`). A database at v6 is refused by v1.1.0 and older,
 as every migration is.
 
 `crates/tui-do-core/src/sync/mod.rs`: `Sync::create_or_adopt` (~812) and its gate,
