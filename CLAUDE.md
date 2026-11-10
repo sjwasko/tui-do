@@ -131,8 +131,8 @@ not two boxes creating the same title at once, which nothing can without a uniqu
 constraint the server does not have.
 
 **There is no `DeleteLabel`, and a create is not on the undo stack.** `Mutation::inverse`
-answers `None` for `CreateLabel` and `u` reaches past it, because undoing a create means
-deleting a label — the one label operation `u` cannot honestly reverse, since the label
+answers `None` for `CreateLabel` and `U` reaches past it, because undoing a create means
+deleting a label — the one label operation `U` cannot honestly reverse, since the label
 would come back with a new id detached from every task it was on. If delete is ever built
 it needs a confirmation and an honest "this cannot be undone", not a broken undo.
 

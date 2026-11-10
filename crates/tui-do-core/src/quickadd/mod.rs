@@ -299,7 +299,7 @@ pub fn parse_due<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Option<DateTi
 }
 
 /// A stored due date as the text a field that edits it starts with, which is what
-/// [`parse_due`] reads back: the edit form's Due and the `D` prompt (BUG-30).
+/// [`parse_due`] reads back: the edit form's Due and the `d` prompt (BUG-30).
 ///
 /// In `now`'s zone, because the field is read back in it: formatting the UTC instant
 /// showed the next day for a 23:59 due date anywhere west of UTC. ISO `2027-03-10`,

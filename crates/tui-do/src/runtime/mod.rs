@@ -29,10 +29,12 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tui_do_api::Client;
 use tui_do_core::models::ProjectId;
 use tui_do_core::store::{
-    LabelFilter, LabelSort, Mutation, ProjectFilter, ProjectSort, Subject, LAST_PROJECT,
+    LabelFilter, LabelSort, Mutation, ProjectFilter, ProjectSort, Subject, KEYS_NOTICE_DISMISSED,
+    LAST_PROJECT, LAST_PULL,
 };
 use tui_do_core::sync::Reach;
 use tui_do_core::{Config, Store, Sync, SyncEvent};
+use tui_do_ui::modal::KeysChangedState;
 use tui_do_ui::model::landing_scope;
 use tui_do_ui::model::UrlAction;
 use tui_do_ui::theme::{ColorDepth, Theme};
@@ -120,6 +122,13 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
     let mut model = Model::new(&config, scope, now(), size);
     model.theme = Theme::new(color_depth());
     model.url_action = url_action();
+    if keys_notice_owed(&store).await {
+        model
+            .modals
+            .push(tui_do_ui::Modal::KeysChanged(KeysChangedState::new(
+                release_notes_url(),
+            )));
+    }
     if let Some(problem) = credential_problem {
         model.status.sync = tui_do_ui::model::SyncStatus::Failed {
             message: problem.clone(),
@@ -520,6 +529,14 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
                 // A failure here costs the user their landing project next launch. It is
                 // not worth a toast in front of the task they are reading.
                 let _ = store.set_state(LAST_PROJECT, &value).await;
+            });
+        }
+        Effect::DismissKeysNotice => {
+            let store = store.clone();
+            spawn_effect(tx.clone(), async move {
+                // A failure costs one more sight of the notice next launch, which is
+                // not worth a toast over the list.
+                let _ = store.set_state(KEYS_NOTICE_DISMISSED, "1").await;
             });
         }
         Effect::Apply { write, mutation } => {
@@ -1087,6 +1104,30 @@ fn spawn_sync_timer(
 /// `xdg-open` over SSH is worse than useless -- it either fails or opens a browser on the
 /// machine at the far end, which is not where the person is. tui-do is used across a fleet
 /// of boxes over Tailscale, so that is the ordinary case here, not the exotic one.
+/// Whether to greet this launch with the notice that the keys moved onto Vikunja's.
+///
+/// Only a store that has synced before has a user who learned the old keys; a fresh
+/// install has nothing to unlearn. Read errors answer "no": a notice is not worth
+/// guessing about.
+async fn keys_notice_owed(store: &Store) -> bool {
+    let dismissed = store.state(KEYS_NOTICE_DISMISSED).await.ok().flatten();
+    let synced = store.state(LAST_PULL).await.ok().flatten();
+    dismissed.is_none() && synced.is_some()
+}
+
+/// The release that moved the keys. Pinned rather than read from `CARGO_PKG_VERSION`,
+/// because someone skipping a release would otherwise be sent to notes that never mention
+/// the change. **It must match the tag the change ships under** -- see `md/TODO.md`.
+const KEYS_CHANGED_IN: &str = "v1.2.0";
+
+/// The release notes that explain the key change.
+fn release_notes_url() -> String {
+    format!(
+        "{}/releases/tag/{KEYS_CHANGED_IN}",
+        env!("CARGO_PKG_REPOSITORY")
+    )
+}
+
 pub(crate) fn url_action() -> UrlAction {
     if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
         return UrlAction::Copy;
@@ -2041,6 +2082,44 @@ mod tests {
     use tui_do_core::SyncEvent;
 
     use super::*;
+
+    /// The key-change notice is for upgraders only, and `d` turns it off for good.
+    #[tokio::test]
+    async fn the_keys_notice_is_owed_to_a_synced_store_until_dismissed() {
+        let dir = std::env::temp_dir().join(format!("tui-do-keys-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(dir.join("tui-do.db")).await.unwrap();
+
+        assert!(
+            !keys_notice_owed(&store).await,
+            "a fresh install has nothing to unlearn"
+        );
+        store
+            .set_state(LAST_PULL, "2026-11-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(
+            keys_notice_owed(&store).await,
+            "someone who has synced is told"
+        );
+        store.set_state(KEYS_NOTICE_DISMISSED, "1").await.unwrap();
+        assert!(
+            !keys_notice_owed(&store).await,
+            "and told only until they say stop"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_release_notes_link_names_the_tag() {
+        assert_eq!(
+            release_notes_url(),
+            format!("https://github.com/sjwasko/tui-do/releases/tag/{KEYS_CHANGED_IN}")
+        );
+    }
 
     fn refused(subject: Subject, kind: &str, message: &str) -> SyncEvent {
         SyncEvent::Rejected {

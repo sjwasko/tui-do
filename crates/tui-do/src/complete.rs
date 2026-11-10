@@ -3,7 +3,7 @@
 //! The shell runs `tui-do` itself on every Tab, with `TUI_DO_COMPLETE` naming the shell and
 //! the words of the line after a `--` (clap_complete's `CompleteEnv`). What a word can
 //! become is decided by `tui_do_ui::assist`, the same rules the `tui-do add` prompt and the
-//! `a` prompt use; this module only turns its answer into whole shell words.
+//! `n` prompt use; this module only turns its answer into whole shell words.
 //!
 //! The store is opened read-only, never created, migrated or synced, and nothing here
 //! touches the network: a shell calls this on every Tab and must not wait on a server.

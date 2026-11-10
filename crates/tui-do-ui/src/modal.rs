@@ -447,6 +447,8 @@ pub enum Modal {
     ConfirmLabels(ConfirmLabelsState),
     /// Waiting for a configured quick-action key.
     QuickActions(QuickActionsState),
+    /// The startup notice that the keys changed to match Vikunja's.
+    KeysChanged(KeysChangedState),
 }
 
 /// What a modal decided about a key.
@@ -513,6 +515,8 @@ pub enum Submission {
     },
     /// Run the configured quick action at this index.
     QuickAction(usize),
+    /// Do not show the key-change notice again.
+    DismissKeysNotice,
     /// Make these labels, and hold the submission that named them until the server has.
     ///
     /// Always an [`Outcome::Update`]: the box that asked stays open, because the
@@ -1699,6 +1703,58 @@ impl ModalView for QuickActionsState {
     }
 }
 
+/// The notice shown at startup to someone upgrading past the key change of 2026-11-09,
+/// when tui-do's keys were moved onto Vikunja's web shortcuts.
+///
+/// Shown only to a store that has synced before: someone installing fresh has no old keys
+/// to unlearn, and a notice about a change they never saw would only confuse them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeysChangedState {
+    /// The release notes, opened or copied by `o`.
+    pub url: String,
+}
+
+impl KeysChangedState {
+    /// A notice whose `o` goes to `url`.
+    #[must_use]
+    pub fn new(url: impl Into<String>) -> Self {
+        Self { url: url.into() }
+    }
+
+    /// The old and new key for each moved action, as the notice lists them.
+    #[must_use]
+    pub const fn moves() -> &'static [(&'static str, &'static str, &'static str)] {
+        &[
+            ("Mark done", "d", "t"),
+            ("Set the due date", "D", "d"),
+            ("Add a task", "a", "n"),
+            ("Undo", "u", "U"),
+            ("Open the task's project", "", "u"),
+            ("Go to a label", "g l", "g a"),
+            ("Show completed tasks", "t", "z d"),
+        ]
+    }
+}
+
+impl ModalView for KeysChangedState {
+    fn handle(&mut self, key: Key) -> Outcome {
+        match key.code {
+            // Stays open: the link is something to read, and closing the notice under it
+            // would lose the list of moved keys the user is about to want.
+            KeyCode::Char('o') => Outcome::Update(Submission::Picked(Pick::Url(self.url.clone()))),
+            KeyCode::Char('d') => Outcome::Submit(Submission::DismissKeysNotice),
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => Outcome::Dismiss,
+            // Swallowed rather than passed through: the user is reading about keys that
+            // moved, and a stray `d` reaching the list is the very surprise this warns of.
+            _ => Outcome::Consumed,
+        }
+    }
+
+    fn title(&self) -> String {
+        "Keys have changed".to_string()
+    }
+}
+
 /// Behaviour every modal has.
 ///
 /// The trait exists so the modal stack does not care which variant is on top, and so a
@@ -1849,6 +1905,7 @@ impl Modal {
             Self::LabelEdit(state) => state,
             Self::ConfirmLabels(state) => state,
             Self::QuickActions(state) => state,
+            Self::KeysChanged(state) => state,
         }
     }
 
@@ -1872,6 +1929,7 @@ impl Modal {
             Self::LabelEdit(state) => state.title(),
             Self::ConfirmLabels(state) => state.title(),
             Self::QuickActions(state) => state.title(),
+            Self::KeysChanged(state) => state.title(),
         }
     }
 }

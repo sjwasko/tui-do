@@ -39,7 +39,9 @@ pub use outbox::{
     is_provisional, is_provisional_label, Mutation, OutboxEntry, QueueHealth, Queued, Subject,
 };
 pub use projects::{ProjectFilter, ProjectOrder, ProjectSort};
-pub use state::{CURRENT_USER, LAST_PROJECT, LAST_PULL, LAST_RECONCILE, PAGE_CAP};
+pub use state::{
+    CURRENT_USER, KEYS_NOTICE_DISMISSED, LAST_PROJECT, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
+};
 pub use tasks::{ProjectCounts, ServerApply, TaskCount, TaskFilter, TaskOrder, TaskSort};
 
 /// A handle to the local store.

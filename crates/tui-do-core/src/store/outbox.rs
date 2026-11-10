@@ -326,9 +326,9 @@ impl Mutation {
     /// id, and its comments and attachments do not come back.
     ///
     /// `None` for [`Self::CreateLabel`]: undoing it means deleting a label, and a delete
-    /// is the one label operation `u` cannot honestly reverse -- the label would come
+    /// is the one label operation `U` cannot honestly reverse -- the label would come
     /// back with a new id, detached from everything it was on. So a create is not pushed
-    /// onto the undo stack at all and `u` reaches past it.
+    /// onto the undo stack at all and `U` reaches past it.
     #[must_use]
     pub fn inverse(&self) -> Option<Self> {
         Some(match self {

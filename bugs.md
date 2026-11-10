@@ -85,7 +85,7 @@ throughout, both learned the hard way in this pass:
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
-| **Minor** | 19 remaining, none urgent |
+| **Minor** | 20 remaining, none urgent |
 
 Every open item needed either a decision or a measurement — that was the point of the
 2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
@@ -2377,6 +2377,13 @@ must exit non-zero and print the message, and must not print `Sent.`.
 
 ## Minor
 
+- **Found driving the key remap on dev, 2026-11-09, unconfirmed cause:** `t`, `U`, `C-r`,
+  `U` in quick succession on one task toasted "saved over a change made elsewhere to task …
+  (done_at)", with no other client touching it. Likely a false collision in
+  `Task::merge_onto`: `done_at` is set by the server, so an undo queued before the done's
+  echo came back carries this box's `done_at` as `before`, and the server's own timestamp
+  reads as someone else's edit. The task ended in the state the user asked for. Predates
+  the remap — `d`, `u`, `C-r`, `u` would do the same.
 - **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
   - An unknown `*label` takes its text out of the title and is then left off, so the words
     are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned

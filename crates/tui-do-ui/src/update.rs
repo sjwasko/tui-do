@@ -62,7 +62,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             }
             model.data.truncated = tasks.len() as u32 >= TASK_LIMIT;
             // Taken as it stands, an answer read a moment before a later write landed puts
-            // that task back as it was -- a row just marked done reappears and a held `d`
+            // that task back as it was -- a row just marked done reappears and a held `t`
             // presses it again (BUG-22). So what this load cannot be trusted with is laid
             // back over it first.
             let mut tasks = tasks;
@@ -164,7 +164,7 @@ fn on_rejected(model: &mut Model, subject: Subject, kind: &str, message: &str) -
     }));
     // An inverse of a change that never happened is not an undo of anything. The
     // store has rolled the row back, so replaying the inverse would queue a write
-    // derived from a state the server never held -- `u` after a rejected create
+    // derived from a state the server never held -- `U` after a rejected create
     // asks it to delete an id it has never seen. Drop what named this task from
     // both stacks and leave the rest of the session's history intact.
     model.undo.retain(|mutation| mutation.subject() != subject);
@@ -212,7 +212,7 @@ fn on_rejected(model: &mut Model, subject: Subject, kind: &str, message: &str) -
 /// Forget a provisional label the store has just discarded, everywhere it is held by id.
 ///
 /// A prune by subject is not enough for a label (BUG-27). An attach's inverse is a
-/// `DetachLabel` whose subject is the *task*, so it survived still naming `-1`: `u` then
+/// `DetachLabel` whose subject is the *task*, so it survived still naming `-1`: `U` then
 /// sent `DELETE /tasks/T/labels/-1` and `C-r` a `PUT` with `label_id: -1`, which is a
 /// 4xx the drain treats as permanent -- discarding every other entry queued for `T`.
 ///
@@ -284,7 +284,8 @@ fn forget_label(model: &mut Model, label: LabelId) {
             | Modal::Add(_)
             | Modal::Priority(_)
             | Modal::Due(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
 }
@@ -344,7 +345,8 @@ fn absorb_labels(model: &mut Model, labels: Vec<Label>) -> Vec<Effect> {
             | Modal::Edit(_)
             | Modal::Priority(_)
             | Modal::Due(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
     resume_confirmed(model)
@@ -554,6 +556,10 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             hex_color,
         } => rename_label(model, *before, title, hex_color),
         Submission::QuickAction(index) => run_quick_action(model, index),
+        Submission::DismissKeysNotice => {
+            model.toast(Toast::info("Won't show that again — ? lists every key"));
+            vec![Effect::DismissKeysNotice]
+        }
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
         Submission::Picked(Pick::MoveTo(id)) => move_task(model, id),
@@ -605,6 +611,26 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             }
             Vec::new()
         }
+        Action::OpenTaskProject => match model.selected_task() {
+            Some(task) => {
+                let id = task.project_id;
+                let title = model
+                    .project(id)
+                    .map_or_else(|| format!("project #{id}"), |p| p.title.clone());
+                if model.query.scope == Scope::Project(id) {
+                    model.toast(Toast::info(format!("Already showing {title}")));
+                    return Vec::new();
+                }
+                // The selection is a task id, and `TasksLoaded` keeps an id that is still in
+                // the list, so the task stays selected once its project has loaded.
+                model.toast(Toast::info(format!("Showing {title}")));
+                show(model, Scope::Project(id))
+            }
+            None => {
+                model.toast(Toast::info("No task selected"));
+                Vec::new()
+            }
+        },
         Action::ToggleSidebar => {
             let showing = model.sidebar_showing();
             model.panes.sidebar = model.panes.sidebar.toggled(showing);
@@ -673,7 +699,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::AddTask => {
-            // What `a` can complete, from what the interface already holds: the same
+            // What `n` can complete, from what the interface already holds: the same
             // three lists `tui-do add`'s prompt reads from the store.
             let vocabulary = crate::assist::Vocabulary::new(
                 &model.data.projects,
@@ -693,7 +719,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 // the message -- Vikunja has no undelete, so undo re-creates the task
                 // and it comes back with a new id.
                 model.toast(Toast::warning(format!(
-                    "Deleted \"{}\" — u to undo",
+                    "Deleted \"{}\" — U to undo",
                     truncated(&before.title)
                 )));
                 edit(
@@ -1459,7 +1485,7 @@ fn set_labels(model: &mut Model, chosen: &[LabelId]) -> Vec<Effect> {
 ///
 /// Not on the undo stack, and that is `Mutation::inverse` returning `None` rather than
 /// an omission here: undoing a create means deleting a label, and this feature ships no
-/// delete because `u` could not honestly reverse *that* — the label would come back with
+/// delete because `U` could not honestly reverse *that* — the label would come back with
 /// a new id, detached from everything it had been on.
 fn create_label(model: &mut Model, title: String) -> Vec<Effect> {
     let label = Label {
@@ -1554,7 +1580,8 @@ fn release_held_labels(model: &mut Model, subject: Subject, kind: &str) -> Vec<E
             | Modal::Priority(_)
             | Modal::Due(_)
             | Modal::LabelEdit(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
     resume_confirmed(model)
@@ -1642,7 +1669,7 @@ fn label_names(field: &str) -> Vec<String> {
 /// Open the label form over `id`, from whichever list asked.
 ///
 /// Both surfaces that list labels send this, so the form they open is one form: a label
-/// renamed from the `l` ticks and a label renamed from `g l` are the same operation
+/// renamed from the `l` ticks and a label renamed from `g a` are the same operation
 /// against the same `before`.
 ///
 /// The pool first, then the labels the tasks are carrying.
@@ -1669,7 +1696,7 @@ fn known_label(model: &Model, id: LabelId) -> Option<Label> {
 /// Open the label form over `id`, from whichever list asked.
 ///
 /// Both surfaces that list labels send this, so the form they open is one form: a label
-/// renamed from the `l` ticks and a label renamed from `g l` are the same operation
+/// renamed from the `l` ticks and a label renamed from `g a` are the same operation
 /// against the same `before`.
 fn open_label_form(model: &mut Model, id: LabelId) -> Vec<Effect> {
     let Some(label) = known_label(model, id) else {
@@ -2119,7 +2146,7 @@ fn project_for(
         return Some(id);
     }
     // Only once nothing else has said where: what the user is looking at outranks what
-    // they configured, or `a` inside a project would file the task somewhere else.
+    // they configured, or `n` inside a project would file the task somewhere else.
     if let Some(id) = configured.and_then(|spec| resolve_project(projects, spec)) {
         return Some(id);
     }
@@ -2169,12 +2196,12 @@ fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
 /// backdate the moment it is stored.
 ///
 /// Here rather than at each call site because there are three ways to set a due date —
-/// `D`, the edit form and quick-add — and only `D` said it. The other two answered
+/// `d`, the edit form and quick-add — and only `d` said it. The other two answered
 /// "Saved" and "Added", which is the quiet confirmation this rule exists to prevent.
 pub fn past_due_note(due: Option<DateTime<Utc>>, now: ZonedTime) -> Option<String> {
     let due = due.filter(|due| *due < now)?;
     // The date in parentheses rather than leading, because this is appended to a message
-    // that already has a subject: "Saved — that date has passed (due Aug 27, 24)". `D`
+    // that already has a subject: "Saved — that date has passed (due Aug 27, 24)". `d`
     // keeps its own phrasing, where the date *is* the subject and leads.
     Some(format!(
         "that date has passed (due {})",
@@ -2315,7 +2342,7 @@ fn truncated(title: &str) -> String {
 /// Every edit goes through here, so the undo stack cannot fall out of step with what was
 /// done — and a new edit clears the redo stack, as everywhere else.
 fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
-    // A mutation with no inverse -- creating a label -- is simply not remembered, so `u`
+    // A mutation with no inverse -- creating a label -- is simply not remembered, so `U`
     // reaches past it to the last change that can be taken back.
     if let Some(back) = mutation.inverse() {
         model.undo.push(back);
@@ -2357,7 +2384,7 @@ fn adopt(model: &mut Model, provisional: Subject, assigned: Subject) -> Vec<Effe
 ///
 /// Missing any one of them sends the next edit to `/tasks/-14`, which the server answers
 /// `404 This task does not exist` — the task it just created. The undo stack is the one
-/// most easily forgotten: a create pushes a delete of the provisional id, so `u` right
+/// most easily forgotten: a create pushes a delete of the provisional id, so `U` right
 /// after creating a task would ask the server to delete something it never had.
 fn adopt_task(model: &mut Model, provisional: TaskId, assigned: TaskId) -> Vec<Effect> {
     if let Some(task) = find(&mut model.data.tasks, provisional) {
@@ -2479,7 +2506,8 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
             | Modal::Add(_)
             | Modal::Priority(_)
             | Modal::Due(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
     // The store now holds the server's own copy of the label -- its identifier, and
@@ -2588,7 +2616,7 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                     //
                     // * `LabelEdit` is the form that asked, and `Outcome::Submit` pops it
                     //   before `on_submit` is called. Nothing opens a second one over it,
-                    //   and `u` is a key the top modal would have eaten.
+                    //   and `U` is a key the top modal would have eaten.
                     // * `Edit` cannot be underneath a form that renames a label: the two
                     //   surfaces that open one are reached from the task screen, which
                     //   `Edit` covers. Its own `labels` field is *names* the user typed
@@ -2608,7 +2636,8 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                     | Modal::Edit(_)
                     | Modal::Priority(_)
                     | Modal::Due(_)
-                    | Modal::QuickActions(_) => {}
+                    | Modal::QuickActions(_)
+                    | Modal::KeysChanged(_) => {}
                 }
             }
         }

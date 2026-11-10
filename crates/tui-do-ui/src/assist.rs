@@ -1,7 +1,7 @@
 //! Tab completion and `?` help for a quick-add line.
 //!
 //! Shared by the two places a task is typed: `tui-do add` run with no text, and the
-//! interface's `a` prompt. Both hold a [`QuickAddInput`], and what it can complete is
+//! interface's `n` prompt. Both hold a [`QuickAddInput`], and what it can complete is
 //! handed to it as a [`Vocabulary`] -- plain names, read by whoever opened the prompt.
 //! Nothing here reads a store (Rule 1), so the runtime reads one for the command line and
 //! the interface passes what its model already holds.

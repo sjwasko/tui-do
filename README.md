@@ -28,7 +28,7 @@ Regenerate it with [`docs/demo/tui-do-agent.tape`](docs/demo/tui-do-agent.tape).
 > creates, edits, completes and **deletes** tasks, and every sync reconciles your local copy
 > against what the server holds.
 >
-> Undo (`u`) covers most of what you do from the interface, and is worth knowing the limits
+> Undo (`U`) covers most of what you do from the interface, and is worth knowing the limits
 > of. **Undoing a delete re-creates the task with a new id, so its comments and attachments
 > do not come back**, because Vikunja has no undelete. Creating a label cannot be undone at
 > all. And on a genuine conflict, where you and another client have changed the same field,
@@ -312,6 +312,12 @@ works.
 `?` shows this table inside the application, and `:` runs any command by name if you would
 rather not remember a key.
 
+Where Vikunja's web interface has a shortcut, tui-do uses the same key, so `t`, `d`, `u`,
+`g a`, `p`, `m`, `l` and `e` do the same thing in both, and in the
+[omavikunja](https://github.com/sjwasko/omavikunja) panel. That changed in 1.2.0: done was
+`d`, due date `D`, add `a`, undo `u`, show completed `t`, and go to a label `g l`. The first
+launch after upgrading lists what moved; `d` on that screen stops it appearing again.
+
 ### Navigation
 
 | | |
@@ -320,7 +326,7 @@ rather not remember a key.
 | `C-d` / `C-u`, `PgDn` / `PgUp` | Page down / up |
 | `g g` / `G`, `Home` / `End` | Jump to top / bottom |
 | `Tab` / `S-Tab` | Focus the next / previous pane |
-| `g p` / `g l` | Go to a project / label |
+| `g p` / `g a` | Go to a project / label |
 | `/` | Search the current list |
 | `Enter` | Open the selected task |
 | `Esc` | Back to the list, then out of a search |
@@ -329,15 +335,16 @@ rather not remember a key.
 
 | | |
 |---|---|
-| `a` | Add a task, in quick-add syntax |
+| `n` | Add a task, in quick-add syntax |
 | `e` | Edit the selected task |
-| `d` | Mark done, or not done |
-| `p` / `D` | Set priority / due date |
+| `t` | Mark done, or not done |
+| `p` / `d` | Set priority / due date |
 | `l` | Add or remove labels |
 | `m` | Move to another project |
+| `u` | Open the task's project, keeping the task selected |
 | `o` | Open a link in the selected task |
-| `x` | Delete the task |
-| `u` / `C-r` | Undo / redo |
+| `x`, `Delete` | Delete the task |
+| `U` / `C-r` | Undo / redo |
 | `Space` | Configured quick actions |
 
 ### View and application
@@ -345,9 +352,9 @@ rather not remember a key.
 | | |
 |---|---|
 | `z s` / `z p` | Show or hide the sidebar / preview pane |
-| `t` | Show or hide completed tasks |
+| `z d` | Show or hide completed tasks |
 | `L` / `H` | Next / previous column layout |
-| `r` | Sync: push, then fetch what changed |
+| `r`, `F5` | Sync: push, then fetch what changed |
 | `R` | Sync everything, so deletions made elsewhere are noticed |
 | `:` / `?` | Run a command by name / show the keys |
 | `q`, `C-c` | Quit |
@@ -444,7 +451,7 @@ key, and a line under the input shows what will be created, re-read on every key
 | Enter | Add it, exactly as `tui-do add '<the line>'` would |
 | Esc, Ctrl-C | Cancel, adding nothing |
 
-The interface's `a` prompt completes and answers `?` the same way. Without a terminal,
+The interface's `n` prompt completes and answers `?` the same way. Without a terminal,
 `tui-do add` with no text is the usage error it always was. The flags apply to the line it
 asks for, so `tui-do add --dry-run` alone asks, then checks what was typed and adds nothing.
 

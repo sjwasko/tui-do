@@ -1,0 +1,20 @@
+tui-do  Work                 ⟳ synced 2m ago
+┌Keys have changed──────────────────────────┐
+│ Keys now match Vikunja's web shortcuts    │
+│ and the omavikunja panel: a key does the  │
+│ same thing in all three.                  │
+│                                           │
+│   t      Mark done                was d   │
+│   d      Set the due date         was D   │
+│   n      Add a task               was a   │
+│   U      Undo                     was u   │
+│   u      Open the task's project  new     │
+│   g a    Go to a label            was g l │
+│   z d    Show completed tasks     was t   │
+│                                           │
+│   o      Open the release notes           │
+│   Enter  Continue                         │
+│   d      Don't show this again            │
+└───────────────────────────────────────────┘
+
+4 tasks        ?:help  /:search  g:go  q:quit

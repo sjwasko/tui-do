@@ -1,7 +1,7 @@
 tui-do  Work › List  Table (soon)  Kanban (soon)                ⟳ synced 2m ago
 ────────────────────────────────────────────────────────────────────────────────
  Title                              Project          Labels         Due
- No open tasks here. Press t to include completed ones.
+ No open tasks here. Press z d to include completed ones.
 
 
 

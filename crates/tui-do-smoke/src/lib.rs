@@ -254,6 +254,13 @@ impl Harness {
                 self.pending_push = true;
                 Vec::new()
             }
+            Effect::DismissKeysNotice => {
+                self.store
+                    .set_state(tui_do_core::store::KEYS_NOTICE_DISMISSED, "1")
+                    .await
+                    .expect("the flag is stored");
+                Vec::new()
+            }
             Effect::RememberProject(_) | Effect::Quit => Vec::new(),
             other => panic!("the harness has no arm for {other:?}"),
         }

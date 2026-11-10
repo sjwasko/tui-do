@@ -1,4 +1,4 @@
-//! Holding `d` down a list sends each task once.
+//! Holding `t` down a list sends each task once.
 //!
 //! BUG-22: each write is stored by an effect of its own, and the reload one write asks for
 //! can read the store before a later write has landed. Its answer has that later task
@@ -79,8 +79,8 @@ async fn a_reload_that_overtakes_a_write_does_not_offer_its_task_again() {
     assert_eq!(harness.model.data.tasks.len(), 2);
 
     harness.hold_writes();
-    harness.press(KeyCode::Char('d')).await;
-    harness.press(KeyCode::Char('d')).await;
+    harness.press(KeyCode::Char('t')).await;
+    harness.press(KeyCode::Char('t')).await;
     assert_eq!(harness.held_writes(), 2);
     assert!(harness.model.data.tasks.is_empty());
 
@@ -96,11 +96,11 @@ async fn a_reload_that_overtakes_a_write_does_not_offer_its_task_again() {
         .collect();
     assert!(
         showing.is_empty(),
-        "the reload put {showing:?} back on screen, and the next `d` presses it again"
+        "the reload put {showing:?} back on screen, and the next `t` presses it again"
     );
 
     // The key is still held. With nothing left, nothing is written.
-    harness.press(KeyCode::Char('d')).await;
+    harness.press(KeyCode::Char('t')).await;
     assert_eq!(harness.held_writes(), 1, "a third write was made");
 
     harness.release_write().await;

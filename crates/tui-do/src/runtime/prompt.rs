@@ -6,7 +6,7 @@
 //! What it asks for is handed to [`super::add`] as if it had been typed on the command
 //! line, so the two forms cannot drift apart.
 //!
-//! The line is `tui_do_ui::assist::QuickAddInput`, the same one the interface's `a`
+//! The line is `tui_do_ui::assist::QuickAddInput`, the same one the interface's `n`
 //! prompt holds, so Tab and `?` mean the same thing in both.
 
 use std::io;

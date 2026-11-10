@@ -42,6 +42,12 @@ pub const CURRENT_USER: &str = "current_user_id";
 /// prefix that keeps the two namespaces apart.
 pub const LAST_PROJECT: &str = "ui.last_project";
 
+/// Set once the user has said not to be told about the 2026-11 key changes again.
+///
+/// Any value counts. Stored beside [`LAST_PROJECT`] under the same `ui.` prefix, for the
+/// same reason: one flag is not worth a table.
+pub const KEYS_NOTICE_DISMISSED: &str = "ui.keys_notice_dismissed";
+
 /// Read a stored value.
 pub(super) fn read_state(connection: &Connection, key: &str) -> Result<Option<String>> {
     Ok(connection

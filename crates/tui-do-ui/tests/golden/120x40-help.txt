@@ -5,28 +5,28 @@ tui-do  Work › List  Table (soon)  Kanban (soon)                              
 Projects               │ !!! Ship the release    Work                Tomorrow   │ ──────────────────────────────────────
 ▾ Hom┌Keys───────────────────────────────────────────────────────────────────────────────────────────────────────┐
     E│Navigation                                             Tasks                                               │
-  Wor│  j / ↓       Move down                                  a           Add a task                            │
+  Wor│  j / ↓       Move down                                  n           Add a task                            │
      │  k / ↑       Move up                                    e           Edit the selected task                │
-     │  C-d / PgDn  Page down                                  d           Mark done, or not done                │
+     │  C-d / PgDn  Page down                                  t           Mark done, or not done                │
      │  C-u / PgUp  Page up                                    p           Set priority                          │
-     │  g g / Home  Jump to the top                            D           Set the due date                      │e set
+     │  g g / Home  Jump to the top                            d           Set the due date                      │e set
      │  G / End     Jump to the bottom                         o           Open a link in the selected task      │
      │  Tab         Focus the next pane                        m           Move to another project               │
      │  S-Tab       Focus the previous pane                    l           Add or remove labels                  │
      │  Esc         Back to the list, then out of a search     Space       Configured quick actions              │
-     │  g p         Go to a project                            x           Delete the task                       │
-     │  g l         Go to a label                              u           Undo the last change                  │
+     │  g p         Go to a project                            x / Del     Delete the task                       │
+     │  g a         Go to a label                              U           Undo the last change                  │
      │  /           Search the current list                    C-r         Redo                                  │
      │  Enter       Open the selected task                                                                       │
-     │                                                       View                                                │
+     │  u           Open the task's project                  View                                                │
      │                                                         z s         Show or hide the sidebar              │
      │                                                         z p         Show or hide the preview pane         │
-     │                                                         t           Show or hide completed tasks          │
+     │                                                         z d         Show or hide completed tasks          │
      │                                                         L           Next column layout                    │
      │                                                         H           Previous column layout                │
      │                                                                                                           │
      │                                                       Application                                         │
-     │                                                         r           Sync changes                          │
+     │                                                         r / F5      Sync changes                          │
      │                                                         R           Sync everything                       │
      │                                                         :           Run a command by name                 │
      │                                                         ?           Show this help                        │
