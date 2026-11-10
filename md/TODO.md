@@ -1291,18 +1291,20 @@ they are commitments rather than ideas.
 
 ## Owed at the next publish
 
-- **The key remap (item 13) must ship as `v1.2.0`, or `KEYS_CHANGED_IN` must change.** The
+- ~~**The key remap (item 13) must ship as `v1.2.0`, or `KEYS_CHANGED_IN` must change.**~~
+  **Shipped as v1.2.0, 2026-11-10,** with the notes on its release page. The
   startup notice's `o` links to `releases/tag/v1.2.0`, pinned in
   `crates/tui-do/src/runtime/mod.rs` so someone who skips a release is still sent to the notes
   that explain the change. Those release notes also need a "Keys changed" section at the top,
   because that page is what the notice sends people to. The README already says 1.2.0.
 
-- **crates.io is published from the `v1.2.0` tag, and 1.1.0 is skipped.** *Decided
-  2026-11-10.* crates.io holds 1.0.1; v1.1.0's crates were never published, and 1.1.0
-  carries BUG-33. Because `tui-do-core` and `tui-do-ui` 2.0.0 were never published, the
-  breaking changes made since the `v1.1.0` tag ride in 2.0.0 too: `OutboxEntry` gained
-  `sent_at`, and `Effect` gained `DismissKeysNotice`. So the v1.2.0 publish is
-  `tui-do-api` and `tui-do` at 1.2.0, `tui-do-core` and `tui-do-ui` at 2.0.0, in the order
+- **crates.io is published from the `v1.2.1` tag; 1.1.0 and 1.2.0 are skipped.** *Decided
+  2026-11-10, moved from v1.2.0 the same day.* crates.io holds 1.0.1; v1.1.0 carries
+  BUG-33 and v1.2.0 the duplicate-create gap the review found, so neither is published.
+  Because `tui-do-core` and `tui-do-ui` 2.0.0 were never published, every change since the
+  `v1.1.0` tag rides in 2.0.0: `OutboxEntry` gained `sent_at`, `Effect` gained
+  `DismissKeysNotice`, and `quickadd` gained `Kept` and `parse_kept`. So the publish is
+  `tui-do-api` and `tui-do` at 1.2.1, `tui-do-core` and `tui-do-ui` at 2.0.0, in the order
   `CLAUDE.md` gives, from a checkout of the tag.
 
 ---
