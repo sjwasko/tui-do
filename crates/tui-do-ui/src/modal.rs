@@ -581,7 +581,8 @@ pub enum EditField {
     Due,
     /// A project name, resolved the way `+project` is.
     Project,
-    /// Comma-separated label names, resolved the way `*label` is.
+    /// Comma-separated label names, resolved the way `*label` is. A name with a comma in
+    /// it is written in double quotes; see [`join_label_names`].
     Labels,
 }
 
@@ -669,12 +670,7 @@ impl EditState {
     /// could edit. `now` is the model's clock, for the zone the due date is shown in.
     #[must_use]
     pub fn new(task: &Task, project_name: &str, now: &ZonedTime) -> Self {
-        let labels = task
-            .labels
-            .iter()
-            .map(|label| label.title.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let labels = join_label_names(task.labels.iter().map(|label| label.title.as_str()));
         let due = quickadd::due_text(task.due_date.get(), now);
         Self {
             title: TextInput::new(task.title.clone()),
@@ -704,23 +700,17 @@ impl EditState {
         if title_still_known {
             return;
         }
-        let names: Vec<&str> = self
-            .labels
-            .value()
-            .split(',')
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .collect();
+        let names = split_label_names(self.labels.value());
         if names
             .iter()
             .any(|name| name.eq_ignore_ascii_case(label.title.trim()))
         {
-            let kept: Vec<&str> = names
-                .into_iter()
-                .filter(|name| !name.eq_ignore_ascii_case(label.title.trim()))
-                .collect();
+            let kept = names
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !name.eq_ignore_ascii_case(label.title.trim()));
             let untouched = self.labels.value() == self.labels_was;
-            self.labels = TextInput::new(kept.join(", "));
+            self.labels = TextInput::new(join_label_names(kept));
             // Still untouched by the user, so still the task's own ids -- which `before`,
             // above, no longer includes the dead one among.
             if untouched {
@@ -770,6 +760,58 @@ impl EditState {
             labels_was: self.labels_was.clone(),
         }
     }
+}
+
+/// Write label titles as the edit form's Labels field shows them.
+///
+/// Comma-separated, and a title is not a word: `Q1, 2027` is one real label. So a title
+/// holding a comma or a double quote is written in double quotes, with each quote inside it
+/// doubled -- `"Q1, 2027"`, `"say ""hi"""` -- the way a CSV cell is. Every other title is
+/// written as it is. [`split_label_names`] reads it back.
+pub fn join_label_names<'a>(titles: impl IntoIterator<Item = &'a str>) -> String {
+    titles
+        .into_iter()
+        .map(|title| {
+            if title.contains([',', '"']) {
+                format!("\"{}\"", title.replace('"', "\"\""))
+            } else {
+                title.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Read the edit form's Labels field back into titles: the inverse of
+/// [`join_label_names`].
+///
+/// Commas separate, except inside double quotes, where `""` is one quote. Each name is
+/// trimmed and an empty one dropped, so a trailing comma is not a label called "". A quote
+/// left open runs to the end of the field rather than failing: the field is typed by hand,
+/// and the user can see what they wrote.
+#[must_use]
+pub fn split_label_names(field: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut name = String::new();
+    let mut quoted = false;
+    let mut chars = field.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                name.push('"');
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => names.push(std::mem::take(&mut name)),
+            _ => name.push(c),
+        }
+    }
+    names.push(name);
+    names
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 /// A field's text beside the text it was prefilled with.
@@ -835,7 +877,7 @@ pub struct EditDraft {
     /// The project name the form was opened with, to tell an untouched field from a
     /// retyped one when two projects share a name.
     pub project_was: String,
-    /// The label names, comma-separated, as typed.
+    /// The label names, comma-separated and quoted where a name has a comma, as typed.
     pub labels: String,
     /// The label names the form was opened with, to tell an untouched field from an
     /// edited one when two labels share a title.
@@ -2049,6 +2091,22 @@ mod tests {
 
     fn key(c: char) -> Key {
         Key::char(c)
+    }
+
+    #[test]
+    fn label_names_with_commas_and_quotes_survive_the_field() {
+        let titles = ["Q1, 2027", "urgent", "say \"hi\"", "a,b"];
+        let field = join_label_names(titles);
+        assert_eq!(field, r#""Q1, 2027", urgent, "say ""hi""", "a,b""#);
+        assert_eq!(split_label_names(&field), titles);
+    }
+
+    #[test]
+    fn plain_label_names_read_as_they_always_did() {
+        assert_eq!(join_label_names(["urgent", "next"]), "urgent, next");
+        assert_eq!(split_label_names(" urgent ,next,, "), ["urgent", "next"]);
+        // An unclosed quote runs to the end rather than losing what was typed.
+        assert_eq!(split_label_names("\"Q1, 2027"), ["Q1, 2027"]);
     }
 
     fn code(code: KeyCode) -> Key {

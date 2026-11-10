@@ -18,9 +18,9 @@ use crate::effect::Effect;
 use crate::geometry;
 use crate::keymap::{resolve, Action, Key, Resolved, KEYMAP};
 use crate::modal::{
-    Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState, LabelEditState,
-    LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled, PriorityState,
-    QuickActionsState, SearchState, Submission,
+    split_label_names, Candidate, ConfirmLabelsState, DueState, EditDraft, EditState, HelpState,
+    LabelEditState, LabelsState, Modal, Outcome, Pending, Pick, PickerKind, PickerState, Prefilled,
+    PriorityState, QuickActionsState, SearchState, Submission,
 };
 use crate::model::{Focus, Model, SyncStatus, Toast, UrlAction};
 use crate::msg::Msg;
@@ -1741,15 +1741,11 @@ fn resume_confirmed(model: &mut Model) -> Vec<Effect> {
 
 /// The label names an edit form's Labels field asks for.
 ///
-/// Comma-separated and trimmed, and empty entries dropped so a trailing comma is not a
-/// label called "". Shared by the resolution and the question so the two cannot disagree
-/// about what was typed.
+/// Read by [`split_label_names`], the inverse of how the form wrote them: a title with a
+/// comma in it is quoted, so `"Q1, 2027"` is one label and not two nobody has. Shared by
+/// the resolution and the question so the two cannot disagree about what was typed.
 fn label_names(field: &str) -> Vec<String> {
-    field
-        .split(',')
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .collect()
+    split_label_names(field)
 }
 
 /// Open the label form over `id`, from whichever list asked.

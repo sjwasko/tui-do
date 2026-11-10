@@ -5704,3 +5704,40 @@ fn saving_an_edit_keeps_a_label_that_shares_its_title_with_another() {
         other => panic!("only the title changed: {other:?}"),
     }
 }
+
+#[test]
+fn a_label_with_a_comma_in_its_title_survives_an_edited_labels_field() {
+    // The form joined names with ", " and split on ",", so "Q1, 2027" came back as two
+    // labels nobody had -- and answering `n` to creating them detached the real one.
+    let mut model = with_labels(
+        vec![label(5, "Q1, 2027"), label(6, "urgent")],
+        vec![label(5, "Q1, 2027")],
+    );
+    press(&mut model, 'e');
+    for _ in 0..5 {
+        press_code(&mut model, KeyCode::Tab);
+    }
+    for c in ", urgent".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_ctrl(&mut model, 's');
+    assert!(
+        !matches!(model.modals.last(), Some(Modal::ConfirmLabels(_))),
+        "asked about labels that exist: {:?}",
+        model.modals.last()
+    );
+    let writes = all_applied(&effects);
+    assert!(
+        writes.iter().any(|mutation| matches!(
+            mutation,
+            Mutation::AttachLabel { label, .. } if label.id == LabelId(6)
+        )),
+        "{writes:?}"
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::DetachLabel { .. })),
+        "{writes:?}"
+    );
+}
