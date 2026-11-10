@@ -13,6 +13,12 @@ agentic tasks and workflows.
 Feel the flow break when you have to tab out of tmux or herdr or your terminal sessions to go
 to a PWA or the web page for your Vikunja instance? I'm with you, tui-do is the answer!
 
+**Your agents can file tasks too.** `tui-do add 'Chase the upstream ticket *urgent !4 +Infra
+tomorrow'` turns one line into a task, with its project, label, priority and due date, and
+queues it through the same offline-safe outbox the interface uses. Give your agent
+[`skills/tui-do/SKILL.md`](skills/tui-do/SKILL.md) and it knows how; see
+[For agents](#for-agents).
+
 > **Status: 1.2.** `v1.2.2` is published and is what the commands below install. Everything
 > documented here works and is used daily against a real Vikunja;
 > [what's planned](#whats-planned--coming) is set out rather than left to be discovered.
@@ -54,6 +60,9 @@ Regenerate it with [`docs/demo/tui-do-agent.tape`](docs/demo/tui-do-agent.tape).
   when it can. A rejection rolls the change back and says so. A failure blocks that one
   task, not the queue.
 - **Quick-add syntax** for creating tasks in one line, from the interface or the shell.
+- **A command line agents can use.** `tui-do add` files a task from one line, `--tokens`
+  lists the names a line may use, and `--dry-run` checks a generated line before anything is
+  queued. See [For agents](#for-agents).
 - **Task descriptions rendered**: Markdown, plain text, or the HTML Vikunja's web editor
   stores, in your own colours, in process, with no external tools.
 - **Labels, priorities, due dates, projects**, with fuzzy pickers for each. Labels can be
@@ -583,9 +592,6 @@ interface does**: the same outbox, the same backoff, and the same three-way merg
 replays your change onto the server's current copy. Something calling the Vikunja API
 directly is a second writer with none of that.
 
-**`skills/tui-do/SKILL.md`** documents this for agents and is installable as a skill by tools
-that support them. It is plain Markdown, so anything else can simply read it.
-
 **Learn the names with `--tokens`.** `tui-do add --tokens` lists the projects, labels and
 users in the local store, one per line and grouped, each written the way a line should name
 it (`+[Life Admin]` for a project with a space), then the token syntax. It reads the store
@@ -606,6 +612,30 @@ One flag deserves mentioning: **`--create-labels` should usually stay off.**
 Labels are one global pool shared by every project, so a typo in a generated line becomes a
 permanent entry that pollutes completion everywhere. Pass it only where the label vocabulary
 is yours rather than a model's.
+
+### Giving it to your agent
+
+[`skills/tui-do/SKILL.md`](skills/tui-do/SKILL.md) is the whole of this, written for a
+model: the tokens, `--tokens`, `--dry-run`, descriptions from stdin, and what a zero exit
+does and does not mean. It is plain Markdown in the
+[Agent Skills](https://agentskills.io) format.
+
+For Claude Code, install it as a personal skill, available in every project:
+
+```sh
+mkdir -p ~/.claude/skills/tui-do
+curl -fsSL https://raw.githubusercontent.com/sjwasko/tui-do/v1.2.2/skills/tui-do/SKILL.md -o ~/.claude/skills/tui-do/SKILL.md
+```
+
+For an agent that reads `AGENTS.md` instead, save the file anywhere and add one line to the
+`AGENTS.md` of the project the agent works in:
+
+```markdown
+To record a task or a follow-up, use `tui-do add`; read /path/to/tui-do/SKILL.md first.
+```
+
+The skill describes `add` as of the release it is fetched from, so fetch it from the tag you
+installed.
 
 ### What verbs/actions to add for agents next?
 
