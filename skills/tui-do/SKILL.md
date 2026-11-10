@@ -43,8 +43,8 @@ the title.
 | `@user` | assign someone: `@admin` |
 | `!1` … `!5` | priority, 1 lowest to 5 highest |
 | a date | `tomorrow`, `next friday`, `27/08/26`, `27aug26`, `2026-08-27` |
-| `due <date>` / `start <date>` | the same, said explicitly |
-| `every <n> <unit>` | repeat: `every 2 weeks`, `every month` |
+| `due <date>` / `start <date>` | the same, said explicitly; a weekday abbreviation needs one (`due fri`), since `sun` or `wed` alone is a word |
+| `every <n> <unit>` | repeat: `every 2 weeks`, `every month`; with two, the last that forms a repeat is used |
 
 ## Learn the names once with `--tokens`
 
