@@ -104,7 +104,16 @@ pub(crate) fn run(
         open_browser(&page);
     }
 
-    let token = ask_hidden("Paste the token")?;
+    // One runtime for the rest of the command, with worker threads: the signal handlers
+    // the token prompt installs belong to it, and a signal is delivered on one of them
+    // while the prompt's thread waits for keys. Kept alive through `verify` too, because
+    // a handler whose runtime has gone swallows the signal instead of exiting.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not start the async runtime")?;
+
+    let token = ask_hidden("Paste the token", runtime.handle())?;
     if token.is_empty() {
         bail!("no token given, so nothing was written.");
     }
@@ -112,8 +121,8 @@ pub(crate) fn run(
     // Check before writing. Writing first would leave a broken credential on disk and make
     // the next launch the place the mistake shows up, which is the failure this command is
     // here to remove.
-    let who = verify(&url, &token)?;
-    println!("Signed in as {who}.");
+    let who = verify(&runtime, &url, &token)?;
+    println!("{}", signed_in(&who));
 
     let token_file = token_file_for(&path, existing.as_ref());
     let (config, dropped_inline_token) = configure(existing, url, token_file);
@@ -230,7 +239,13 @@ fn ask(prompt: &str, default: Option<&str>) -> anyhow::Result<String> {
 /// mode, so the token is read as a plain line. That is what makes the command scriptable,
 /// and it is deliberate rather than a fallback: `tui-do login --url … < token` is a
 /// reasonable thing to want on a box being provisioned.
-fn ask_hidden(prompt: &str) -> anyhow::Result<String> {
+///
+/// A SIGTERM, SIGHUP or SIGQUIT while raw mode is on gives the terminal back and ends the
+/// command with `128 + signal`, as the inline `tui-do add` prompt does (BUG-31): the
+/// default action ends the process without unwinding, so the shell came back with no echo.
+/// `runtime` holds the handlers, and must outlive this call -- see
+/// `runtime::listen_for_signals`.
+fn ask_hidden(prompt: &str, runtime: &tokio::runtime::Handle) -> anyhow::Result<String> {
     if !std::io::stdin().is_terminal() {
         let mut line = String::new();
         std::io::stdin()
@@ -239,45 +254,89 @@ fn ask_hidden(prompt: &str) -> anyhow::Result<String> {
         return Ok(line.trim().to_string());
     }
 
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-
     print!("{prompt}: ");
     std::io::stdout()
         .flush()
         .context("could not write the prompt")?;
 
+    // Before raw mode, so there is no moment in it a signal would not be heard.
+    let mut caught = crate::runtime::listen_for_signals(runtime);
     crossterm::terminal::enable_raw_mode().context("could not read without echoing")?;
-    let outcome = read_secret();
+    let outcome = read_secret(crate::runtime::next_event, || caught.try_recv().ok());
     // Restore the terminal whatever happened, before anything is printed into it.
     let restored = crossterm::terminal::disable_raw_mode();
+    let token = match outcome {
+        Ok(Secret::Token(token)) => Ok(token),
+        Ok(Secret::Signalled(signal)) => {
+            // After a hangup the terminal has probably gone, and a write could fail or
+            // wait. Nothing has been written yet, so there is nothing else to undo.
+            if !signal.hung_up() {
+                println!();
+            }
+            std::process::exit(signal.exit_code());
+        }
+        Err(error) => Err(error),
+    };
     println!();
     restored.context("could not restore the terminal after reading the token")?;
-    return outcome;
+    token
+}
 
-    /// The read itself, factored out so raw mode is disabled on every path out of it.
-    fn read_secret() -> anyhow::Result<String> {
-        let mut token = String::new();
-        loop {
-            match event::read().context("could not read a keystroke")? {
-                Event::Paste(text) => token.push_str(text.trim()),
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Enter => return Ok(token.trim().to_string()),
-                    KeyCode::Backspace => {
-                        token.pop();
-                    }
-                    // Ctrl-C in raw mode is a keystroke rather than a signal, so it has to
-                    // be answered here or the prompt cannot be escaped at all.
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        bail!("cancelled.")
-                    }
-                    KeyCode::Esc => bail!("cancelled."),
-                    KeyCode::Char(c) => token.push(c),
-                    _ => {}
-                },
+/// How the hidden prompt ended, when it was not cancelled.
+#[derive(Debug, PartialEq, Eq)]
+enum Secret {
+    /// Enter.
+    Token(String),
+    /// SIGTERM, SIGHUP or SIGQUIT arrived while the prompt held the terminal.
+    Signalled(crate::runtime::Signal),
+}
+
+/// The read itself, factored out so raw mode is disabled on every path out of it.
+///
+/// `events` is `runtime::next_event` everywhere but the tests, which feed keys in, and
+/// `signalled` is asked before every poll, so a signal is noticed within one
+/// `runtime::INPUT_POLL` -- the shape of `runtime::prompt::ask`.
+fn read_secret(
+    mut events: impl FnMut(std::time::Duration) -> std::io::Result<Option<crossterm::event::Event>>,
+    mut signalled: impl FnMut() -> Option<crate::runtime::Signal>,
+) -> anyhow::Result<Secret> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+
+    let mut token = String::new();
+    loop {
+        if let Some(caught) = signalled() {
+            return Ok(Secret::Signalled(caught));
+        }
+        let Some(event) =
+            events(crate::runtime::INPUT_POLL).context("could not read a keystroke")?
+        else {
+            continue;
+        };
+        match event {
+            Event::Paste(text) => token.push_str(text.trim()),
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Enter => return Ok(Secret::Token(token.trim().to_string())),
+                KeyCode::Backspace => {
+                    token.pop();
+                }
+                // Ctrl-C in raw mode is a keystroke rather than a signal, so it has to
+                // be answered here or the prompt cannot be escaped at all.
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    bail!("cancelled.")
+                }
+                KeyCode::Esc => bail!("cancelled."),
+                KeyCode::Char(c) => token.push(c),
                 _ => {}
-            }
+            },
+            _ => {}
         }
     }
+}
+
+/// What login says once the server has answered, with the name it gave made printable:
+/// it is the server's text, and a control character in it could forge a line of output.
+fn signed_in(who: &str) -> String {
+    format!("Signed in as {}.", crate::runtime::printable(who))
 }
 
 /// Accept what a person would type and turn it into a base URL.
@@ -313,23 +372,18 @@ fn normalise_url(raw: &str) -> anyhow::Result<String> {
 ///
 /// Returns the display name, falling back to the login name — `User::name` is frequently
 /// empty, which the model already documents.
-fn verify(url: &str, token: &str) -> anyhow::Result<String> {
+fn verify(runtime: &tokio::runtime::Runtime, url: &str, token: &str) -> anyhow::Result<String> {
     let client = tui_do_api::Client::builder(url)
         .credentials(tui_do_api::Credentials::api_token(token.to_string()))
         .build()
         .with_context(|| format!("{url} is unusable"))?;
 
-    let user = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("could not start the async runtime")?
-        .block_on(client.current_user())
-        .with_context(|| {
-            format!(
-                "the token was refused. If it is newly created, check it carries \
+    let user = runtime.block_on(client.current_user()).with_context(|| {
+        format!(
+            "the token was refused. If it is newly created, check it carries \
                  `other → user` — see {PERMISSIONS_URL}"
-            )
-        })?;
+        )
+    })?;
 
     Ok(if user.name.trim().is_empty() {
         user.username
@@ -537,5 +591,72 @@ mod tests {
             token_file_for(Path::new("/x/dev.yaml"), Some(&inline)),
             PathBuf::from("dev-token")
         );
+    }
+
+    /// Feed `keys` to [`read_secret`] one poll at a time, with `signal` arriving before the
+    /// poll numbered `at`. A prompt still reading once the keys run out is an error rather
+    /// than a hang.
+    fn read_with(
+        keys: &str,
+        signal: Option<(usize, crate::runtime::Signal)>,
+    ) -> anyhow::Result<Secret> {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut queue: std::collections::VecDeque<Event> = keys
+            .chars()
+            .map(|c| {
+                let code = if c == '\n' {
+                    KeyCode::Enter
+                } else {
+                    KeyCode::Char(c)
+                };
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+            })
+            .collect();
+        let polled = std::cell::Cell::new(0);
+        read_secret(
+            |_| {
+                polled.set(polled.get() + 1);
+                queue
+                    .pop_front()
+                    .map(Some)
+                    .ok_or_else(|| std::io::Error::other("ran out of keys"))
+            },
+            || signal.and_then(|(at, caught)| (polled.get() == at).then_some(caught)),
+        )
+    }
+
+    /// The token is what was typed up to Enter.
+    #[test]
+    fn the_hidden_prompt_answers_what_was_typed() {
+        assert_eq!(
+            read_with("tk_abc\n", None).unwrap(),
+            Secret::Token("tk_abc".to_string())
+        );
+    }
+
+    /// The bug: a SIGTERM while the prompt waited left raw mode on, because the prompt
+    /// never looked for one. It is noticed between keys now and ends the prompt, so the
+    /// caller can give the terminal back and exit with the signal's code (BUG-31).
+    #[test]
+    fn a_signal_ends_the_hidden_prompt_between_keys() {
+        use crate::runtime::Signal;
+
+        for signal in [Signal::Terminate, Signal::Hangup, Signal::Quit] {
+            assert_eq!(
+                read_with("tk_abc\n", Some((2, signal))).unwrap(),
+                Secret::Signalled(signal),
+                "{signal:?}"
+            );
+        }
+    }
+
+    /// The name is the server's text, so a control character in it is replaced rather
+    /// than written to the terminal, where it could forge a line of output.
+    #[test]
+    fn the_signed_in_name_is_made_printable() {
+        let line = signed_in("Mallory\n\u{1b}]0;owned\u{7}");
+        assert!(line.starts_with("Signed in as Mallory"), "{line}");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
     }
 }

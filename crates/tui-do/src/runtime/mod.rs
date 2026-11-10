@@ -41,7 +41,7 @@ use tui_do_ui::theme::{ColorDepth, Theme};
 use tui_do_ui::update::reload_everything;
 use tui_do_ui::{update, view, Effect, Model, Msg};
 
-use signals::Signal;
+pub(crate) use signals::Signal;
 use terminal::TerminalGuard;
 
 /// How often the clock is reported to the model.
@@ -51,7 +51,7 @@ use terminal::TerminalGuard;
 const TICK: Duration = Duration::from_secs(1);
 
 /// How long the input reader waits before checking whether it should stop.
-const INPUT_POLL: Duration = Duration::from_millis(100);
+pub(crate) const INPUT_POLL: Duration = Duration::from_millis(100);
 
 /// The current time, in this machine's zone.
 ///
@@ -936,7 +936,7 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
 /// Every control character goes, `\n` and `\t` included, because every caller
 /// interpolates into the middle of a sentence where neither is legitimate -- and a
 /// newline forges a line of output that reads as tui-do's own.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { '\u{fffd}' } else { c })
         .collect()
@@ -1019,7 +1019,7 @@ fn spawn_input(tx: LoopTx, stop: Arc<AtomicBool>) {
 }
 
 /// The next terminal event, or `None` if none arrived within `timeout`.
-fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
+pub(crate) fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
     if crossterm::event::poll(timeout)? {
         crossterm::event::read().map(Some)
     } else {
@@ -1412,6 +1412,27 @@ fn token_listing(vocabulary: &tui_do_ui::assist::Vocabulary) -> String {
     out
 }
 
+/// Listen for SIGTERM, SIGHUP and SIGQUIT on `runtime`, for a prompt that holds the
+/// terminal in raw mode outside the interface (BUG-31).
+///
+/// The prompt asks the receiver between keys and gives the terminal back when one has
+/// arrived. Spawned plainly rather than through `spawn_effect`, which reports to an event
+/// loop a prompt does not have; the listener does nothing that could panic. `runtime` must
+/// have worker threads and must outlive the prompt: once the receiver is dropped a signal
+/// ends the process with its code, but only while the listener task is still running --
+/// after the runtime is gone, the handlers tokio installed swallow the signal.
+pub(crate) fn listen_for_signals(runtime: &tokio::runtime::Handle) -> UnboundedReceiver<Signal> {
+    let (to, caught) = mpsc::unbounded_channel();
+    let listener = {
+        let _context = runtime.enter();
+        signals::listen(to)
+    };
+    if let Some(listener) = listener {
+        runtime.spawn(listener);
+    }
+    caught
+}
+
 /// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run
 /// with no text. `None` when the user cancelled.
 ///
@@ -1430,20 +1451,11 @@ pub fn ask_for_task(
     dry_run: bool,
 ) -> anyhow::Result<Option<String>> {
     let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
-    // Before raw mode, as in `run` (BUG-31). Spawned plainly rather than through
-    // `spawn_effect`, which reports to an event loop the prompt does not have; the
-    // listener does nothing that could panic. Its receiver goes when this returns, and a
+    // Before raw mode, as in `run` (BUG-31). Its receiver goes when this returns, and a
     // signal after that ends the process with its code as the default action would --
     // the terminal is no longer raw by then, but `add`'s push may be mid-request
     // (`signals::listen` says what that costs).
-    let (to, mut caught) = mpsc::unbounded_channel();
-    let listener = {
-        let _context = runtime.enter();
-        signals::listen(to)
-    };
-    if let Some(listener) = listener {
-        runtime.spawn(listener);
-    }
+    let mut caught = listen_for_signals(runtime);
     let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
     let answer = prompt::ask(guard.terminal(), &mut prompt, next_event, || {
         caught.try_recv().ok()
