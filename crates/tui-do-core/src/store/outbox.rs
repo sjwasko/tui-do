@@ -44,7 +44,7 @@ use tui_do_api::models::{Label, LabelId, Task, TaskId};
 
 use super::labels::{attach_label, is_being_created, upsert_label};
 use super::state::{read_state, write_state};
-use super::tasks::upsert_task;
+use super::tasks::{read_task, upsert_server_task, upsert_task};
 use super::{DecodeCount, Store};
 use crate::error::Result;
 
@@ -1031,6 +1031,23 @@ impl Store {
     /// Any entry still queued against the provisional id is retargeted, which is why a
     /// create must be the first thing drained for its task.
     ///
+    /// Two cases do not store the server's answer as it came:
+    ///
+    /// - **The task was deleted before the create was sent.** The provisional row is gone
+    ///   and a `DeleteTask` for it is queued, so writing row `assigned.id` would put back
+    ///   a task the user deleted, and nothing but a full pull would remove it again. No
+    ///   row is written; the delete is still retargeted, so the server's copy goes too,
+    ///   and a refused delete restores `before` under the real id as any rollback does.
+    /// - **Something else is still queued for it.** The answer is the task as created,
+    ///   before the edits queued behind it, so storing it would show the pre-edit copy
+    ///   until they are sent. The local row is kept instead, with the fields only the
+    ///   server can assign taken from the answer.
+    ///
+    /// Cancelling the unsent create when the delete is queued was the alternative, and
+    /// is not safe: a create whose request went out and whose answer was lost (BUG-33)
+    /// may already exist on the server, and cancelling it would orphan that task with
+    /// nothing queued to delete it. This way the server is always told.
+    ///
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure, or
     /// [`crate::CoreError::Encoding`] if a queued payload cannot be re-encoded.
@@ -1042,7 +1059,33 @@ impl Store {
     ) -> Result<()> {
         let now = Utc::now();
         self.write(move |tx| {
-            upsert_task(tx, &assigned, now)?;
+            let local = read_task(tx, provisional)?;
+            let queued_for = |kind: Option<&str>| -> Result<bool> {
+                Ok(tx.query_row(
+                    "SELECT exists(SELECT 1 FROM outbox
+                                    WHERE subject_id = ?1 AND subject_kind = 'task'
+                                      AND id != ?2 AND (?3 IS NULL OR kind = ?3))",
+                    params![provisional.get(), entry, kind],
+                    |row| row.get::<_, i64>(0),
+                )? == 1)
+            };
+            let deleted = local.is_none() && queued_for(Some("delete_task"))?;
+            if !deleted {
+                match local {
+                    Some(mut local) if queued_for(None)? => {
+                        local.id = assigned.id;
+                        local.identifier.clone_from(&assigned.identifier);
+                        local.index = assigned.index;
+                        local.created = assigned.created;
+                        local.updated = assigned.updated;
+                        if local.created_by.is_none() {
+                            local.created_by.clone_from(&assigned.created_by);
+                        }
+                        upsert_task(tx, &local, now)?;
+                    }
+                    _ => upsert_server_task(tx, &assigned, now)?,
+                }
+            }
             // `OR IGNORE` because the server's answer may already carry the same link;
             // the row is then dropped with the provisional task below.
             tx.execute(
