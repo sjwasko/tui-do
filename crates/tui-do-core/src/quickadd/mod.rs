@@ -462,8 +462,21 @@ fn prefixed(word: &str) -> Option<(TokenKind, String)> {
         '!' => TokenKind::Priority,
         _ => return None,
     };
-    let rest = chars.as_str();
-    Some((kind, unquote(rest)))
+    Some((kind, value_of(chars.as_str())))
+}
+
+/// A token's value from what follows its sigil.
+///
+/// Quoted or bracketed, everything inside. Otherwise without the punctuation that ends a
+/// sentence, which [`words::Word::trimmed`] reads keywords without: `*groceries.` at the
+/// end of a line was a label called `groceries.`. The punctuation still leaves the title
+/// with the token, as a date's does.
+fn value_of(rest: &str) -> String {
+    let inner = unquote(rest);
+    if inner != rest {
+        return inner;
+    }
+    rest.trim_end_matches(words::TRAILING).to_string()
 }
 
 /// Strip a matched pair of quotes or brackets.
@@ -766,6 +779,44 @@ mod tests {
         let parsed = parse("Odd one due feb 30", &clock);
         assert_eq!(on_evening(parsed.due_date), "none");
         assert_eq!(parsed.title, "Odd one due feb 30");
+    }
+
+    #[test]
+    fn a_name_does_not_keep_the_sentences_punctuation() {
+        // `*groceries.` attached a label called `groceries.`. The punctuation goes with the
+        // token, as a date's own does (`call mom tomorrow.` is `call mom`).
+        let clock = evening();
+        let parsed = parse("Buy milk *groceries.", &clock);
+        assert_eq!(parsed.labels, vec!["groceries"]);
+        assert_eq!(parsed.title, "Buy milk");
+
+        let parsed = parse("Call @alice, then file it +Admin!", &clock);
+        assert_eq!(parsed.assignees, vec!["alice"]);
+        assert_eq!(parsed.project.as_deref(), Some("Admin"));
+        assert_eq!(parsed.title, "Call then file it");
+
+        let parsed = parse("Ship it !3.", &clock);
+        assert_eq!(parsed.priority, Some(3));
+        assert_eq!(parsed.title, "Ship it");
+
+        // A quoted or bracketed name keeps everything inside it.
+        let parsed = parse(r#"Tag it *"v1." +[Q3?]"#, &clock);
+        assert_eq!(parsed.labels, vec!["v1."]);
+        assert_eq!(parsed.project.as_deref(), Some("Q3?"));
+        assert_eq!(parsed.title, "Tag it");
+
+        // Punctuation and nothing else is not a name, so it stays as text.
+        let parsed = parse("Huh *?! +...", &clock);
+        assert!(parsed.labels.is_empty());
+        assert_eq!(parsed.project, None);
+        assert_eq!(parsed.title, "Huh *?! +...");
+
+        // And a name that ends in punctuation is written back in brackets, so it reads
+        // back whole.
+        let parsed = parse(r#"Tag it *"v1.""#, &clock);
+        let line = parsed.canonical(&clock.timezone());
+        assert_eq!(line, "Tag it *[v1.]");
+        assert!(parse(&line, &clock).same_fields(&parsed));
     }
 
     #[test]
