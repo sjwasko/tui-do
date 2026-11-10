@@ -160,6 +160,10 @@ fn phrase<Tz: TimeZone>(
         }
     }
 
+    if let Some(at) = in_hours(words, index, now) {
+        return Some((at, 3));
+    }
+
     // Try longest first so "next week" wins over "next" and "end of month" over "end".
     for length in (1..=4.min(words.len() - index)).rev() {
         let slice: Vec<String> = words[index..index + length]
@@ -174,6 +178,30 @@ fn phrase<Tz: TimeZone>(
         }
     }
     None
+}
+
+/// `in 3 hours`: that long from `now`, as an exact instant rather than a day.
+///
+/// Every other phrase names a day and takes the field's default time, but an hour count
+/// is a time, and resolving it to today at 23:59 put `in 30 hours` at 22:30 eighty-nine
+/// minutes away. Rounded down to the minute, which is all a written date can say, so the
+/// canonical line names it exactly. No trailing `at` is read: the count already says when.
+fn in_hours<Tz: TimeZone>(
+    words: &[Word],
+    index: usize,
+    now: &DateTime<Tz>,
+) -> Option<DateTime<Utc>> {
+    let [first, count, unit_word] = words.get(index..index + 3)? else {
+        return None;
+    };
+    if !first.is("in") || unit(unit_word.trimmed()) != Some(Unit::Hour) {
+        return None;
+    }
+    let hours: u32 = count.trimmed().parse().ok()?;
+    let at = now
+        .with_timezone(&Utc)
+        .checked_add_signed(chrono::TimeDelta::try_hours(i64::from(hours))?)?;
+    at.with_second(0)?.with_nanosecond(0)
 }
 
 /// Apply a trailing `at <time>`, or the field's default time of day.
@@ -269,8 +297,8 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
             Unit::Year => {
                 today.checked_add_months(Months::new(u32::try_from(amount).ok()?.checked_mul(12)?))
             }
-            // "in 3 hours" is a time, not a date; handled by the caller's default time.
-            Unit::Hour => Some(today),
+            // A time, not a date: `in_hours` reads it.
+            Unit::Hour => None,
         };
     }
 

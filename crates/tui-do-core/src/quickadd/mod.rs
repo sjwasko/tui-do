@@ -650,6 +650,40 @@ mod tests {
     }
 
     #[test]
+    fn in_hours_is_that_many_hours_from_now() {
+        // It was always today at 23:59, so at 22:30 `in 30 hours` was due in 89 minutes.
+        let clock = evening();
+        for (input, due) in [
+            ("call in 30 hours", "2026-11-07 04:30"),
+            ("call in 1 hour", "2026-11-05 23:30"),
+            ("call in 2 hours", "2026-11-06 00:30"),
+            ("call due in 48 hours", "2026-11-07 22:30"),
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, "call", "{input:?}");
+            assert_eq!(on_evening(parsed.due_date), due, "{input:?}");
+        }
+        let parsed = parse("call start in 3 hours", &clock);
+        assert_eq!(on_evening(parsed.start_date), "2026-11-06 01:30");
+
+        // An exact instant, to the minute, so the canonical line names it and reads back.
+        let seconds = crate::zone::pinned(
+            FixedOffset::west_opt(5 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 11, 5, 22, 30, 41)
+                .unwrap(),
+        );
+        let parsed = parse("call in 30 hours", &seconds);
+        assert_eq!(
+            parsed.due_date,
+            Some(Utc.with_ymd_and_hms(2026, 11, 7, 9, 30, 0).unwrap())
+        );
+        let line = parsed.canonical(&seconds.timezone());
+        assert_eq!(line, "call due 2026-11-07 at 04:30");
+        assert!(parse(&line, &seconds).same_fields(&parsed));
+    }
+
+    #[test]
     fn a_plain_title_stays_a_plain_title() {
         let parsed = p("Buy milk");
         assert_eq!(parsed.title, "Buy milk");
