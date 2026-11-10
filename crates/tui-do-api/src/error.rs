@@ -109,6 +109,9 @@ pub enum ApiError {
     Server {
         /// HTTP status returned by the server.
         status: u16,
+        /// How long to wait before retrying, when the server sent `Retry-After`. A 503
+        /// from a server in maintenance, or a proxy in front of one, is the usual case.
+        retry_after: Option<std::time::Duration>,
         /// Server-supplied message, or the raw body when it was not JSON.
         message: String,
     },
@@ -218,7 +221,9 @@ impl ApiError {
     #[must_use]
     pub fn retry_after(&self) -> Option<std::time::Duration> {
         match self {
-            Self::RateLimited { retry_after, .. } => *retry_after,
+            Self::RateLimited { retry_after, .. } | Self::Server { retry_after, .. } => {
+                *retry_after
+            }
             _ => None,
         }
     }
@@ -259,6 +264,7 @@ impl ApiError {
             },
             500..=599 => Self::Server {
                 status,
+                retry_after,
                 message: body.message.clone(),
             },
             _ => Self::Rejected {
@@ -358,6 +364,21 @@ mod tests {
         assert!(ApiError::from_status(429, &body, None).is_retryable());
         assert!(!ApiError::from_status(400, &body, None).is_retryable());
         assert!(!ApiError::from_status(401, &body, None).is_retryable());
+    }
+
+    #[test]
+    fn a_server_error_says_how_long_to_wait_when_the_server_did() {
+        // The sync engine's defer path asks `retry_after()` of every failure; a 503
+        // carrying `Retry-After` used to answer `None` and back off on its own schedule.
+        let wait = Some(std::time::Duration::from_secs(30));
+        let body = ErrorBody::default();
+        for status in [500, 502, 503, 504] {
+            assert_eq!(
+                ApiError::from_status(status, &body, wait).retry_after(),
+                wait,
+                "{status}"
+            );
+        }
     }
 
     #[test]
