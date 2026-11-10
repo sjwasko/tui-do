@@ -575,14 +575,19 @@ impl Sync {
             }
             let candidate = queue.next_candidate(|queued, mutation| {
                 let subject = queued.subject;
-                if attempted.contains(&queued.id)
-                    || blocked.contains(&subject)
-                    || mutation.is_some_and(|mutation| {
-                        blocked_labels
-                            .iter()
-                            .any(|label| references(mutation, *label))
-                    })
-                {
+                if attempted.contains(&queued.id) || blocked.contains(&subject) {
+                    return false;
+                }
+                if mutation.is_some_and(|mutation| {
+                    blocked_labels
+                        .iter()
+                        .any(|label| references(mutation, *label))
+                }) {
+                    // Held back by its label, and so in the way of its own task exactly as
+                    // a deferred entry is: otherwise a `DeleteTask` queued behind this
+                    // attach overtakes it, and the attach follows it to a task the server
+                    // no longer has.
+                    blocked.insert(subject);
                     return false;
                 }
                 if backoff == Backoff::Respect && !queued.is_due(now) {
@@ -622,6 +627,8 @@ impl Sync {
                 .iter()
                 .any(|label| references(&entry.mutation, *label))
             {
+                // As in the scan: what waits for its label waits in front of its task.
+                blocked.insert(entry.mutation.subject());
                 queue.keep(entry.id, entry.mutation);
                 continue;
             }

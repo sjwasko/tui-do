@@ -3186,3 +3186,59 @@ async fn a_failing_label_rename_does_not_hold_back_the_attaches_of_that_label() 
         "the attach was held back by a rename in its backoff"
     );
 }
+
+#[tokio::test]
+async fn an_entry_held_back_by_its_label_still_holds_back_its_task() {
+    // The attach waits for the label it names, but its subject is task 5, and a later
+    // entry for task 5 was free to overtake it. The delete went out first, and the
+    // attach then followed it to a task the server no longer has.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{API}/tasks/5")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store.upsert_tasks(vec![task(5, "post")]).await.unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(5),
+            label: Box::new(label(-1, "next")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::DeleteTask {
+            before: Box::new(task(5, "post")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+    assert_eq!(
+        report.sent, 0,
+        "the delete overtook the attach queued before it"
+    );
+    assert_eq!(report.deferred, 3);
+
+    // And on the next pass, with the create inside its backoff.
+    let second = sync.push().await.unwrap();
+    assert_eq!(
+        second.sent, 0,
+        "the delete overtook the attach on the next pass"
+    );
+}
