@@ -1,8 +1,8 @@
 tui-do  Work                 ⟳ synced 2m ago
 ┌Keys have changed──────────────────────────┐
 │ Keys now match Vikunja's web shortcuts    │
-│ and the omavikunja panel: a key does the  │
-│ same thing in all three.                  │
+│ as well as the Omarchy plugin named       │
+│ omavikunja to maintain consistency.       │
 │                                           │
 │   t      Mark done                was d   │
 │   d      Set the due date         was D   │

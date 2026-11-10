@@ -11,8 +11,8 @@ Projects               │ !!! Ship the release    Work                Tomorrow 
                        │                                                        │
                        │             ┌Keys have changed──────────────────────────┐The refresh call needs the cookie set
                        │             │ Keys now match Vikunja's web shortcuts    │by POST /login.
-                       │             │ and the omavikunja panel: a key does the  │
-                       │             │ same thing in all three.                  │
+                       │             │ as well as the Omarchy plugin named       │
+                       │             │ omavikunja to maintain consistency.       │
                        │             │                                           │
                        │             │   t      Mark done                was d   │
                        │             │   d      Set the due date         was D   │
