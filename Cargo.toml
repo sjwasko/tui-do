@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/tui-do", "crates/tui-do-api", "crates/tui-do-core", "crates/tui-do-smoke", "crates/tui-do-ui", "xtask"]
 
 [workspace.package]
-version = "1.2.1"
+version = "1.2.2"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -19,10 +19,10 @@ authors = ["Steve Wasko"]
 #
 # The alternative was to mark them unpublishable, which would have answered a question
 # nobody has asked yet. This keeps that open. **The version here must match the crate's
-# own** -- `workspace.package.version` above for `tui-do-api`, and the explicit `version`
-# in `tui-do-core` and `tui-do-ui`, which went to 2.0.0 in 1.1.0 for breaking API changes
-# while the binary stayed on 1.x. Bump both together.
-tui-do-api = { path = "crates/tui-do-api", version = "1.2.1" }
+# own** -- the explicit `version` in `tui-do-api`, `tui-do-core` and `tui-do-ui`. Core and
+# ui went to 2.0.0 in 1.1.0, and api in 1.2.2, for breaking API changes while the binary
+# stayed on 1.x. Bump both together.
+tui-do-api = { path = "crates/tui-do-api", version = "2.0.0" }
 tui-do-core = { path = "crates/tui-do-core", version = "2.0.0" }
 tui-do-ui = { path = "crates/tui-do-ui", version = "2.0.0" }
 

@@ -394,7 +394,11 @@ while one at the end still comes out.
 | `!1` … `!5` | Priority, 1 lowest to 5 highest |
 | a date | `tomorrow`, `next friday`, `27aug26`, `aug 27`, `2026-08-27`, `27/08/2026` |
 | `due <date>` / `start <date>` | The same, said explicitly, and also `27.8`, `27/08`, `27/08/26` |
-| `every <n> <unit>` | Repeat: `every 2 weeks`, `every month` |
+| `every <n> <unit>` | Repeat: `every 2 weeks`, `every month`. With two `every`s, the last one that forms a repeat is used |
+
+**A weekday abbreviation needs `due` or `start` too** (`due fri`, `start mon`): `sun`,
+`sat` and `wed` are words as well, so `water plants in the sun` keeps its title. The full
+name, `friday`, works anywhere.
 
 **A date in digits alone needs `due` or `start` in front of it** unless it has a four-digit
 year. `call mom due 27.8` is due on 27 August; `llvm 1.6 GB`, `add 1/2 cup` and
