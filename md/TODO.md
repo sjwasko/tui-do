@@ -73,8 +73,9 @@ notes cite them — so this says *what order*, not *what number*.
   NEXT     3a         tui_do_core::agent + list/show --json
            3b         DROPPED 2026-11-09 -- Vikunja ships its own MCP server
 
-  DECIDE   What is NOW after item 8. The 2026-11-09 handoff lists BUG-33,
-           the six `tui-do add` findings, crates.io, and a cheaper full sync.
+  DECIDE   What is NOW after item 8. The 2026-11-09 handoff lists BUG-33
+           (fixed 2026-11-10), the six `tui-do add` findings, crates.io, and a
+           cheaper full sync.
            BUG-20 before November. The --json contract before 3a ships.
            Whether 3a is still wanted without 3b (see item 3).
            BUG-9 needs a decision, not work. BUG-7 is fixed.

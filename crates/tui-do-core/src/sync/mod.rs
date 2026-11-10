@@ -320,8 +320,9 @@ pub struct Sync {
     /// whole pages have been applied and the retain has not run, so the store is a little
     /// stale and the next pull fixes it. Aborting mid-*push* is not: the request may
     /// already have reached the server, and re-sending its entry creates the task a second
-    /// time. Vikunja has no idempotency key and `CreateTask` has no read-before-retry the
-    /// way `CreateLabel` does, so the only defence is not to send it twice.
+    /// time. Vikunja has no idempotency key. Both creates read before they retry, armed by
+    /// a mark stored before the request leaves (BUG-19, BUG-33), but that read can adopt
+    /// another box's same-titled task, so not sending twice is still the better defence.
     ///
     /// Reproduced by hand on 2026-08-31 with the dev container paused: two tasks, ids 3889
     /// and 3891, both `Bug #3 - pause container test`.
@@ -622,10 +623,7 @@ impl Sync {
                     report.sent += 1;
                     queue.forget(entry.id);
                     // A settle rewrites what was queued behind a create.
-                    if matches!(
-                        entry.mutation,
-                        Mutation::CreateTask { .. } | Mutation::CreateLabel { .. }
-                    ) {
+                    if entry.mutation.is_create() {
                         queue.mark_stale();
                     }
                 }
@@ -714,6 +712,12 @@ impl Sync {
     /// store failure, which is a real error and ends the pass, while the inner one is
     /// the server's answer, which the caller weighs against [`is_permanent`].
     async fn deliver(&self, entry: &OutboxEntry) -> Result<std::result::Result<(), ApiError>> {
+        if entry.mutation.is_create() {
+            // Before the request, because a process that dies waiting for the answer
+            // stores nothing after it. `entry` is the copy read before this mark, so it
+            // is the *next* attempt that sees it and reads before it writes (BUG-33).
+            self.store.mark_sent(entry.id).await?;
+        }
         let sent = {
             // Cleared by `Drop`, so an aborted push does not leave it set.
             let _requesting = Flag::raised(&self.requesting);
@@ -792,8 +796,10 @@ impl Sync {
     /// adopted and carrying the priority and label queued behind it, 3915 left on the
     /// server belonging to nobody.
     ///
-    /// **Gated on the entry having already failed**, because a first attempt has nothing of
-    /// its own to find and everything it could adopt belongs to somebody else.
+    /// **Gated on an earlier attempt having possibly reached the server**: a recorded
+    /// failure, or a request marked as sent whose answer was never stored, which is what
+    /// a process killed mid-request leaves (BUG-33). A first attempt has nothing of its
+    /// own to find and everything it could adopt belongs to somebody else.
     ///
     /// **Three things narrow what may be adopted**, and each rules out a way of stealing a
     /// task that is not ours:
@@ -814,7 +820,7 @@ impl Sync {
         entry: &OutboxEntry,
         task: &Task,
     ) -> std::result::Result<Task, ApiError> {
-        if entry.is_failing() {
+        if entry.may_have_been_sent() {
             for candidate in self.client.tasks_named(&task.title).await? {
                 if candidate.project_id != task.project_id {
                     continue;
@@ -896,9 +902,11 @@ impl Sync {
                 // different ids, and `0` and `-7` in the body both came back
                 // server-assigned.
                 //
-                // Gated on the entry having already failed rather than done always,
-                // because a *first* attempt has no earlier attempt of its own to find:
-                // everything it could adopt belongs to somebody else.
+                // Gated on an earlier attempt having possibly reached the server -- a
+                // recorded failure, or a send marked before a process died waiting for
+                // its answer (BUG-33) -- rather than done always, because a *first*
+                // attempt has no earlier attempt of its own to find: everything it could
+                // adopt belongs to somebody else.
                 //
                 // The gate narrows that, it does not close it. A retry whose first
                 // attempt never reached the server -- a connect timeout, a DNS failure --
@@ -909,7 +917,7 @@ impl Sync {
                 // nothing can tell the two retries apart without a unique constraint the
                 // server does not have. So this protects against *our own* replay, and
                 // only mostly.
-                if entry.is_failing() {
+                if entry.may_have_been_sent() {
                     let existing = self.client.labels_named(&label.title).await?;
                     if existing.len() > 1 {
                         // Titles are not unique, so the server may hold several exact

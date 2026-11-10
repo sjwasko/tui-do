@@ -2719,3 +2719,219 @@ async fn an_entry_queued_mid_drain_goes_out_in_the_same_pass() {
     assert_eq!(store.pending_count().await.unwrap(), 0);
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
 }
+
+/// Start a push, wait until the server has received a request matching `verb`, then
+/// drop the push the way `kill -9` would: nothing after the request is recorded.
+async fn kill_mid_request(server: &MockServer, store: &Store, verb: &str) {
+    let (engine, _rx) = engine(server, store);
+    let sync = Arc::new(engine);
+    let running = tokio::spawn({
+        let sync = Arc::clone(&sync);
+        async move {
+            let _ = sync.push().await;
+        }
+    });
+    let mut reached = false;
+    for _ in 0..200 {
+        let requests = server.received_requests().await.unwrap_or_default();
+        if requests.iter().any(|r| r.method.as_str() == verb) {
+            reached = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(reached, "the create never reached the server");
+    running.abort();
+    let _ = running.await;
+}
+
+#[tokio::test]
+async fn a_task_create_cut_off_mid_request_adopts_on_the_next_push() {
+    // BUG-33. The read-before-retry BUG-19 added was gated on a recorded failure, and a
+    // process killed mid-request records nothing: the entry came back with `attempts = 0`,
+    // skipped the read, and made the task a second time. The request reaching the server
+    // is what makes a duplicate possible, so that is what the store must remember.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(task_json(3915, "whiskey"))
+                .set_delay(std::time::Duration::from_secs(30)),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+
+    kill_mid_request(&server, &store, "PUT").await;
+
+    // The next launch. The server made the task while nobody was listening.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .and(query_param("s", "whiskey"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![task_json(3915, "whiskey")]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(3916, "whiskey")))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    assert!(store.task(provisional).await.unwrap().is_none());
+    assert!(
+        store.task(TaskId(3915)).await.unwrap().is_some(),
+        "the retry did not adopt the task the cut-off request made"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_task_create_cut_off_mid_request_still_creates_when_nothing_landed() {
+    // The gate must not turn into "never retry": a request the server never acted on
+    // leaves nothing to find, and the retry makes the task.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_delay(std::time::Duration::from_secs(30)))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+
+    kill_mid_request(&server, &store, "PUT").await;
+
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .and(query_param("s", "whiskey"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(Vec::<serde_json::Value>::new()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(77, "whiskey")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 1);
+    assert!(store.task(TaskId(77)).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_first_task_create_does_not_read_before_it_writes() {
+    // The cost side of the BUG-33 fix: the mark is set before the request, but it is the
+    // *stored* mark from an earlier attempt that arms the read, so a first attempt still
+    // goes straight to the create.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(77, "whiskey")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "whiskey")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+}
+
+#[tokio::test]
+async fn a_label_create_cut_off_mid_request_adopts_on_the_next_push() {
+    // BUG-33's label half: the same gate, the same gap.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"id": 41, "title": "next"}))
+                .set_delay(std::time::Duration::from_secs(30)),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    store
+        .queue(Mutation::CreateLabel {
+            label: Box::new(label(0, "next")),
+        })
+        .await
+        .unwrap();
+
+    kill_mid_request(&server, &store, "PUT").await;
+
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels")))
+        .and(query_param("s", "next"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-pagination-total-pages", "1")
+                .set_body_json(vec![json!({"id": 41, "title": "next"})]),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 42, "title": "next"})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (sync, _rx) = engine(&server, &store);
+    assert_eq!(sync.push().await.unwrap().sent, 1);
+    let labels = store
+        .labels(LabelFilter::default(), LabelSort::default())
+        .await
+        .unwrap();
+    assert_eq!(labels.len(), 1, "one label, not two; saw {labels:?}");
+    assert_eq!(labels[0].id, LabelId(41));
+}

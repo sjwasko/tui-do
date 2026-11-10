@@ -49,7 +49,7 @@ throughout, both learned the hard way in this pass:
 | ~~BUG-31~~ | FIXED — four pty runs under `script` (SIGTERM, SIGHUP and SIGQUIT on the interface, SIGTERM on the add prompt), each failing on the old code with raw mode left on, plus loop, flush and prompt tests | yes |
 | ~~BUG-34~~ | FIXED — the interface's `a` assigns by id, exact case first, once each, and reports an unknown name; the binary sends `"assignees":[{"id":3,…` to wiremock; the store returns users with ids | yes |
 | ~~BUG-35~~ | FIXED — the binary against wiremock: a `412` exits 1 with the message and no `Sent.`, a `201` still says `Sent.`, and both limits refuse a dry run and a real add with no request made | yes |
-| BUG-33 | abort a push once a held mock has received the create, then push again: one `PUT` must reach the server, or the second must adopt | yes |
+| ~~BUG-33~~ | FIXED — four `tests/sync.rs` cases: a task and a label create aborted once the held mock has the `PUT` adopt on the next push with no second `PUT`; one with nothing on the server still creates; a first attempt makes no search. The three abort cases fail with the gate reverted | yes |
 | ~~BUG-32~~ | FIXED — nine `input_window` table tests, three render tests (`e` on a 120-character title, a long `/` query, a long `tui-do add` line) that failed on the old code | yes |
 | ~~BUG-3~~ | FIXED — reproduced by hand, guarded by an abort test | yes |
 | BUG-4 | classifier table + one 408 integration test | yes |
@@ -77,7 +77,7 @@ throughout, both learned the hard way in this pass:
 | **Found in real use** | ~~BUG-32~~ — FIXED 2026-11-08: a single-line field longer than its box scrolls to keep the caret visible, with `…` on the side that hides text. Every one-line field had the bug, not only the edit form's title |
 | **Found in review** | ~~BUG-31~~ — FIXED 2026-11-08: SIGTERM, SIGHUP and SIGQUIT quit the way `q` does, restoring the terminal and flushing, and exit with 128 plus the signal. A second signal leaves at once |
 | **Found by the `tui-do add` smoke test** | ~~BUG-34~~ — FIXED 2026-11-09: `@user` assigns by id, and an unknown name is reported. ~~BUG-35~~ — FIXED 2026-11-09: a create the server rejects exits 1 with its reason, and the title and repeat limits are checked before queuing. Six minor findings under Minor |
-| **Found fixing BUG-31** | **BUG-33** — open, Important: a create whose request reached the server before the process ended is sent again on the next launch, and makes a second task. The read-before-retry BUG-19 added only runs for an entry with a recorded failure, and a killed process records nothing |
+| **Found fixing BUG-31** | ~~BUG-33~~ — FIXED 2026-11-10, Important: a create cut off mid-request made a second task on the next launch. A create is now marked sent in the store before the request leaves, and that mark arms the read-before-retry as a recorded failure does |
 | **Decide, then fix** | Nothing. ~~BUG-24~~ was decided and fixed 2026-11-08: a date in digits alone needs `due` or `start`, and `tui-do add` names the dates it set |
 | **Accepted, not fixing** | BUG-2 — still accepted, re-argued 2026-09-13: the window is sub-50 µs and the mutations that reach it commute, but its residual is now reproduced (BUG-22), its mutex is implicated a second time (BUG-23), and the MCP crate is constrained not to inherit it |
 | **Found by the drain torture test** | ~~BUG-21~~, ~~BUG-22~~, ~~BUG-23~~ and ~~BUG-28~~ are fixed. BUG-23 fixed the drain, the backlog at key-up and the quit wording; ~~BUG-28~~ — FIXED 2026-11-08 — the push while a key is held, by reading a task list's labels, assignees and reminders in one statement each: 141 → 25 ms a read. Fixed against the ~30 sends/s threshold decided when BUG-28 was filed: a held key still costs the push most of its throughput, now 97-182/s against 624/s idle |
@@ -2230,7 +2230,21 @@ query with the caret checked after every key. A third, in `runtime/prompt.rs`, t
 three failed on the old code: the title test and the add test could not see the end of the
 line, and the search test lost the caret.
 
-### BUG-33 — a create cut off mid-request is sent again on the next launch, and can make a second task
+### ~~BUG-33~~ — FIXED 2026-11-10 — a create cut off mid-request is sent again on the next launch, and can make a second task
+
+**The fix, option 1 of the three below.** Schema v6 adds `outbox.sent_at`, and
+`Sync::deliver` writes it through `Store::mark_sent` before a `CreateTask` or `CreateLabel`
+goes on the wire. `OutboxEntry::may_have_been_sent` is `is_failing() || sent_at.is_some()`,
+and both creates' read-before-retry are gated on it. The entry in hand is the copy read
+before the mark, so a first attempt still makes no search. The created-window check in
+step 2 was not added: the three existing checks are unchanged, and a skewed clock would
+only turn an adoption into a duplicate. Step 3 was not needed: every way an entry is
+answered deletes its row, and a deferral bumps `attempts`, which arms the read anyway. The
+label read is weaker than the task one, which checks the local row: it adopts any exact
+title, so a kill before the `PUT` landed can now adopt another box's same-titled label.
+That is the trade the `CreateLabel` arm already documents for a connect failure, reached
+one more way. A database at v6 is refused by v1.1.0 and older,
+as every migration is.
 
 `crates/tui-do-core/src/sync/mod.rs`: `Sync::create_or_adopt` (~812) and its gate,
 `OutboxEntry::is_failing` in `store/outbox.rs` (~496). The `CreateLabel` arm (~889) has the

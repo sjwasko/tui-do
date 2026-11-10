@@ -193,6 +193,16 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE outbox ADD COLUMN subject_kind TEXT NOT NULL DEFAULT 'task';
     CREATE INDEX outbox_by_subject_kind ON outbox (subject_kind, subject_id);
     ",
+    // v6 -- when a create was last put on the wire (BUG-33).
+    //
+    // A create's read-before-retry was armed only by a recorded failure, and a process
+    // killed mid-request records nothing, so the entry came back looking untried and
+    // made a second task. Set before the request leaves, never cleared until the entry
+    // is: NULL means "this has never been sent", which is what every existing row with
+    // `attempts = 0` means.
+    r"
+    ALTER TABLE outbox ADD COLUMN sent_at TEXT;
+    ",
 ];
 
 /// The schema version this build expects.
