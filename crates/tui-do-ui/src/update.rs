@@ -577,7 +577,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
     // over two screens of tasks for every one it showed.
     let page = rows::fit(
         &model.data.tasks,
-        &rows::measure(model.layout(), model.frames().list.width),
+        &rows::measure(model.layout(), model.frames().list_text().width),
         row_context(model),
         model.list.offset,
         body_height(model),
@@ -2931,7 +2931,7 @@ fn keep_selection_visible(model: &mut Model) {
     // that had decided it was already showing everything.
     let first = rows::first_visible(
         &model.data.tasks,
-        &rows::measure(model.layout(), model.frames().list.width),
+        &rows::measure(model.layout(), model.frames().list_text().width),
         row_context(model),
         index,
         body_height(model),

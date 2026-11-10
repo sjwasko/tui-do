@@ -46,7 +46,24 @@ impl Frames {
     pub const fn list_rows(&self) -> usize {
         self.list.height.saturating_sub(LIST_HEADING_HEIGHT) as usize
     }
+
+    /// Where the task list's rows are drawn: the list less its one-column gutter.
+    ///
+    /// The one width rows are both drawn and measured at. The scroll maths measured at
+    /// `list.width` while the view drew one column narrower, so a row that wrapped on
+    /// screen was one line to the maths and the selection walked off the bottom.
+    #[must_use]
+    pub const fn list_text(&self) -> Rect {
+        Rect {
+            x: self.list.x.saturating_add(LIST_GUTTER),
+            width: self.list.width.saturating_sub(LIST_GUTTER),
+            ..self.list
+        }
+    }
 }
+
+/// The column of gutter at the task list's left, so text never sits against a border.
+pub const LIST_GUTTER: u16 = 1;
 
 /// The width the sidebar takes at this terminal width.
 #[must_use]

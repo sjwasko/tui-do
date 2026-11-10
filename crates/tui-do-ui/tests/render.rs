@@ -962,6 +962,57 @@ fn the_selection_stays_on_screen_when_rows_wrap() {
     );
 }
 
+#[test]
+fn the_scroll_maths_measures_rows_at_the_width_they_are_drawn() {
+    // The list draws one column in from its edge, for the gutter, and the scroll maths
+    // measured at the full width. A title that fits in eighty columns and not in
+    // seventy-nine was one line to the maths and two on screen, so the selection walked
+    // off the bottom with the offset still at zero.
+    let mut model = fixture((80, 24));
+    model.layouts = vec![ColumnLayout {
+        name: "wrapping".to_string(),
+        description: None,
+        columns: vec![ColumnSpec {
+            wrap: true,
+            ..ColumnSpec::new(Column::Title)
+        }],
+    }];
+    model.layout_ix = 0;
+    let width = model.frames().list.width as usize;
+    model.data.tasks = (1..=30)
+        .map(|n| {
+            let mut title = format!("T{n:02}");
+            while title.len() + 5 <= width {
+                title.push_str(" word");
+            }
+            title.push_str(&"x".repeat(width - title.len()));
+            assert_eq!(title.len(), width);
+            Task {
+                id: TaskId(n),
+                project_id: ProjectId(1),
+                title,
+                ..Task::default()
+            }
+        })
+        .collect();
+    model.list.selected = Some(TaskId(1));
+    model.list.offset = 0;
+
+    for _ in 0..15 {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
+        );
+    }
+    assert_eq!(model.list.selected, Some(TaskId(16)));
+    let screen = draw(&model);
+    assert!(
+        screen.contains("T16 word"),
+        "the selected task is off screen at offset {}:\n{screen}",
+        model.list.offset
+    );
+}
+
 /// The style of the row containing `needle`, searched inside one pane only.
 ///
 /// Scoped to a pane on purpose: the preview draws the selected task's title too, so a

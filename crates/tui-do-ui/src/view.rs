@@ -33,7 +33,8 @@ pub fn view(model: &Model, frame: &mut Frame) {
     if let Some(area) = frames.sidebar {
         draw_sidebar(model, frame, area);
     }
-    list(model, frame, frames.list);
+    // Inside the gutter: the width rows are measured at, in update as here.
+    list(model, frame, frames.list_text());
     if let Some(area) = frames.preview {
         preview(model, frame, area);
     }
@@ -257,15 +258,9 @@ fn sidebar_line(row: &SidebarRow, model: &Model, focused: bool, width: u16) -> L
 /// The task list: column headings, then rows.
 fn list(model: &Model, frame: &mut Frame, area: Rect) {
     let theme = model.theme;
-    if area.height == 0 || area.width < 2 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-    // A column of gutter, so text never sits against the sidebar's border.
-    let area = Rect {
-        x: area.x + 1,
-        width: area.width - 1,
-        ..area
-    };
     let columns = rows::measure(model.layout(), area.width);
 
     // The list sits between the other two panes and owns no border of its own, so its
