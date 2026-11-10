@@ -498,6 +498,7 @@ async fn a_task_update_replaces_reminders_from_the_body() {
                 reminders: vec![tui_do_api::models::TaskReminder {
                     reminder: Some(remind_at).into(),
                     relative_period: 0,
+                    relative_to: None,
                 }],
                 ..Default::default()
             },

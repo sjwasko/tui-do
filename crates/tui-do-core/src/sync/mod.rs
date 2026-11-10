@@ -1457,6 +1457,16 @@ mod tests {
         }
     }
 
+    /// A redirect is a misconfigured URL, not a refusal, so the edit stays queued until
+    /// the config is fixed rather than being rolled back.
+    #[test]
+    fn a_redirect_is_not_the_servers_final_answer() {
+        assert!(!is_permanent(&ApiError::Redirected {
+            status: 301,
+            location: "https://vikunja.example/api/v1/tasks/1".into(),
+        }));
+    }
+
     /// The refusals that *are* final still are, including the 403 that reaches here.
     ///
     /// `Forbidden` is deliberately permanent: a detach the server has already honoured

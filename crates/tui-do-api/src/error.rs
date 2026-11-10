@@ -109,8 +109,29 @@ pub enum ApiError {
     Server {
         /// HTTP status returned by the server.
         status: u16,
+        /// How long to wait before retrying, when the server sent `Retry-After`. A 503
+        /// from a server in maintenance, or a proxy in front of one, is the usual case.
+        retry_after: Option<std::time::Duration>,
         /// Server-supplied message, or the raw body when it was not JSON.
         message: String,
+    },
+
+    /// The server answered with a redirect (3xx), which the client does not follow.
+    ///
+    /// Following one is how a write goes missing: reqwest's default policy turns a
+    /// `POST` answered `301` or `302` into a `GET` of the new location, and that `GET`'s
+    /// `200` read as the write's success. A Vikunja API does not redirect, so this means
+    /// the configured URL is wrong (`http` for `https`, a proxy path) -- a thing to fix
+    /// in the config, not the server's last word on the request. The sync engine
+    /// therefore keeps the change queued rather than rolling it back.
+    #[error(
+        "Vikunja answered {status} redirecting to {location}; check the server URL in the config"
+    )]
+    Redirected {
+        /// HTTP status returned by the server.
+        status: u16,
+        /// Where it pointed, without a query string, or `(nowhere)` when it did not say.
+        location: String,
     },
 
     /// The response did not match the shape declared in the OpenAPI spec.
@@ -185,6 +206,20 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// A transport failure, with the URL taken out of reqwest's error.
+    ///
+    /// reqwest's `Display` appends ` for url (...)` with the full query string, so a
+    /// timed-out search printed the user's search text into the message -- twice, once
+    /// for the error and once for its `source`. `url` here is the path alone, which is
+    /// what [`ApiError::Transport`] shows instead. Every transport error is built
+    /// through this, so none can keep the query by accident.
+    pub(crate) fn transport(url: String, source: reqwest::Error) -> Self {
+        Self::Transport {
+            url,
+            source: source.without_url(),
+        }
+    }
+
     /// Whether retrying the same request unchanged could plausibly succeed.
     ///
     /// **The sync engine does not use this**, whatever this comment said before. The
@@ -205,6 +240,7 @@ impl ApiError {
             Self::Rejected { status, .. } => *status == 429,
             Self::Unauthorized { .. }
             | Self::Forbidden { .. }
+            | Self::Redirected { .. }
             | Self::Deserialize { .. }
             | Self::InvalidUrl { .. }
             | Self::UnknownEndpoint { .. }
@@ -218,7 +254,9 @@ impl ApiError {
     #[must_use]
     pub fn retry_after(&self) -> Option<std::time::Duration> {
         match self {
-            Self::RateLimited { retry_after, .. } => *retry_after,
+            Self::RateLimited { retry_after, .. } | Self::Server { retry_after, .. } => {
+                *retry_after
+            }
             _ => None,
         }
     }
@@ -259,6 +297,7 @@ impl ApiError {
             },
             500..=599 => Self::Server {
                 status,
+                retry_after,
                 message: body.message.clone(),
             },
             _ => Self::Rejected {
@@ -284,6 +323,7 @@ impl fmt::Display for Brief<'_> {
             ApiError::Unauthorized { .. } => write!(f, "unauthorized"),
             ApiError::Forbidden { .. } => write!(f, "forbidden"),
             ApiError::RateLimited { .. } => write!(f, "rate limited"),
+            ApiError::Redirected { status, .. } => write!(f, "redirected {status}"),
             ApiError::Deserialize { .. } => write!(f, "spec drift"),
             ApiError::InvalidUrl { .. } => write!(f, "bad url"),
             ApiError::UnknownEndpoint { .. } => write!(f, "unknown endpoint"),
@@ -358,6 +398,21 @@ mod tests {
         assert!(ApiError::from_status(429, &body, None).is_retryable());
         assert!(!ApiError::from_status(400, &body, None).is_retryable());
         assert!(!ApiError::from_status(401, &body, None).is_retryable());
+    }
+
+    #[test]
+    fn a_server_error_says_how_long_to_wait_when_the_server_did() {
+        // The sync engine's defer path asks `retry_after()` of every failure; a 503
+        // carrying `Retry-After` used to answer `None` and back off on its own schedule.
+        let wait = Some(std::time::Duration::from_secs(30));
+        let body = ErrorBody::default();
+        for status in [500, 502, 503, 504] {
+            assert_eq!(
+                ApiError::from_status(status, &body, wait).retry_after(),
+                wait,
+                "{status}"
+            );
+        }
     }
 
     #[test]

@@ -195,7 +195,9 @@ impl<T: DeserializeOwned> Pager<T> {
             .with_query("page", page.to_string())
             .with_query("per_page", self.per_page.to_string());
 
-        let (items, headers) = self.client.send::<Vec<T>>(call).await?;
+        // `null` is Go's empty slice, for a whole page as much as for a field in one.
+        let (items, headers) = self.client.send::<Option<Vec<T>>>(call).await?;
+        let items = items.unwrap_or_default();
         let effective = self.effective_per_page.unwrap_or(self.per_page);
         let info = PageInfo::from_headers(&headers, page, self.per_page, effective);
 
@@ -276,7 +278,8 @@ impl<T: DeserializeOwned> Pager<T> {
                 .with_query("page", page.to_string())
                 .with_query("per_page", per_page.to_string());
             async move {
-                let (items, headers) = client.send::<Vec<T>>(call).await?;
+                let (items, headers) = client.send::<Option<Vec<T>>>(call).await?;
+                let items = items.unwrap_or_default();
                 let info = PageInfo::from_headers(&headers, page, per_page, per_page);
                 Ok::<_, ApiError>((items, info))
             }
