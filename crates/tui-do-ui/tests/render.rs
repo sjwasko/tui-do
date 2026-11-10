@@ -1142,6 +1142,49 @@ fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
 }
 
 #[test]
+fn preview_scrolling_stops_at_the_end_of_the_content() {
+    // `j` in the preview scrolled up to u16::MAX: past the last line into an empty pane,
+    // and then as many presses of `k` again to come back. `G` did nothing at all there.
+    let mut model = fixture((160, 40));
+    let description: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+    model.data.tasks[0].description = description;
+    let key = |model: &mut Model, code: KeyCode| {
+        update(model, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+    key(&mut model, KeyCode::Enter);
+    assert_eq!(model.focus, Focus::Preview);
+
+    key(&mut model, KeyCode::Char('G'));
+    let bottom = model.list.preview_scroll;
+    assert!(bottom > 0, "G reached the end of the preview");
+    let screen = draw(&model);
+    assert!(screen.contains("line 100"), "{screen}");
+    assert!(!screen.contains("line 50\n"), "{screen}");
+
+    for _ in 0..150 {
+        key(&mut model, KeyCode::Char('j'));
+    }
+    assert_eq!(model.list.preview_scroll, bottom, "j stops at the end");
+    assert!(draw(&model).contains("line 100"));
+
+    key(&mut model, KeyCode::Char('k'));
+    assert_eq!(
+        model.list.preview_scroll,
+        bottom - 1,
+        "one k is one line back"
+    );
+
+    // A task whose preview fits does not scroll at all.
+    model.data.tasks[0].description = "short".to_string();
+    key(&mut model, KeyCode::Char('g'));
+    key(&mut model, KeyCode::Char('g'));
+    key(&mut model, KeyCode::Char('j'));
+    assert_eq!(model.list.preview_scroll, 0);
+    key(&mut model, KeyCode::Char('G'));
+    assert_eq!(model.list.preview_scroll, 0);
+}
+
+#[test]
 fn a_clipped_edit_form_scrolls_to_the_focused_field() {
     // At 80x10 the form is clipped from the bottom and Labels went with it, while Tab
     // still focused it and typing landed somewhere nobody could see.

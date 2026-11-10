@@ -414,6 +414,9 @@ fn escape_closes_a_modal_before_it_touches_focus() {
 #[test]
 fn enter_opens_the_preview_and_motion_scrolls_it() {
     let mut model = loaded();
+    // Long enough to scroll: the preview stops at the end of its content, so a task whose
+    // preview already fits does not move at all.
+    model.data.tasks[0].description = (1..=100).map(|n| format!("line {n}\n")).collect();
     press_code(&mut model, KeyCode::Enter);
     assert_eq!(model.focus, Focus::Preview);
 

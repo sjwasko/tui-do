@@ -10,6 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use tui_do_core::models::Task;
 
 use crate::assist::{Aside, QuickAddInput};
 use crate::geometry;
@@ -401,6 +402,39 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
     let Some(task) = model.selected_task() else {
         return;
     };
+    // Clamped here too, not only in `update`: a resize or a shorter task can leave a
+    // scroll that was in range past the end of what is now there.
+    let scroll = usize::from(model.list.preview_scroll.min(preview_max_scroll(model)));
+    let lines = preview_lines(model, task, inner, scroll + usize::from(inner.height));
+    let scrolled: Vec<Line<'static>> = lines.into_iter().skip(scroll).collect();
+    frame.render_widget(Paragraph::new(scrolled), inner);
+}
+
+/// Where the preview's content is drawn: the pane less its left border.
+fn preview_inner(model: &Model) -> Option<Rect> {
+    model.frames().preview.map(|area| Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(1),
+        ..area
+    })
+}
+
+/// The furthest the preview can scroll: its last line at the bottom of the pane.
+///
+/// `update` clamps to this and `view` draws with it, from the same lines, so `j` stops
+/// where the content does and `G` lands there.
+#[must_use]
+pub(crate) fn preview_max_scroll(model: &Model) -> u16 {
+    let (Some(task), Some(inner)) = (model.selected_task(), preview_inner(model)) else {
+        return 0;
+    };
+    let total = preview_lines(model, task, inner, usize::MAX).len();
+    u16::try_from(total.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX)
+}
+
+/// Every line the preview shows for `task`, up to `budget` of them.
+fn preview_lines(model: &Model, task: &Task, inner: Rect, budget: usize) -> Vec<Line<'static>> {
+    let theme = model.theme;
     let width = inner.width.saturating_sub(1);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for line in rows::wrap(&task.title, width, 3) {
@@ -458,7 +492,6 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
         // Only what can be seen is laid out. Rendering is cheap -- a median description
         // is 118 bytes -- but pushing every line of a 17 KB one into a vector to draw the
         // dozen that fit is the same waste the task list already avoids.
-        let budget = usize::from(model.list.preview_scroll) + usize::from(inner.height);
         for line in rendered {
             if lines.len() >= budget {
                 break;
@@ -471,12 +504,7 @@ fn preview(model: &Model, frame: &mut Frame, area: Rect) {
             lines.push(Line::from(spans));
         }
     }
-
-    let scrolled: Vec<Line<'static>> = lines
-        .into_iter()
-        .skip(usize::from(model.list.preview_scroll))
-        .collect();
-    frame.render_widget(Paragraph::new(scrolled), inner);
+    lines
 }
 
 fn field(name: &str, value: &str, theme: Theme) -> Line<'static> {
