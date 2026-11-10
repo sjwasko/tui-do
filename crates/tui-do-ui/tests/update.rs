@@ -428,6 +428,23 @@ fn enter_opens_the_preview_and_motion_scrolls_it() {
 }
 
 #[test]
+fn enter_with_no_room_for_the_preview_leaves_the_keys_on_the_list() {
+    // At 50 columns the preview is not drawn, and focus moved to it anyway: `j` and `k`
+    // then scrolled a pane nobody could see.
+    let mut model = loaded();
+    update(&mut model, Msg::Resize(50, 40));
+    assert!(!model.preview_showing());
+    press_code(&mut model, KeyCode::Enter);
+    assert_eq!(model.focus, Focus::List);
+    let toast = model.status.toast.as_ref().expect("the user is told why");
+    assert!(toast.text.contains("No room"), "{}", toast.text);
+
+    press(&mut model, 'j');
+    assert_eq!(selected_title(&model), "second", "the list moved");
+    assert_eq!(model.list.preview_scroll, 0);
+}
+
+#[test]
 fn switching_layout_re_queries_with_the_layouts_own_sort() {
     let mut model = loaded();
     let layouts = ColumnLayout::defaults();

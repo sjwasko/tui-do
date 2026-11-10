@@ -618,6 +618,13 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
             if model.selected_task().is_some() {
                 model.panes.preview = crate::model::PaneState::Shown;
                 model.focus = Focus::Preview;
+                // Asking for the pane does not make room for it. On a narrow terminal it
+                // is not drawn, and focus left on it sent `j` and `k` to scroll something
+                // nobody could see -- so the keys stay on the list, and the user is told.
+                settle_focus(model);
+                if !model.preview_showing() {
+                    model.toast(Toast::info(no_room(Pane::Preview, model)));
+                }
             }
             Vec::new()
         }
