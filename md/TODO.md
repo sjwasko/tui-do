@@ -1316,13 +1316,14 @@ they are commitments rather than ideas.
   that explain the change. Those release notes also need a "Keys changed" section at the top,
   because that page is what the notice sends people to. The README already says 1.2.0.
 
-- **crates.io is published from the `v1.2.2` tag; 1.1.0 through 1.2.1 are skipped.**
+- **Done 2026-11-10: crates.io is published from the `v1.2.2` tag; 1.1.0 through 1.2.1 are skipped.**
   *Decided 2026-11-10, moved from v1.2.0 to v1.2.1 and then to v1.2.2 the same day, as each
   review found more.* crates.io holds 1.0.1. Because `tui-do-core` and `tui-do-ui` 2.0.0
   were never published, every change since the `v1.1.0` tag rides in 2.0.0. `tui-do-api`
   is 2.0.0 too as of 1.2.2 (`ApiError` and `TaskReminder` changed). So the publish is
   `tui-do-api`, `tui-do-core` and `tui-do-ui` at 2.0.0 and `tui-do` at 1.2.2, in the order
-  `CLAUDE.md` gives, from a checkout of the tag. This machine has no crates.io login.
+  `CLAUDE.md` gives, from a checkout of the tag. Published that way on 2026-11-10 from
+  x1-omarchy, with a token scoped to publish-update on `tui-do*`.
 
 ---
 

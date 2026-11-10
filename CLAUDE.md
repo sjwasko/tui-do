@@ -748,6 +748,8 @@ the analysis is above and the answer was deliberate.
 
 **The crates.io names are claimed.** `tui-do`, `tui-do-api`, `tui-do-core` and `tui-do-ui`
 were published at **1.0.1 on 2026-09-07**, from the `v1.0.1` tag rather than from `main`.
+The next publish was **2026-11-10** from `v1.2.2`: `tui-do` 1.2.2 and the three libraries at
+2.0.0.
 `tui-do-smoke` is `publish = false` and is correctly absent. Bare `tui-do` and `tui_do` on npm
 were free the same day and are not claimed.
 
