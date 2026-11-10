@@ -3078,3 +3078,71 @@ async fn a_retry_adopts_its_own_task_even_after_a_pull_has_stored_it() {
     assert!(store.task(TaskId(3915)).await.unwrap().is_some());
     assert_eq!(store.pending_count().await.unwrap(), 0);
 }
+
+/// Label 7 on the server and in the store, task 5 without it, a rename of 7 queued and
+/// then an attach of 7 to task 5. What the rename's answer does to the attach is what
+/// the two tests below ask.
+async fn rename_then_attach(store: &Store) {
+    store
+        .upsert_labels(vec![label(7, "errands")])
+        .await
+        .unwrap();
+    store.upsert_tasks(vec![task(5, "post")]).await.unwrap();
+    store
+        .queue(Mutation::UpdateLabel {
+            before: Box::new(label(7, "errands")),
+            after: Box::new(label(7, "chores")),
+        })
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(5),
+            label: Box::new(label(7, "chores")),
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_rejected_label_rename_does_not_take_the_attaches_of_that_label() {
+    // `references` widens a rejection only because an attach built on a refused
+    // `CreateLabel` names an id no server issued. Label 7 is real; refusing its new title
+    // says nothing about attaching it, and discarding the attach took it off task 5.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/7")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": 7, "title": "errands"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{API}/labels/7")))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"code": 4001, "message": "invalid"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/5/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": 7})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    rename_then_attach(&store).await;
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 1, "only the rename was refused");
+    assert_eq!(report.sent, 1, "the attach went out");
+    let labels = store.task(TaskId(5)).await.unwrap().unwrap().labels;
+    assert_eq!(
+        labels.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![LabelId(7)],
+        "the attach was rolled back with a rename it did not depend on"
+    );
+}

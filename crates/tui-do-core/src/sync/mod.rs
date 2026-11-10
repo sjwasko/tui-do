@@ -650,10 +650,19 @@ impl Sync {
                     // discard for a rejected task, whose blast radius stays exactly the
                     // entries that share its subject.
                     //
+                    // Only for a create. A refused *rename* of a real label says nothing
+                    // about attaching that label elsewhere: the id is as valid as it was,
+                    // and widening on any `Subject::Label` took every queued attach and
+                    // detach of it, on every task, down with the rename.
+                    //
                     // The whole queue is read here, payloads and all, because the
                     // rollback needs every doomed entry's mutation. A rejection is rare,
                     // and `seen()` keeps the set to what this pass had already looked at,
                     // as the snapshot it used to take before every entry did.
+                    let created_label = match &entry.mutation {
+                        Mutation::CreateLabel { label } => Some(label.id),
+                        _ => None,
+                    };
                     let doomed: Vec<OutboxEntry> = self
                         .store
                         .pending(None)
@@ -662,7 +671,8 @@ impl Sync {
                         .filter(|queued| {
                             queued.id <= queue.seen()
                                 && (queued.mutation.subject() == subject
-                                    || matches!(subject, Subject::Label(id) if references(&queued.mutation, id)))
+                                    || created_label
+                                        .is_some_and(|id| references(&queued.mutation, id)))
                         })
                         .collect();
                     report.rejected += doomed.len();
