@@ -215,7 +215,12 @@ const MIGRATIONS: &[&str] = &[
     // `''` means absolute, which is how the server spells it. Existing relative rows
     // have lost their relation and are backfilled `''`; startup's full pull rewrites
     // every task's reminders from the server, which restores it.
+    //
+    // And a task's cover image, for the same reason: an update that omitted
+    // `cover_image_attachment_id` reset it to 0, measured the same day. 0 is "none",
+    // and the next full pull fills in the real value.
     r"
+    ALTER TABLE tasks ADD COLUMN cover_image_attachment_id INTEGER NOT NULL DEFAULT 0;
     CREATE TABLE task_reminders_v7 (
         task_id         INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
         reminder        TEXT,

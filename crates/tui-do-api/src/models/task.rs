@@ -117,6 +117,15 @@ pub struct Task {
     #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub attachments: Vec<TaskAttachment>,
 
+    /// The attachment shown as the task's cover image; `0` when there is none.
+    ///
+    /// Carried although nothing here displays it, because the update body replaces it:
+    /// measured on dev 2026-11-10, a `POST /tasks/{id}` that omitted it answered `200`
+    /// and reset a cover of attachment 6 to 0. The listing carries it, so a task pulled
+    /// into the store and written back keeps it.
+    #[serde(default)]
+    pub cover_image_attachment_id: AttachmentId,
+
     /// Comments. Only populated by `GET /tasks/{id}`.
     #[serde(default, deserialize_with = "crate::models::nullable::null_as_default")]
     pub comments: Vec<TaskComment>,
@@ -203,6 +212,7 @@ impl Task {
             created_by,
             reminders,
             attachments,
+            cover_image_attachment_id,
             comments,
             comment_count,
             related_tasks,
@@ -266,6 +276,7 @@ impl Task {
                 created_by: merge!(created_by),
                 reminders: merge!(reminders),
                 attachments: merge!(attachments),
+                cover_image_attachment_id: merge!(cover_image_attachment_id),
                 comments: merge!(comments),
                 comment_count: merge!(comment_count),
                 related_tasks: merge!(related_tasks),

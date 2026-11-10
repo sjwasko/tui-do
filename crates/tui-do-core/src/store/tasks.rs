@@ -447,10 +447,10 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
             id, project_id, title, description, done, done_at, priority, percent_done,
             position, due_date, start_date, end_date, repeat_after, repeat_mode,
             hex_color, identifier, task_index, is_favorite, bucket_id, comment_count,
-            created_by_id, created, updated, synced_at
+            created_by_id, created, updated, synced_at, cover_image_attachment_id
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
          )
          ON CONFLICT (id) DO UPDATE SET
             project_id = excluded.project_id, title = excluded.title,
@@ -464,7 +464,8 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
             is_favorite = excluded.is_favorite, bucket_id = excluded.bucket_id,
             comment_count = excluded.comment_count,
             created_by_id = excluded.created_by_id, created = excluded.created,
-            updated = excluded.updated, synced_at = excluded.synced_at",
+            updated = excluded.updated, synced_at = excluded.synced_at,
+            cover_image_attachment_id = excluded.cover_image_attachment_id",
         params![
             task.id.get(),
             task.project_id.get(),
@@ -490,6 +491,7 @@ pub(super) fn upsert_task(tx: &Transaction<'_>, task: &Task, now: DateTime<Utc>)
             stamp(task.created.get()),
             stamp(task.updated.get()),
             now.to_rfc3339(),
+            task.cover_image_attachment_id.get(),
         ],
     )?;
 
@@ -696,6 +698,7 @@ fn row_to_task(row: &Row<'_>) -> rusqlite::Result<Task> {
         is_favorite: row.get::<_, i64>("is_favorite")? != 0,
         bucket_id: row.get("bucket_id")?,
         comment_count: row.get("comment_count")?,
+        cover_image_attachment_id: row.get::<_, i64>("cover_image_attachment_id")?.into(),
         created: instant(row, "created")?.into(),
         updated: instant(row, "updated")?.into(),
         created_by: joined_user(row, "created_by_id", "creator")?,
@@ -949,6 +952,24 @@ mod tests {
         store.upsert_tasks(vec![fewer]).await.unwrap();
         let again = store.task(TaskId(1)).await.unwrap().expect("the task");
         assert_eq!(again.reminders.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_cover_image_survives_the_store_because_a_write_sends_it_back() {
+        // Measured on dev 2026-11-10: an update omitting `cover_image_attachment_id`
+        // reset it to 0. A task read out of the store is the next write's body.
+        let store = Store::in_memory().unwrap();
+        let original: Task = serde_json::from_value(serde_json::json!({
+            "id": 1, "project_id": 1, "title": "with a cover",
+            "cover_image_attachment_id": 6
+        }))
+        .unwrap();
+
+        store.upsert_tasks(vec![original]).await.unwrap();
+        let read = store.task(TaskId(1)).await.unwrap().expect("the task");
+
+        let body = serde_json::to_value(&read).unwrap();
+        assert_eq!(body["cover_image_attachment_id"], 6, "{body}");
     }
 
     #[tokio::test]

@@ -1114,3 +1114,34 @@ async fn a_relative_reminder_keeps_what_it_is_relative_to_through_an_update() {
     // absent (measured the same day; it echoes `""` back).
     assert!(reminders[1].get("relative_to").is_none(), "{body}");
 }
+
+#[tokio::test]
+async fn an_update_carries_the_cover_image_back() {
+    // Measured on dev 2026-11-10: with attachment 6 set as the cover, a
+    // `POST /tasks/{id}` that omitted `cover_image_attachment_id` answered `200` and
+    // reset it to 0. So a task read and written back must carry it.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7,
+            "title": "with a cover",
+            "cover_image_attachment_id": 6
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server);
+    let mut task = client.task(TaskId(7)).await.expect("read");
+    task.title = "with a cover, renamed".into();
+    client.update_task(&task).await.expect("update");
+
+    let body = posted_body(&server).await;
+    assert_eq!(body["cover_image_attachment_id"], 6, "{body}");
+}
