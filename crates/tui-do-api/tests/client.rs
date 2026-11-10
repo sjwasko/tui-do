@@ -1116,6 +1116,46 @@ async fn a_relative_reminder_keeps_what_it_is_relative_to_through_an_update() {
 }
 
 #[tokio::test]
+async fn a_transport_error_does_not_repeat_the_search_text() {
+    // reqwest's own Display appends ` for url (...)` with the query string, which put
+    // the user's search text into a toast that `url_for_error` promises never sees it.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([]))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::builder(server.uri())
+        .credentials(Credentials::api_token("tk_test"))
+        .timeout(std::time::Duration::from_millis(200))
+        .build()
+        .expect("client");
+
+    let query = TaskQuery::new().search("divorce lawyer");
+    match client.all_tasks(&query).await {
+        Err(err @ ApiError::Transport { .. }) => {
+            let mut shown = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(cause) = source {
+                shown.push_str(&format!(" / {cause}"));
+                source = cause.source();
+            }
+            assert!(!shown.contains("divorce"), "{shown}");
+            assert!(!shown.contains("lawyer"), "{shown}");
+            assert!(
+                shown.contains("/api/v1/tasks"),
+                "still names the endpoint: {shown}"
+            );
+        }
+        other => panic!("expected Transport, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn an_update_carries_the_cover_image_back() {
     // Measured on dev 2026-11-10: with attachment 6 set as the cover, a
     // `POST /tasks/{id}` that omitted `cover_image_attachment_id` answered `200` and

@@ -220,10 +220,7 @@ impl ClientBuilder {
             // without a jar it answers "No refresh token provided."
             .cookie_store(true)
             .build()
-            .map_err(|source| ApiError::Transport {
-                url: base.to_string(),
-                source,
-            })?;
+            .map_err(|source| ApiError::transport(base.to_string(), source))?;
 
         let session = match self.credentials {
             Some(Credentials::ApiToken(token)) => Session::ApiToken(token),
@@ -1115,10 +1112,10 @@ impl Client {
             }
         }
 
-        let response = request.send().await.map_err(|source| ApiError::Transport {
-            url: call.url.to_string(),
-            source,
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|source| ApiError::transport(call.url.to_string(), source))?;
 
         let status = response.status();
         let headers = response.headers().clone();
@@ -1181,10 +1178,7 @@ async fn read_bounded(mut response: reqwest::Response, url: &Url, limit: usize) 
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|source| ApiError::Transport {
-            url: url.to_string(),
-            source,
-        })?
+        .map_err(|source| ApiError::transport(url.to_string(), source))?
     {
         if body.len() + chunk.len() > limit {
             return Err(ApiError::ResponseTooLarge {

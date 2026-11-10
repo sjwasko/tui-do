@@ -188,6 +188,20 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// A transport failure, with the URL taken out of reqwest's error.
+    ///
+    /// reqwest's `Display` appends ` for url (...)` with the full query string, so a
+    /// timed-out search printed the user's search text into the message -- twice, once
+    /// for the error and once for its `source`. `url` here is the path alone, which is
+    /// what [`ApiError::Transport`] shows instead. Every transport error is built
+    /// through this, so none can keep the query by accident.
+    pub(crate) fn transport(url: String, source: reqwest::Error) -> Self {
+        Self::Transport {
+            url,
+            source: source.without_url(),
+        }
+    }
+
     /// Whether retrying the same request unchanged could plausibly succeed.
     ///
     /// **The sync engine does not use this**, whatever this comment said before. The
