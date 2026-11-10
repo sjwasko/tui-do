@@ -1294,13 +1294,13 @@ they are commitments rather than ideas.
   that explain the change. Those release notes also need a "Keys changed" section at the top,
   because that page is what the notice sends people to. The README already says 1.2.0.
 
-- **`tui-do-core` must go out as `2.0.0`.** Its public `CoreError` gained a `Refused`
-  variant with the BUG-27 fix (2026-11-08) and became `#[non_exhaustive]` in the same
-  change. Either is a breaking change for anything outside the workspace that matched it
-  exhaustively, so a `1.x` publish would break a semver promise. No version was bumped
-  then; the bump belongs to the release that ships it, along with the other three crates'
-  path-dependency versions (see `CLAUDE.md`, "The version lives in `Cargo.toml` in four
-  places").
+- **crates.io is published from the `v1.2.0` tag, and 1.1.0 is skipped.** *Decided
+  2026-11-10.* crates.io holds 1.0.1; v1.1.0's crates were never published, and 1.1.0
+  carries BUG-33. Because `tui-do-core` and `tui-do-ui` 2.0.0 were never published, the
+  breaking changes made since the `v1.1.0` tag ride in 2.0.0 too: `OutboxEntry` gained
+  `sent_at`, and `Effect` gained `DismissKeysNotice`. So the v1.2.0 publish is
+  `tui-do-api` and `tui-do` at 1.2.0, `tui-do-core` and `tui-do-ui` at 2.0.0, in the order
+  `CLAUDE.md` gives, from a checkout of the tag.
 
 ---
 
