@@ -805,6 +805,33 @@ fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
 }
 
 #[test]
+fn a_label_left_off_keeps_its_words_in_the_title() {
+    // Found by the 2026-11-09 smoke test: `**bold** _md_` was saved as `_md_` and
+    // `*needs review` as `review`, because the label's text left the title and the label
+    // was then left off.
+    for (typed, title) in [
+        ("**bold** _md_", "**bold** _md_"),
+        ("*needs review", "*needs review"),
+        ("pay rent *bills due friday", "pay rent *bills"),
+    ] {
+        let mut model = loaded();
+        press(&mut model, 'a');
+        for c in typed.chars() {
+            press(&mut model, c);
+        }
+        press_code(&mut model, KeyCode::Enter);
+        let effects = press(&mut model, 'n');
+        match applied(&effects).expect("the task was still created") {
+            Mutation::CreateTask { task } => {
+                assert_eq!(task.title, title, "{typed:?}");
+                assert!(task.labels.is_empty(), "{typed:?}");
+            }
+            other => panic!("wrong mutation: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn an_empty_quick_add_creates_nothing() {
     let mut model = loaded();
     press(&mut model, 'a');
@@ -3932,7 +3959,8 @@ fn declining_adds_the_task_without_the_label() {
 
     match all_applied(&effects).as_slice() {
         [Mutation::CreateTask { task }] => {
-            assert_eq!(task.title, "Call the VA");
+            // The label left off keeps its words in the title, as typed.
+            assert_eq!(task.title, "Call the VA *waiting");
             assert_eq!(
                 task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
                 vec![LabelId(4)],
@@ -4108,7 +4136,7 @@ fn escaping_the_question_still_adds_the_task() {
     let (mut model, _) = asked_about_waiting();
     let effects = press_code(&mut model, KeyCode::Esc);
     match all_applied(&effects).as_slice() {
-        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA"),
+        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA *waiting"),
         other => panic!("wrong mutations: {other:?}"),
     }
     assert!(model.modals.is_empty());

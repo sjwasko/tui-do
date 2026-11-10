@@ -1202,6 +1202,26 @@ pub struct QuickAdd {
     pub ambiguous_project: bool,
 }
 
+impl QuickAdd {
+    /// Put every unknown label's text back in the title, exactly as it was typed, for a
+    /// task that is going to be added without them.
+    ///
+    /// `text` and `now` must be what the task was parsed from. Without this the words
+    /// were lost: the parser takes a `*label` out of the title, and a label left off then
+    /// leaves nothing behind, so `*needs review` was saved as `review`. Returns the line
+    /// read that way, which is what the task now is, for a caller that says it back or
+    /// checks it against the server's limits.
+    pub fn keep_unknown_labels<Tz: chrono::TimeZone>(
+        &mut self,
+        text: &str,
+        now: &DateTime<Tz>,
+    ) -> quickadd::Parsed {
+        let parsed = quickadd::parse_keeping(text, now, &self.unknown_labels);
+        self.task.title.clone_from(&parsed.title);
+        parsed
+    }
+}
+
 /// Build a task from parsed quick-add text, if a project can be found for it.
 ///
 /// Shared with `tui-do add`, so the same syntax means the same thing from the interface
@@ -2039,7 +2059,7 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
         Scope::Project(id) => Some(id),
         _ => None,
     };
-    let Some(built) = quickadd_task(
+    let Some(mut built) = quickadd_task(
         &parsed,
         &model.data.projects,
         &model.data.labels,
@@ -2062,6 +2082,14 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
                 Pending::Add(text.to_string()),
             )));
         return Vec::new();
+    }
+    // Left off, so their words stay in the title -- which can take it past the limit.
+    if !built.unknown_labels.is_empty() {
+        let kept = built.keep_unknown_labels(text, &model.now);
+        if let Some(refusal) = kept.server_refusal() {
+            model.toast(Toast::error(format!("Not added: {refusal}")));
+            return Vec::new();
+        }
     }
 
     let title = built.task.title.clone();

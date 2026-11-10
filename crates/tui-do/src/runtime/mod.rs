@@ -1379,7 +1379,7 @@ pub async fn add(
     // run never so much as builds a client.
     if mode.dry_run {
         let store = open_existing_store().await?;
-        return rehearse(config, &store, &parsed, &clock, &mode).await;
+        return rehearse(config, &store, text, parsed, &clock, &mode).await;
     }
     let store = open_store().await?;
 
@@ -1430,7 +1430,8 @@ pub async fn add(
         }
     }
 
-    let built = built.ok_or_else(|| no_project(&parsed, &projects))?;
+    let mut built = built.ok_or_else(|| no_project(&parsed, &projects))?;
+    let parsed = left_off(&mut built, text, parsed, &clock, &mode)?;
 
     let project_id = built.task.project_id;
     let project = project_label(&projects, project_id);
@@ -1626,7 +1627,8 @@ fn no_project(
 async fn rehearse(
     config: &Config,
     store: &Store,
-    parsed: &tui_do_core::quickadd::Parsed,
+    text: &str,
+    parsed: tui_do_core::quickadd::Parsed,
     clock: &tui_do_core::ZonedTime,
     mode: &AddMode,
 ) -> anyhow::Result<()> {
@@ -1639,15 +1641,16 @@ async fn rehearse(
         .await
         .unwrap_or_default();
     let users = store.users().await.unwrap_or_default();
-    let built = tui_do_ui::quickadd_task(
-        parsed,
+    let mut built = tui_do_ui::quickadd_task(
+        &parsed,
         &projects,
         &labels,
         &users,
         None,
         config.view.default_project.as_deref(),
     )
-    .ok_or_else(|| no_project(parsed, &projects))?;
+    .ok_or_else(|| no_project(&parsed, &projects))?;
+    let parsed = &left_off(&mut built, text, parsed, clock, mode)?;
 
     // What `queue_add` would do with the labels, without queuing anything.
     let (created_labels, unknown_labels) = if mode.create_labels {
@@ -1682,6 +1685,33 @@ async fn rehearse(
     }
     println!("Dry run: nothing was queued or sent.");
     Ok(())
+}
+
+/// The line as it will be added, once the labels `--create-labels` will not make are
+/// known to be left off: their words go back in the title, as typed.
+///
+/// `parsed` unchanged when every label resolves or is to be created. Otherwise re-read
+/// with the unknown names kept as text, which is what the `Parsed:` line and the
+/// `as typed best:` check then describe, and checked against the server's limits again,
+/// since the title is longer now.
+///
+/// # Errors
+/// The longer title is past the server's limit.
+fn left_off(
+    built: &mut tui_do_ui::QuickAdd,
+    text: &str,
+    parsed: tui_do_core::quickadd::Parsed,
+    clock: &tui_do_core::ZonedTime,
+    mode: &AddMode,
+) -> anyhow::Result<tui_do_core::quickadd::Parsed> {
+    if mode.create_labels || built.unknown_labels.is_empty() {
+        return Ok(parsed);
+    }
+    let kept = built.keep_unknown_labels(text, clock);
+    if let Some(refusal) = kept.server_refusal() {
+        anyhow::bail!("not added: {refusal}");
+    }
+    Ok(kept)
 }
 
 /// How `tui-do add` was asked to run.

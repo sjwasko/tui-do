@@ -2378,9 +2378,11 @@ must exit non-zero and print the message, and must not print `Sent.`.
 ## Minor
 
 - **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
-  - An unknown `*label` takes its text out of the title and is then left off, so the words
+  - ~~An unknown `*label` takes its text out of the title and is then left off, so the words
     are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned
-    about, but the task is already queued and re-running adds a second one.
+    about, but the task is already queued and re-running adds a second one.~~
+    **Fixed 2026-11-10** — a label left off is re-read as text (`quickadd::parse_keeping`),
+    so its words stay in the title as typed, in `tui-do add`, its dry run and the interface.
   - `*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
     and ignores an exact one.
   - `due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the

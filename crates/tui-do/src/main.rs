@@ -285,7 +285,8 @@ struct AddArgs {
     /// Off by default: labels are one global pool shared by every project, so a typo in
     /// a task line otherwise becomes a permanent entry that pollutes completion
     /// everywhere. The interface asks; a command that may be running unattended cannot,
-    /// so it takes an instruction instead.
+    /// so it takes an instruction instead. Without it, an unknown `*label` is left off and
+    /// its words stay in the title as typed.
     #[arg(long)]
     create_labels: bool,
 

@@ -468,7 +468,8 @@ missing, when either is redirected. Three flags matter:
   adding it. It reads only the local store, so a project created since the last sync is
   unknown to it.
 - **`--create-labels`** creates any label the line names that does not exist yet. The
-  interface asks instead of assuming.
+  interface asks instead of assuming. Without it, an unknown `*label` is left off and its
+  words stay in the title as typed.
 - **`--offline`** skips the send entirely, **but it needs a store that already knows your
   projects**, because a task has to be filed somewhere. On a machine that has never synced
   you get *"no project to add to"*. Without the flag `tui-do add` fetches the project list
