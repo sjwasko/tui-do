@@ -2437,6 +2437,15 @@ must exit non-zero and print the message, and must not print `Sent.`.
     A file keeps both rules, which the design in `md/TODO.md` chose (a file or heredoc
     always ends in a newline); its help now names the CRLF rule too. **Decided 2026-11-10:**
     a file's CRLF stays converted, for files written in Windows editors under WSL.
+- **Found by the 2026-11-10 whole-repo review**, not yet fixed:
+  - `crates/tui-do-ui/src/urls.rs:38-40` — a bare URL inside Markdown emphasis keeps the
+    emphasis: `**https://x.com**` opens `https://x.com**`, `_https://x.com_` keeps the
+    underscore, and `(see https://x.com/a.)` keeps the full stop because `balance` runs after
+    the trailing-punctuation trim. `o` then opens or copies the wrong address.
+  - `crates/tui-do-ui/src/markdown.rs` (`contains_matching_pair`) — a Markdown description
+    that mentions an HTML block-tag pair, such as a fenced `html` example or prose saying
+    "close `<li>` with `</li>`", is routed to the HTML parser: single-line breaks are lost
+    and `<String>` is deleted.
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for
   `RepeatMode::FromCurrentDate` with `repeat_after == 0`. Cosmetic badge only, unverified.
 - `crates/tui-do-ui/src/theme.rs:248` — `Theme::label` paints a background, the one exception
