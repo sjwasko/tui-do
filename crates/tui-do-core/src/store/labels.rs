@@ -308,13 +308,16 @@ fn write_server_label(
 ) -> Result<ServerLabel> {
     // Kept only when there is a local row to keep: a queued change with no row behind it
     // is better served by the server's copy than by a task that loses the link.
-    let kept = tx.query_row(
-        "SELECT exists(SELECT 1 FROM outbox
-                        WHERE subject_id = ?1 AND subject_kind = 'label')
-            AND exists(SELECT 1 FROM labels WHERE id = ?1)",
-        params![label.id.get()],
-        |row| row.get::<_, i64>(0),
-    )? == 1;
+    // Cached: a full pull reaches this once per label embedded in every task, thousands
+    // of times in one transaction, and preparing the statement each time is most of it.
+    let kept = tx
+        .prepare_cached(
+            "SELECT exists(SELECT 1 FROM outbox
+                            WHERE subject_id = ?1 AND subject_kind = 'label')
+                AND exists(SELECT 1 FROM labels WHERE id = ?1)",
+        )?
+        .query_row(params![label.id.get()], |row| row.get::<_, i64>(0))?
+        == 1;
     if kept {
         return Ok(ServerLabel::Kept);
     }
