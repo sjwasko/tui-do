@@ -985,6 +985,14 @@ fn due_prompt(model: &Model, state: &DueState, frame: &mut Frame) {
         )]
     } else {
         match tui_do_core::quickadd::parse_due(typed, &model.now) {
+            // What Enter would answer, said before it is pressed: the prompt refuses a date
+            // the server cannot store (`quickadd::date_refusal`), so it is not offered.
+            Some(due) if tui_do_core::quickadd::date_refusal("due", due).is_some() => {
+                vec![Span::styled(
+                    "Vikunja cannot store that date   C-u:clear  Esc:cancel",
+                    theme.muted(),
+                )]
+            }
             Some(due) => vec![
                 Span::styled(
                     rows::relative_date(Some(due), model.now),

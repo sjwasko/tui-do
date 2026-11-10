@@ -1327,3 +1327,24 @@ fn the_keys_changed_notice() {
         golden(name, &draw(&model));
     }
 }
+
+#[test]
+fn the_due_prompt_says_a_date_cannot_be_stored_before_enter_does() {
+    // Found by the 2026-11-10 review: the preview offered `Enter:set` for a date that Enter
+    // then refused. The clock here is at UTC, so the year 1 is the reachable case.
+    let mut model = fixture((120, 40));
+    press(&mut model, KeyCode::Char('d'));
+    update(
+        &mut model,
+        Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+    );
+    for c in "0001-01-01".chars() {
+        press(&mut model, KeyCode::Char(c));
+    }
+    let screen = draw(&model);
+    assert!(
+        screen.contains("Vikunja cannot store that date"),
+        "{screen}"
+    );
+    assert!(!screen.contains("Enter:set"), "{screen}");
+}
