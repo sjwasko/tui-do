@@ -26,7 +26,7 @@
 //! launch.
 
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use tui_do_core::config::{write_token_file, Config, ServerConfig, SyncConfig, TOKEN_FILE};
@@ -104,7 +104,16 @@ pub(crate) fn run(
         open_browser(&page);
     }
 
-    let token = ask_hidden("Paste the token")?;
+    // One runtime for the rest of the command, with worker threads: the signal handlers
+    // the token prompt installs belong to it, and a signal is delivered on one of them
+    // while the prompt's thread waits for keys. Kept alive through `verify` too, because
+    // a handler whose runtime has gone swallows the signal instead of exiting.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not start the async runtime")?;
+
+    let token = ask_hidden("Paste the token", runtime.handle())?;
     if token.is_empty() {
         bail!("no token given, so nothing was written.");
     }
@@ -112,16 +121,16 @@ pub(crate) fn run(
     // Check before writing. Writing first would leave a broken credential on disk and make
     // the next launch the place the mistake shows up, which is the failure this command is
     // here to remove.
-    let who = verify(&url, &token)?;
-    println!("Signed in as {who}.");
+    let who = verify(&runtime, &url, &token)?;
+    println!("{}", signed_in(&who));
 
-    let token_path = path.parent().map_or_else(
-        || Path::new(TOKEN_FILE).to_path_buf(),
-        |dir| dir.join(TOKEN_FILE),
-    );
+    let token_file = token_file_for(&path, existing.as_ref());
+    let (config, dropped_inline_token) = configure(existing, url, token_file);
+    let token_path = config
+        .token_file_path(&path)
+        .context("the config names no token file to write")?;
     write_token_file(&token_path, &token)?;
 
-    let (config, dropped_inline_token) = configure(existing, url);
     if dropped_inline_token {
         println!(
             "Removed the inline server.token from the config; the token is in {} now.",
@@ -146,7 +155,7 @@ pub(crate) fn run(
 /// reports. Dropping it is not optional: [`Config::api_token`] refuses a config carrying
 /// both `token` and `token_file` rather than resolving a precedence nobody remembers, so
 /// leaving it would write a config that cannot start.
-fn configure(existing: Option<Config>, url: String) -> (Config, bool) {
+fn configure(existing: Option<Config>, url: String, token_file: PathBuf) -> (Config, bool) {
     let mut config = existing.unwrap_or_else(|| Config {
         server: ServerConfig {
             url: String::new(),
@@ -159,11 +168,32 @@ fn configure(existing: Option<Config>, url: String) -> (Config, bool) {
         quick_actions: Vec::new(),
     });
     config.server.url = url;
-    // Relative, so the pair travels: a config and its token copied to another box resolve
-    // against wherever they landed rather than against this machine's home directory.
-    config.server.token_file = Some(Path::new(TOKEN_FILE).to_path_buf());
+    config.server.token_file = Some(token_file);
     let dropped = config.server.token.take().is_some();
     (config, dropped)
+}
+
+/// The token file a login writes, as the config will name it.
+///
+/// An existing config that already names one keeps it: login never repoints a config at a
+/// different file, because the file it named is the one its owner knows about. Anything
+/// else gets a name derived from the config's own, so two configs in one directory never
+/// share a token -- `tui-do --config dev.yaml login` used to write `token` whatever the
+/// config was called, overwriting the credential `config.yaml` beside it reads.
+/// `config.yaml` keeps the plain `token` it has always had; `dev.yaml` gets `dev-token`.
+///
+/// Relative, so the pair travels: a config and its token copied to another box resolve
+/// against wherever they landed rather than against this machine's home directory.
+fn token_file_for(config_path: &Path, existing: Option<&Config>) -> PathBuf {
+    if let Some(named) = existing.and_then(|config| config.server.token_file.clone()) {
+        return named;
+    }
+    match config_path.file_stem().map(|stem| stem.to_string_lossy()) {
+        Some(stem) if stem != "config" && !stem.is_empty() => {
+            PathBuf::from(format!("{stem}-{TOKEN_FILE}"))
+        }
+        _ => PathBuf::from(TOKEN_FILE),
+    }
 }
 
 /// Ask for a line, offering `default` when there is one.
@@ -209,7 +239,13 @@ fn ask(prompt: &str, default: Option<&str>) -> anyhow::Result<String> {
 /// mode, so the token is read as a plain line. That is what makes the command scriptable,
 /// and it is deliberate rather than a fallback: `tui-do login --url … < token` is a
 /// reasonable thing to want on a box being provisioned.
-fn ask_hidden(prompt: &str) -> anyhow::Result<String> {
+///
+/// A SIGTERM, SIGHUP or SIGQUIT while raw mode is on gives the terminal back and ends the
+/// command with `128 + signal`, as the inline `tui-do add` prompt does (BUG-31): the
+/// default action ends the process without unwinding, so the shell came back with no echo.
+/// `runtime` holds the handlers, and must outlive this call -- see
+/// `runtime::listen_for_signals`.
+fn ask_hidden(prompt: &str, runtime: &tokio::runtime::Handle) -> anyhow::Result<String> {
     if !std::io::stdin().is_terminal() {
         let mut line = String::new();
         std::io::stdin()
@@ -218,45 +254,89 @@ fn ask_hidden(prompt: &str) -> anyhow::Result<String> {
         return Ok(line.trim().to_string());
     }
 
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-
     print!("{prompt}: ");
     std::io::stdout()
         .flush()
         .context("could not write the prompt")?;
 
+    // Before raw mode, so there is no moment in it a signal would not be heard.
+    let mut caught = crate::runtime::listen_for_signals(runtime);
     crossterm::terminal::enable_raw_mode().context("could not read without echoing")?;
-    let outcome = read_secret();
+    let outcome = read_secret(crate::runtime::next_event, || caught.try_recv().ok());
     // Restore the terminal whatever happened, before anything is printed into it.
     let restored = crossterm::terminal::disable_raw_mode();
+    let token = match outcome {
+        Ok(Secret::Token(token)) => Ok(token),
+        Ok(Secret::Signalled(signal)) => {
+            // After a hangup the terminal has probably gone, and a write could fail or
+            // wait. Nothing has been written yet, so there is nothing else to undo.
+            if !signal.hung_up() {
+                println!();
+            }
+            std::process::exit(signal.exit_code());
+        }
+        Err(error) => Err(error),
+    };
     println!();
     restored.context("could not restore the terminal after reading the token")?;
-    return outcome;
+    token
+}
 
-    /// The read itself, factored out so raw mode is disabled on every path out of it.
-    fn read_secret() -> anyhow::Result<String> {
-        let mut token = String::new();
-        loop {
-            match event::read().context("could not read a keystroke")? {
-                Event::Paste(text) => token.push_str(text.trim()),
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Enter => return Ok(token.trim().to_string()),
-                    KeyCode::Backspace => {
-                        token.pop();
-                    }
-                    // Ctrl-C in raw mode is a keystroke rather than a signal, so it has to
-                    // be answered here or the prompt cannot be escaped at all.
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        bail!("cancelled.")
-                    }
-                    KeyCode::Esc => bail!("cancelled."),
-                    KeyCode::Char(c) => token.push(c),
-                    _ => {}
-                },
+/// How the hidden prompt ended, when it was not cancelled.
+#[derive(Debug, PartialEq, Eq)]
+enum Secret {
+    /// Enter.
+    Token(String),
+    /// SIGTERM, SIGHUP or SIGQUIT arrived while the prompt held the terminal.
+    Signalled(crate::runtime::Signal),
+}
+
+/// The read itself, factored out so raw mode is disabled on every path out of it.
+///
+/// `events` is `runtime::next_event` everywhere but the tests, which feed keys in, and
+/// `signalled` is asked before every poll, so a signal is noticed within one
+/// `runtime::INPUT_POLL` -- the shape of `runtime::prompt::ask`.
+fn read_secret(
+    mut events: impl FnMut(std::time::Duration) -> std::io::Result<Option<crossterm::event::Event>>,
+    mut signalled: impl FnMut() -> Option<crate::runtime::Signal>,
+) -> anyhow::Result<Secret> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+
+    let mut token = String::new();
+    loop {
+        if let Some(caught) = signalled() {
+            return Ok(Secret::Signalled(caught));
+        }
+        let Some(event) =
+            events(crate::runtime::INPUT_POLL).context("could not read a keystroke")?
+        else {
+            continue;
+        };
+        match event {
+            Event::Paste(text) => token.push_str(text.trim()),
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Enter => return Ok(Secret::Token(token.trim().to_string())),
+                KeyCode::Backspace => {
+                    token.pop();
+                }
+                // Ctrl-C in raw mode is a keystroke rather than a signal, so it has to
+                // be answered here or the prompt cannot be escaped at all.
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    bail!("cancelled.")
+                }
+                KeyCode::Esc => bail!("cancelled."),
+                KeyCode::Char(c) => token.push(c),
                 _ => {}
-            }
+            },
+            _ => {}
         }
     }
+}
+
+/// What login says once the server has answered, with the name it gave made printable:
+/// it is the server's text, and a control character in it could forge a line of output.
+fn signed_in(who: &str) -> String {
+    format!("Signed in as {}.", crate::runtime::printable(who))
 }
 
 /// Accept what a person would type and turn it into a base URL.
@@ -292,23 +372,18 @@ fn normalise_url(raw: &str) -> anyhow::Result<String> {
 ///
 /// Returns the display name, falling back to the login name — `User::name` is frequently
 /// empty, which the model already documents.
-fn verify(url: &str, token: &str) -> anyhow::Result<String> {
+fn verify(runtime: &tokio::runtime::Runtime, url: &str, token: &str) -> anyhow::Result<String> {
     let client = tui_do_api::Client::builder(url)
         .credentials(tui_do_api::Credentials::api_token(token.to_string()))
         .build()
         .with_context(|| format!("{url} is unusable"))?;
 
-    let user = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("could not start the async runtime")?
-        .block_on(client.current_user())
-        .with_context(|| {
-            format!(
-                "the token was refused. If it is newly created, check it carries \
+    let user = runtime.block_on(client.current_user()).with_context(|| {
+        format!(
+            "the token was refused. If it is newly created, check it carries \
                  `other → user` — see {PERMISSIONS_URL}"
-            )
-        })?;
+        )
+    })?;
 
     Ok(if user.name.trim().is_empty() {
         user.username
@@ -328,12 +403,9 @@ fn open_browser(page: &str) {
     if !can_open() {
         return;
     }
-    match std::process::Command::new(crate::runtime::URL_OPENER)
-        .arg(page)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+    // Detached as `o` is, and for the same reasons: the token prompt reads stdin next,
+    // and a signal meant for this command is not one for the browser.
+    match crate::runtime::open_detached(crate::runtime::URL_OPENER, page, |_| {}) {
         Ok(_) => println!("Opening that page in your browser…"),
         Err(error) => println!("(could not open a browser: {error})"),
     }
@@ -398,7 +470,12 @@ mod tests {
         let quick_actions = existing.quick_actions.clone();
         let view = existing.view.clone();
 
-        let (config, dropped) = configure(Some(existing), "https://new.example.com".to_string());
+        let token_file = token_file_for(Path::new("/x/config.yaml"), Some(&existing));
+        let (config, dropped) = configure(
+            Some(existing),
+            "https://new.example.com".to_string(),
+            token_file,
+        );
 
         assert_eq!(config.server.url, "https://new.example.com");
         assert_eq!(config.sync.interval_seconds, 42);
@@ -416,7 +493,12 @@ mod tests {
         existing.server.token = Some("tk_inline".to_string());
         existing.server.token_file = None;
 
-        let (config, dropped) = configure(Some(existing), "https://example.com".to_string());
+        let token_file = token_file_for(Path::new("/x/config.yaml"), Some(&existing));
+        let (config, dropped) = configure(
+            Some(existing),
+            "https://example.com".to_string(),
+            token_file,
+        );
 
         assert!(dropped, "the caller has to be told, so it can say so");
         assert_eq!(config.server.token, None);
@@ -433,7 +515,8 @@ mod tests {
     /// A first run has no config at all, which is the case the whole command exists for.
     #[test]
     fn a_first_run_writes_a_relative_token_file() {
-        let (config, dropped) = configure(None, "https://example.com".to_string());
+        let token_file = token_file_for(Path::new("/x/config.yaml"), None);
+        let (config, dropped) = configure(None, "https://example.com".to_string(), token_file);
 
         assert!(!dropped);
         assert_eq!(config.server.url, "https://example.com");
@@ -446,5 +529,134 @@ mod tests {
             SyncConfig::default(),
             "a config written for someone should carry the ordinary defaults"
         );
+    }
+
+    /// A config that already names its token file is written through that file and keeps
+    /// naming it. Login never repoints a config, whatever the config is called.
+    #[test]
+    fn logging_in_again_writes_the_token_file_the_config_already_names() {
+        let mut existing = Config::example();
+        existing.server.token_file = Some(PathBuf::from("prod-token"));
+        let path = Path::new("/x/dev.yaml");
+
+        let token_file = token_file_for(path, Some(&existing));
+        let (config, _) = configure(
+            Some(existing),
+            "https://dev.example.com".to_string(),
+            token_file,
+        );
+
+        assert_eq!(
+            config.server.token_file.as_deref(),
+            Some(Path::new("prod-token"))
+        );
+        assert_eq!(
+            config.token_file_path(path),
+            Some(PathBuf::from("/x/prod-token"))
+        );
+
+        let mut absolute = Config::example();
+        absolute.server.token_file = Some(PathBuf::from("/secrets/vikunja"));
+        assert_eq!(
+            token_file_for(Path::new("/x/config.yaml"), Some(&absolute)),
+            PathBuf::from("/secrets/vikunja")
+        );
+    }
+
+    /// The bug: `tui-do --config dev.yaml login` wrote `token` beside it, which is the file
+    /// `config.yaml` in the same directory reads -- so logging in to dev overwrote prod's
+    /// credential. A new config's token is named after the config; `config.yaml` keeps the
+    /// plain `token` it has always had.
+    #[test]
+    fn a_new_config_gets_a_token_file_named_after_itself() {
+        assert_eq!(
+            token_file_for(Path::new("/x/config.yaml"), None),
+            PathBuf::from("token")
+        );
+        assert_eq!(
+            token_file_for(Path::new("/x/dev.yaml"), None),
+            PathBuf::from("dev-token")
+        );
+        assert_eq!(
+            token_file_for(Path::new("work.yml"), None),
+            PathBuf::from("work-token")
+        );
+
+        // A config with only an inline token has no file of its own to keep, so it gets
+        // the derived name too rather than the shared one.
+        let mut inline = Config::example();
+        inline.server.token = Some("tk_inline".to_string());
+        inline.server.token_file = None;
+        assert_eq!(
+            token_file_for(Path::new("/x/dev.yaml"), Some(&inline)),
+            PathBuf::from("dev-token")
+        );
+    }
+
+    /// Feed `keys` to [`read_secret`] one poll at a time, with `signal` arriving before the
+    /// poll numbered `at`. A prompt still reading once the keys run out is an error rather
+    /// than a hang.
+    fn read_with(
+        keys: &str,
+        signal: Option<(usize, crate::runtime::Signal)>,
+    ) -> anyhow::Result<Secret> {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut queue: std::collections::VecDeque<Event> = keys
+            .chars()
+            .map(|c| {
+                let code = if c == '\n' {
+                    KeyCode::Enter
+                } else {
+                    KeyCode::Char(c)
+                };
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+            })
+            .collect();
+        let polled = std::cell::Cell::new(0);
+        read_secret(
+            |_| {
+                polled.set(polled.get() + 1);
+                queue
+                    .pop_front()
+                    .map(Some)
+                    .ok_or_else(|| std::io::Error::other("ran out of keys"))
+            },
+            || signal.and_then(|(at, caught)| (polled.get() == at).then_some(caught)),
+        )
+    }
+
+    /// The token is what was typed up to Enter.
+    #[test]
+    fn the_hidden_prompt_answers_what_was_typed() {
+        assert_eq!(
+            read_with("tk_abc\n", None).unwrap(),
+            Secret::Token("tk_abc".to_string())
+        );
+    }
+
+    /// The bug: a SIGTERM while the prompt waited left raw mode on, because the prompt
+    /// never looked for one. It is noticed between keys now and ends the prompt, so the
+    /// caller can give the terminal back and exit with the signal's code (BUG-31).
+    #[test]
+    fn a_signal_ends_the_hidden_prompt_between_keys() {
+        use crate::runtime::Signal;
+
+        for signal in [Signal::Terminate, Signal::Hangup, Signal::Quit] {
+            assert_eq!(
+                read_with("tk_abc\n", Some((2, signal))).unwrap(),
+                Secret::Signalled(signal),
+                "{signal:?}"
+            );
+        }
+    }
+
+    /// The name is the server's text, so a control character in it is replaced rather
+    /// than written to the terminal, where it could forge a line of output.
+    #[test]
+    fn the_signed_in_name_is_made_printable() {
+        let line = signed_in("Mallory\n\u{1b}]0;owned\u{7}");
+        assert!(line.starts_with("Signed in as Mallory"), "{line}");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
     }
 }

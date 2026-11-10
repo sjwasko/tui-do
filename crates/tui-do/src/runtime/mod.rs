@@ -41,7 +41,7 @@ use tui_do_ui::theme::{ColorDepth, Theme};
 use tui_do_ui::update::reload_everything;
 use tui_do_ui::{update, view, Effect, Model, Msg};
 
-use signals::Signal;
+pub(crate) use signals::Signal;
 use terminal::TerminalGuard;
 
 /// How often the clock is reported to the model.
@@ -51,7 +51,7 @@ use terminal::TerminalGuard;
 const TICK: Duration = Duration::from_secs(1);
 
 /// How long the input reader waits before checking whether it should stop.
-const INPUT_POLL: Duration = Duration::from_millis(100);
+pub(crate) const INPUT_POLL: Duration = Duration::from_millis(100);
 
 /// The current time, in this machine's zone.
 ///
@@ -596,24 +596,18 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
         // terminal is restored on the way out of `run` in every case.
         Effect::OpenUrl(url) => {
             let tx = tx.clone();
-            // `spawn_blocking` rather than `tokio::process`, which would need another
-            // tokio feature for one call. The opener hands the URL to a handler and exits
-            // immediately, so this waits on a fork-exec and not on a browser.
+            // Off the loop for the fork-exec only. The opener is not waited on here --
+            // see `open_detached` for why that matters.
             spawn_blocking_effect(tx.clone(), move || {
-                let result = std::process::Command::new(URL_OPENER)
-                    .arg(&url)
-                    // Inherited handles would let the handler write over the alternate
-                    // screen -- the interface owns this terminal.
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                let failure = match result {
-                    Ok(status) if status.success() => None,
-                    Ok(status) => Some(format!("{URL_OPENER} exited with {status}")),
-                    Err(error) => Some(format!("could not run {URL_OPENER}: {error}")),
-                };
-                if let Some(message) = failure {
+                let reported = tx.clone();
+                let started = open_detached(URL_OPENER, &url, move |status| {
+                    if !status.success() {
+                        let message = format!("{URL_OPENER} exited with {status}");
+                        let _ = reported.send(Msg::EffectFailed(message));
+                    }
+                });
+                if let Err(error) = started {
+                    let message = format!("could not run {URL_OPENER}: {error}");
                     let _ = tx.send(Msg::EffectFailed(message));
                 }
             });
@@ -942,7 +936,7 @@ async fn flush_on_exit(store: &Store, sync: &Arc<Sync>, out: &mut (dyn Write + S
 /// Every control character goes, `\n` and `\t` included, because every caller
 /// interpolates into the middle of a sentence where neither is legitimate -- and a
 /// newline forges a line of output that reads as tui-do's own.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { '\u{fffd}' } else { c })
         .collect()
@@ -1025,7 +1019,7 @@ fn spawn_input(tx: LoopTx, stop: Arc<AtomicBool>) {
 }
 
 /// The next terminal event, or `None` if none arrived within `timeout`.
-fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
+pub(crate) fn next_event(timeout: Duration) -> io::Result<Option<crossterm::event::Event>> {
     if crossterm::event::poll(timeout)? {
         crossterm::event::read().map(Some)
     } else {
@@ -1186,6 +1180,52 @@ pub(crate) fn url_action() -> UrlAction {
 pub(crate) const URL_OPENER: &str = "open";
 #[cfg(not(target_os = "macos"))]
 pub(crate) const URL_OPENER: &str = "xdg-open";
+
+/// Start `program` with `url` as its one argument, and let it go.
+///
+/// Answers the child's pid once it has started; `on_exit` hears its status later, from a
+/// thread of its own that reaps it. Nothing waits on it otherwise. `xdg-open` on Hyprland
+/// can stay in the foreground until the browser it started exits, and the opener used to
+/// run under `spawn_blocking` with `.status()` -- so `q` hung until the browser closed,
+/// because dropping the tokio runtime waits for its blocking tasks. A plain thread is not
+/// waited on when the process exits.
+///
+/// Its own process group, so a SIGHUP or SIGINT meant for tui-do does not reach the
+/// browser, and null stdin, stdout and stderr, so the handler cannot read keys meant for
+/// the interface or write over the alternate screen. The URL is an argument, never a
+/// shell string.
+///
+/// # Errors
+/// The program could not be started.
+pub(crate) fn open_detached(
+    program: &str,
+    url: &str,
+    on_exit: impl FnOnce(std::process::ExitStatus) + Send + 'static,
+) -> io::Result<u32> {
+    let mut command = std::process::Command::new(program);
+    command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    // If no thread can be had, the child is left unreaped until tui-do exits, which costs
+    // a zombie and nothing else.
+    let _ = std::thread::Builder::new()
+        .name("url-opener".to_string())
+        .spawn(move || {
+            if let Ok(status) = child.wait() {
+                on_exit(status);
+            }
+        });
+    Ok(pid)
+}
 
 /// Put text in the clipboard with OSC 52.
 ///
@@ -1372,6 +1412,27 @@ fn token_listing(vocabulary: &tui_do_ui::assist::Vocabulary) -> String {
     out
 }
 
+/// Listen for SIGTERM, SIGHUP and SIGQUIT on `runtime`, for a prompt that holds the
+/// terminal in raw mode outside the interface (BUG-31).
+///
+/// The prompt asks the receiver between keys and gives the terminal back when one has
+/// arrived. Spawned plainly rather than through `spawn_effect`, which reports to an event
+/// loop a prompt does not have; the listener does nothing that could panic. `runtime` must
+/// have worker threads and must outlive the prompt: once the receiver is dropped a signal
+/// ends the process with its code, but only while the listener task is still running --
+/// after the runtime is gone, the handlers tokio installed swallow the signal.
+pub(crate) fn listen_for_signals(runtime: &tokio::runtime::Handle) -> UnboundedReceiver<Signal> {
+    let (to, caught) = mpsc::unbounded_channel();
+    let listener = {
+        let _context = runtime.enter();
+        signals::listen(to)
+    };
+    if let Some(listener) = listener {
+        runtime.spawn(listener);
+    }
+    caught
+}
+
 /// Ask for a task on a few lines at the bottom of the terminal, for `tui-do add` run
 /// with no text. `None` when the user cancelled.
 ///
@@ -1390,20 +1451,11 @@ pub fn ask_for_task(
     dry_run: bool,
 ) -> anyhow::Result<Option<String>> {
     let mut prompt = prompt::Prompt::new(vocabulary, now(), Theme::new(color_depth()), dry_run);
-    // Before raw mode, as in `run` (BUG-31). Spawned plainly rather than through
-    // `spawn_effect`, which reports to an event loop the prompt does not have; the
-    // listener does nothing that could panic. Its receiver goes when this returns, and a
+    // Before raw mode, as in `run` (BUG-31). Its receiver goes when this returns, and a
     // signal after that ends the process with its code as the default action would --
     // the terminal is no longer raw by then, but `add`'s push may be mid-request
     // (`signals::listen` says what that costs).
-    let (to, mut caught) = mpsc::unbounded_channel();
-    let listener = {
-        let _context = runtime.enter();
-        signals::listen(to)
-    };
-    if let Some(listener) = listener {
-        runtime.spawn(listener);
-    }
+    let mut caught = listen_for_signals(runtime);
     let mut guard = TerminalGuard::inline(prompt::HEIGHT)?;
     let answer = prompt::ask(guard.terminal(), &mut prompt, next_event, || {
         caught.try_recv().ok()
@@ -3194,5 +3246,53 @@ mod tests {
             1,
             "one name, one label: {queued:?}"
         );
+    }
+
+    /// The opener is started and let go: `open_detached` answers before the program has
+    /// finished, the child leads a process group of its own rather than sharing tui-do's,
+    /// and it holds no handle on the terminal. `sleep 30` stands in for an `xdg-open`
+    /// that stays in the foreground until the browser exits.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_url_opener_runs_detached_in_its_own_process_group() {
+        let started = std::time::Instant::now();
+        let (exited, heard) = std::sync::mpsc::channel();
+        let pid = open_detached("sleep", "30", move |status| {
+            let _ = exited.send(status);
+        })
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited on the opener"
+        );
+
+        let field = |stat: &str, n: usize| -> i64 {
+            // The command name is in parentheses and may hold spaces; count after it.
+            let after = &stat[stat.rfind(')').unwrap() + 2..];
+            after.split(' ').nth(n).unwrap().parse().unwrap()
+        };
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let own = std::fs::read_to_string("/proc/self/stat").unwrap();
+        // Fields after the name: state, ppid, pgrp.
+        let (group, own_group) = (field(&stat, 2), field(&own, 2));
+        let stdin = std::fs::read_link(format!("/proc/{pid}/fd/0"));
+        let stdout = std::fs::read_link(format!("/proc/{pid}/fd/1"));
+
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+        let status = heard.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        assert_eq!(group, i64::from(pid), "not the leader of its own group");
+        assert_ne!(group, own_group, "shares tui-do's process group");
+        assert_eq!(stdin.unwrap(), std::path::Path::new("/dev/null"));
+        assert_eq!(stdout.unwrap(), std::path::Path::new("/dev/null"));
+        assert!(!status.success(), "the reaper reports how it ended");
+    }
+
+    /// A program that is not there is reported at once, as before.
+    #[test]
+    fn an_opener_that_cannot_start_is_an_error() {
+        assert!(open_detached("tui-do-no-such-opener", "https://example.com", |_| {}).is_err());
     }
 }
