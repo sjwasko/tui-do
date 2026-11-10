@@ -1281,7 +1281,7 @@ they are commitments rather than ideas.
 | Agentic AI | `tui-do add` with `--dry-run`/`--tokens` and `skills/tui-do/SKILL.md` today; 3a if built. **No MCP server** (decided 2026-11-09) — Vikunja's official one covers that, and a follow-up on the forum should say so |
 | Comments | not started |
 | Subtasks | not started |
-| WSL support | not started; Windows is currently answered with "use WSL" |
+| WSL support | not started; Windows is currently answered with "use WSL". *Decided 2026-11-10: left as is for v1.2.0.* Untested; the likely gap is `o`, which sees WSLg's display and tries `xdg-open` rather than copying |
 | A standalone version, with no Vikunja backend | not started, and the largest of these by far — it means a second source of truth behind the store, and it should get a design note before any code |
 
 ---
