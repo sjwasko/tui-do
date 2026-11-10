@@ -2438,7 +2438,13 @@ must exit non-zero and print the message, and must not print `Sent.`.
 - ~~A 4xx from `labels_named` rejects the create it was there to protect.~~ **Fixed
   2026-11-10**, for `tasks_named` too: `sync::searched` reads a refused search as "nothing
   found" and the create goes ahead. BUG-33's fix runs this search more often.
-- The concurrent projects fan-out feeds a cascading retain.
+- The concurrent projects fan-out feeds a cascading retain. **Read 2026-11-10:** the risk is
+  offset paging, not the concurrency. A project deleted elsewhere between page 1 and page 2
+  shifts the next one across the boundary, so it is missing from the listing and
+  `retain_projects` removes it and its tasks locally. Rows with queued entries are spared
+  and the next full pull restores the rest, so it is a wrong picture until then, not lost
+  data. Only one page of projects exists at realistic counts, which never reaches the
+  fan-out. Tasks page the same way. A fix wants a design: Vikunja offers no cursor.
 - ~~`crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production
   code.~~ **Not a defect, checked 2026-11-10:** it is inside `mod tests`, on a struct read
   only through its derived `Debug`, and the comment above it says so.
