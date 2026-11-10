@@ -229,23 +229,26 @@ impl Task {
             }};
         }
 
+        // `done_at` follows `done`, and the server's stamp is the true one whenever it
+        // agrees about `done`: it stamps the moment it is told, so this box's own stamp
+        // never matches, and an undo would read the server's timestamp as someone else's
+        // edit. Two boxes marking one task done keep the first completion time, and the
+        // disagreement, if any, is reported on `done`.
+        let merged_done = merge!(done);
+        let done_at = if merged_done == done {
+            done_at
+        } else {
+            after.done_at
+        };
+
         Merged {
             task: Self {
                 id: merge!(id),
                 project_id: merge!(project_id),
                 title: merge!(title),
                 description: merge!(description),
-                done: merge!(done),
-                // The user's value, but never a collision of its own. The server stamps
-                // `done_at` when it marks a task done, so it never matches the stamp
-                // this box wrote, and an undo of a done would always read the server's
-                // timestamp as someone else's edit. A real disagreement about whether
-                // the task is done is reported on `done`.
-                done_at: if before.done_at == after.done_at {
-                    done_at
-                } else {
-                    after.done_at
-                },
+                done: merged_done,
+                done_at,
                 priority: merge!(priority),
                 index: merge!(index),
                 identifier: merge!(identifier),
@@ -638,5 +641,32 @@ mod tests {
         assert!(merged.collisions.is_empty(), "{:?}", merged.collisions);
         assert!(!merged.task.done);
         assert_eq!(merged.task.done_at.get(), None);
+    }
+
+    #[test]
+    fn two_boxes_marking_a_task_done_keep_the_first_completion_time() {
+        // Found by the 2026-11-10 review of the fix above: with `done_at` out of the
+        // collision check, this box's later stamp replaced the other box's completion
+        // time. The server's stamp wins whenever it agrees the task is done.
+        let open = Task {
+            id: TaskId(7),
+            ..Task::default()
+        };
+        let done_here = Task {
+            done: true,
+            done_at: Some(at(2026, 11, 10)).into(),
+            ..open.clone()
+        };
+        let done_there = Task {
+            done: true,
+            done_at: Some(at(2026, 11, 9)).into(),
+            ..open.clone()
+        };
+
+        let merged = done_here.merge_onto(&open, done_there);
+
+        assert!(merged.task.done);
+        assert_eq!(merged.task.done_at.get(), Some(at(2026, 11, 9)));
+        assert_eq!(merged.collisions, vec!["done"]);
     }
 }
