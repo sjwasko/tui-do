@@ -684,9 +684,11 @@ fn to_utc<Tz: TimeZone>(naive: chrono::NaiveDateTime, now: &DateTime<Tz>) -> Opt
             Some(a.with_timezone(&Utc).min(b.with_timezone(&Utc)))
         }
         chrono::LocalResult::None => {
-            // The hour was skipped. Step forward until a real instant appears.
+            // The hour was skipped. Step forward until a real instant appears, carrying
+            // into the next day: wrapping the hour alone turned a skipped 23:30 into
+            // 00:30 on the same day.
             for extra in 1..=4 {
-                let shifted = naive.with_hour((naive.hour() + extra) % 24)?;
+                let shifted = naive.checked_add_signed(chrono::TimeDelta::try_hours(extra)?)?;
                 if let chrono::LocalResult::Single(dt) = zone.from_local_datetime(&shifted) {
                     return Some(dt.with_timezone(&Utc));
                 }
@@ -1093,6 +1095,32 @@ mod tests {
                     .format("%Y-%m-%d %H:%M")
                     .to_string(),
                 "2027-03-14 01:00"
+            );
+        }
+
+        #[test]
+        fn a_skipped_late_hour_moves_to_the_next_day() {
+            // Nuuk keeps the EU rule at -02:00, so it springs forward at 01:00Z: Saturday
+            // 2027-03-27 23:00 jumps to Sunday 00:00, and 23:30 never happens. Stepping
+            // the hour forward wrapped it to 00:30 on the *same* day, a day early.
+            use chrono_tz::America::Nuuk;
+            let naive = NaiveDate::from_ymd_opt(2027, 3, 27)
+                .unwrap()
+                .and_hms_opt(23, 30, 0)
+                .unwrap();
+            assert!(
+                matches!(Nuuk.from_local_datetime(&naive), chrono::LocalResult::None),
+                "the premise: 23:30 is skipped in Nuuk that night"
+            );
+
+            let now = Nuuk.with_ymd_and_hms(2027, 1, 15, 10, 0, 0).unwrap();
+            let due = at("due 2027-03-27 at 23:30", &now);
+            assert_eq!(due.to_rfc3339(), "2027-03-28T01:30:00+00:00");
+            assert_eq!(
+                due.with_timezone(&Nuuk)
+                    .format("%Y-%m-%d %H:%M %:z")
+                    .to_string(),
+                "2027-03-28 00:30 -01:00"
             );
         }
 
