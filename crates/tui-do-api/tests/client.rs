@@ -865,6 +865,42 @@ async fn a_page_whose_whole_body_is_null_reads_as_empty() {
 }
 
 #[tokio::test]
+async fn a_redirected_write_fails_instead_of_becoming_a_read() {
+    // reqwest's default policy follows a 301 or 302 on a POST by sending a GET, so an
+    // update answered with a redirect came back as the GET's 200 and read as success.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tasks/7"))
+        .respond_with(
+            ResponseTemplate::new(301).insert_header("location", "/api/v1/tasks/8?s=secret"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tasks/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 8})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let task = tui_do_api::models::Task {
+        id: TaskId(7),
+        title: "kept".into(),
+        ..Default::default()
+    };
+    match client(&server).update_task(&task).await {
+        Err(err @ ApiError::Redirected { status: 301, .. }) => {
+            let shown = err.to_string();
+            assert!(shown.contains("301"), "{shown}");
+            assert!(shown.contains("/api/v1/tasks/8"), "names where: {shown}");
+            assert!(!shown.contains("secret"), "{shown}");
+        }
+        other => panic!("expected Redirected, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_refresh_is_refused_after_logout() {
     // The refresh cookie survives `logout`'s local session reset, so without a guard a
     // caller could mint a new JWT from a session the user ended. The mock has no refresh

@@ -18,7 +18,7 @@
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, LOCATION, RETRY_AFTER};
 use reqwest::{Method, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -219,6 +219,10 @@ impl ClientBuilder {
             // `POST /user/token/refresh` reads the refresh cookie set by `POST /login`;
             // without a jar it answers "No refresh token provided."
             .cookie_store(true)
+            // Never follow a redirect. The default policy answers a `POST` that got a
+            // `301` or `302` by sending a `GET`, whose `200` then reads as the write's
+            // success. A 3xx becomes `ApiError::Redirected` instead.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|source| ApiError::transport(base.to_string(), source))?;
 
@@ -1195,6 +1199,12 @@ async fn read_bounded(mut response: reqwest::Response, url: &Url, limit: usize) 
 
 /// Interpret a failing response.
 fn classify(status: u16, headers: &HeaderMap, body: &str) -> ApiError {
+    if (300..=399).contains(&status) {
+        return ApiError::Redirected {
+            status,
+            location: redirect_target(headers),
+        };
+    }
     // A 5xx takes only `Retry-After`. `x-ratelimit-reset` is the rate limiter's window,
     // and says nothing about when a failing server will be back.
     let wait = if (500..=599).contains(&status) {
@@ -1203,6 +1213,20 @@ fn classify(status: u16, headers: &HeaderMap, body: &str) -> ApiError {
         retry_after(headers)
     };
     ApiError::from_status(status, &ErrorBody::parse(body), wait)
+}
+
+/// Where a redirect pointed, for the error message: the `Location` header without its
+/// query string, which may carry the search text the request did.
+fn redirect_target(headers: &HeaderMap) -> String {
+    let Some(location) = headers.get(LOCATION).and_then(|v| v.to_str().ok()) else {
+        return "(nowhere)".to_string();
+    };
+    let path = location.split(['?', '#']).next().unwrap_or_default().trim();
+    if path.is_empty() {
+        "(nowhere)".to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 /// `Retry-After`, in either form RFC 9110 allows: delay-seconds or an HTTP-date.

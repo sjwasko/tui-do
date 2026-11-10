@@ -116,6 +116,24 @@ pub enum ApiError {
         message: String,
     },
 
+    /// The server answered with a redirect (3xx), which the client does not follow.
+    ///
+    /// Following one is how a write goes missing: reqwest's default policy turns a
+    /// `POST` answered `301` or `302` into a `GET` of the new location, and that `GET`'s
+    /// `200` read as the write's success. A Vikunja API does not redirect, so this means
+    /// the configured URL is wrong (`http` for `https`, a proxy path) -- a thing to fix
+    /// in the config, not the server's last word on the request. The sync engine
+    /// therefore keeps the change queued rather than rolling it back.
+    #[error(
+        "Vikunja answered {status} redirecting to {location}; check the server URL in the config"
+    )]
+    Redirected {
+        /// HTTP status returned by the server.
+        status: u16,
+        /// Where it pointed, without a query string, or `(nowhere)` when it did not say.
+        location: String,
+    },
+
     /// The response did not match the shape declared in the OpenAPI spec.
     ///
     /// This usually means the server is a different Vikunja version than
@@ -222,6 +240,7 @@ impl ApiError {
             Self::Rejected { status, .. } => *status == 429,
             Self::Unauthorized { .. }
             | Self::Forbidden { .. }
+            | Self::Redirected { .. }
             | Self::Deserialize { .. }
             | Self::InvalidUrl { .. }
             | Self::UnknownEndpoint { .. }
@@ -304,6 +323,7 @@ impl fmt::Display for Brief<'_> {
             ApiError::Unauthorized { .. } => write!(f, "unauthorized"),
             ApiError::Forbidden { .. } => write!(f, "forbidden"),
             ApiError::RateLimited { .. } => write!(f, "rate limited"),
+            ApiError::Redirected { status, .. } => write!(f, "redirected {status}"),
             ApiError::Deserialize { .. } => write!(f, "spec drift"),
             ApiError::InvalidUrl { .. } => write!(f, "bad url"),
             ApiError::UnknownEndpoint { .. } => write!(f, "unknown endpoint"),
