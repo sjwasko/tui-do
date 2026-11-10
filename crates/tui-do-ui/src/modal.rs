@@ -124,11 +124,13 @@ impl TextInput {
                 let start = self.previous_boundary();
                 self.value.replace_range(start..self.cursor, "");
                 self.cursor = start;
+                self.snap_forward();
                 true
             }
             KeyCode::Delete if self.cursor < self.value.len() => {
                 let end = self.next_boundary();
                 self.value.replace_range(self.cursor..end, "");
+                self.snap_forward();
                 true
             }
             KeyCode::Left if self.cursor > 0 => {
@@ -164,6 +166,7 @@ impl TextInput {
         }
         self.value.replace_range(range.clone(), text);
         self.cursor = range.start + text.len();
+        self.snap_forward();
     }
 
     /// Insert at the cursor and step past what was inserted.
@@ -176,6 +179,15 @@ impl TextInput {
     fn insert(&mut self, c: char) {
         self.value.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.snap_forward();
+    }
+
+    /// Move a cursor that an edit left inside a grapheme to that grapheme's end.
+    ///
+    /// Deletion merges clusters as surely as insertion does: delete the `a` from `🇺a🇸`
+    /// and the two regional indicators either side become one flag, with the cursor
+    /// between them.
+    fn snap_forward(&mut self) {
         if let Some((at, grapheme)) = self
             .value
             .grapheme_indices(true)
@@ -1989,6 +2001,36 @@ mod tests {
         assert_eq!(input.cursor(), 1, "just after `a`");
         input.press(code(KeyCode::Right));
         assert_eq!(input.cursor(), 1 + FLAG.len());
+    }
+
+    #[test]
+    fn a_deletion_that_merges_two_graphemes_leaves_the_cursor_on_a_boundary() {
+        // `🇺a🇸`: delete the `a` and the two regional indicators become one flag, with the
+        // cursor four bytes in -- between its halves, where BUG-26 says it never sits.
+        let on_boundary = |input: &TextInput| {
+            input
+                .value()
+                .grapheme_indices(true)
+                .map(|(at, _)| at)
+                .chain(std::iter::once(input.value().len()))
+                .any(|at| at == input.cursor())
+        };
+        let mut input = typed("🇺a🇸");
+        input.press(code(KeyCode::Left));
+        input.press(code(KeyCode::Backspace));
+        assert_eq!(input.value(), "🇺🇸");
+        assert!(on_boundary(&input), "cursor at byte {}", input.cursor());
+
+        let mut input = typed("🇺a🇸");
+        input.press(code(KeyCode::Left));
+        input.press(code(KeyCode::Left));
+        input.press(code(KeyCode::Delete));
+        assert_eq!(input.value(), "🇺🇸");
+        assert!(on_boundary(&input), "cursor at byte {}", input.cursor());
+        // And the field still behaves: the flag is one step and one deletion.
+        input.press(code(KeyCode::Backspace));
+        assert!(on_boundary(&input), "cursor at byte {}", input.cursor());
+        assert_eq!(input.value(), "");
     }
 
     #[test]
