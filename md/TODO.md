@@ -11,7 +11,7 @@ note nobody re-reads.
 Keep it honest. An item moves to **Done** when it ships, and a decision moves to a design
 note in `md/` when it is taken. Items carry the date they were raised.
 
-Last touched 2026-11-08.
+Last touched 2026-11-09.
 
 ## The road map, as of 2026-09-13
 
@@ -632,6 +632,35 @@ contain a `?`. Four steps, in this order:
 
 ---
 
+**13. ~~Use Vikunja's keys.~~ Done 2026-11-09 on branch `vikunja-keys`.** *(raised and
+agreed 2026-11-09)* tui-do's keys followed vim and cria (`md/2026-08-24-1900-tui-design.md`).
+The omavikunja panel follows Vikunja's web shortcuts, which left tui-do the only one of the
+three where `t`, `u` and `g a` meant something else. Now, wherever Vikunja has a shortcut,
+tui-do uses it:
+
+| action | was | now |
+|---|---|---|
+| mark done | `d` | `t` |
+| due date | `D` | `d` |
+| add a task | `a` | `n` (omavikunja's key) |
+| undo | `u` | `U` (`C-r` redo unchanged) |
+| open the task's project, keeping it selected | — | `u` |
+| go to a label | `g l` | `g a` |
+| show completed tasks | `t` | `z d` |
+| delete | `x` | `x` or `Delete` |
+| sync changes | `r` | `r` or `F5` |
+
+`g g` stays jump-to-top although Vikunja's `g g` is the Gantt view, which a terminal does not
+have. Vikunja's `a` (assign), `r` (related), `s` (favourite) and the `.` copy keys have no
+tui-do action yet; `a` is left free for assign.
+
+**A startup notice lists what moved.** `Modal::KeysChanged`, shown only to a store that has
+synced before (`LAST_PULL` set), since a fresh install has nothing to unlearn. `o` opens or
+copies the release notes, `Enter` continues, and `d` stores `ui.keys_notice_dismissed` so it
+never shows again.
+
+---
+
 ## Auth and credentials
 
 **7. ~~Decide: OAuth first, or keychain first.~~ Decided 2026-09-08: keychain first.**
@@ -1128,6 +1157,12 @@ they are commitments rather than ideas.
 ---
 
 ## Owed at the next publish
+
+- **The key remap (item 13) must ship as `v1.2.0`, or `KEYS_CHANGED_IN` must change.** The
+  startup notice's `o` links to `releases/tag/v1.2.0`, pinned in
+  `crates/tui-do/src/runtime/mod.rs` so someone who skips a release is still sent to the notes
+  that explain the change. Those release notes also need a "Keys changed" section at the top,
+  because that page is what the notice sends people to. The README already says 1.2.0.
 
 - **`tui-do-core` must go out as `2.0.0`.** Its public `CoreError` gained a `Refused`
   variant with the BUG-27 fix (2026-11-08) and became `#[non_exhaustive]` in the same
