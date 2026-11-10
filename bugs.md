@@ -85,7 +85,7 @@ throughout, both learned the hard way in this pass:
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
-| **Minor** | 10 remaining, none urgent; the six from the 2026-11-09 `tui-do add` smoke test, the false `done_at` overwrite and a refused retry search fixed 2026-11-10, and two findings closed as not defects |
+| **Minor** | 9 remaining, none urgent; the six from the 2026-11-09 `tui-do add` smoke test, the false `done_at` overwrite and a refused retry search fixed 2026-11-10, and two findings closed as not defects |
 
 Every open item needed either a decision or a measurement — that was the point of the
 2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
@@ -2465,10 +2465,10 @@ must exit non-zero and print the message, and must not print `Sent.`.
 - ~~`crates/tui-do-api/src/secret.rs:118` carries an `#[allow(dead_code)]` in production
   code.~~ **Not a defect, checked 2026-11-10:** it is inside `mod tests`, on a struct read
   only through its derived `Debug`, and the comment above it says so.
-- `enum Screen` is vestigial: one variant, no use outside `model.rs`. Scope actually lives in
-  `query.scope`. Either delete it or give it the job its name implies. **Needs a decision,
-  2026-11-10:** `tui-do-ui` re-exports it and `Model.screen` is public, so deleting it is a
-  breaking change to a published crate, and `CLAUDE.md` Rule 2 names it as the pattern.
+- ~~`enum Screen` is vestigial: one variant, no use outside `model.rs`.~~ **Kept, decided
+  2026-11-10.** `CLAUDE.md` Rule 2 names it as where screen state goes, so a second screen
+  is a variant rather than a `show_x` bool, and deleting it would break `tui-do-ui`'s
+  public API for nothing a user sees.
 - "Which modals hold a label" is an unnamed concept re-derived across five exhaustive
   `match modal` sites in `update.rs`.
 
