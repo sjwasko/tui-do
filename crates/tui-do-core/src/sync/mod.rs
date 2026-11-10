@@ -54,7 +54,8 @@ use tui_do_api::{ApiError, Client, TaskQuery};
 
 use crate::error::Result;
 use crate::store::{
-    Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL, LAST_RECONCILE, PAGE_CAP,
+    is_provisional_label, Mutation, OutboxEntry, Store, Subject, CURRENT_USER, LAST_PULL,
+    LAST_RECONCILE, PAGE_CAP,
 };
 use queue::DrainQueue;
 
@@ -593,8 +594,14 @@ impl Sync {
                     // create as not due and send the attach behind it, which is the whole
                     // failure the two sets above exist to prevent, reached a pass later.
                     blocked.insert(subject);
+                    // Only an id still waiting to be defined. The row holds no payload, but
+                    // a provisional label id is one only a queued `CreateLabel` can settle,
+                    // so it stands in for the kind. A real label's rename in its backoff
+                    // leaves the id as valid as it ever was.
                     if let Subject::Label(id) = subject {
-                        blocked_labels.insert(id);
+                        if is_provisional_label(id) {
+                            blocked_labels.insert(id);
+                        }
                     }
                     return false;
                 }
@@ -698,9 +705,11 @@ impl Sync {
                     // And, for a label, everything that would *send* the id this entry
                     // was going to define -- which is not the same set as everything
                     // sharing its subject. See the note where `blocked_labels` is
-                    // declared.
-                    if let Subject::Label(id) = subject {
-                        blocked_labels.insert(id);
+                    // declared. Only for a create: a failing rename of a real label
+                    // defines nothing, and blocking its id held back that label's
+                    // attaches and detaches on every unrelated task.
+                    if let Mutation::CreateLabel { label } = &entry.mutation {
+                        blocked_labels.insert(label.id);
                     }
                     tracing::debug!(%subject, error = %message, "deferring this task's queue");
                     self.emit(SyncEvent::Failed {

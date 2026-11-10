@@ -3146,3 +3146,43 @@ async fn a_rejected_label_rename_does_not_take_the_attaches_of_that_label() {
         "the attach was rolled back with a rename it did not depend on"
     );
 }
+
+#[tokio::test]
+async fn a_failing_label_rename_does_not_hold_back_the_attaches_of_that_label() {
+    // Blocking by `references` exists for the id a deferred `CreateLabel` has yet to
+    // define. A real label's rename failing leaves the id exactly as valid as it was.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/labels/7")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/tasks/5/labels")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"label_id": 7})))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    rename_then_attach(&store).await;
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+    assert_eq!(report.sent, 1, "the attach was held back by the rename");
+    assert_eq!(report.deferred, 1, "the rename, and nothing else");
+
+    // And while the rename waits out its backoff, which blocks by a different branch.
+    store
+        .queue(Mutation::AttachLabel {
+            task: TaskId(5),
+            label: Box::new(label(7, "chores")),
+        })
+        .await
+        .unwrap();
+    let second = sync.push().await.unwrap();
+    assert_eq!(
+        second.sent, 1,
+        "the attach was held back by a rename in its backoff"
+    );
+}
