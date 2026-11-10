@@ -15,7 +15,7 @@ use std::fmt::Display;
 
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 
-use super::{unquote, DateField, Parsed, Repeat, Unit};
+use super::{value_of, DateField, Parsed, Repeat, Unit};
 
 /// Which of the two ways a date is written.
 #[derive(Clone, Copy)]
@@ -124,8 +124,8 @@ impl Parsed {
     /// including a date that stayed in it mid-sentence: the field it set is written
     /// again at the end, where a later date for the same field wins.
     ///
-    /// One exception to the order: if the title itself contains the word `every`, the
-    /// repeat goes first, because the parser reads the first `every` in the line.
+    /// The repeat goes last even when the title holds an `every` of its own, because the
+    /// parser takes the last `every` that forms a phrase.
     ///
     /// `zone` must be the zone the line was parsed in. Use [`Parsed::same_fields`] to
     /// check a re-parse, if a caller wants to be sure before recommending it.
@@ -134,17 +134,7 @@ impl Parsed {
     where
         Tz::Offset: Display,
     {
-        let repeat = self.repeat.map(Repeat::phrase);
-        let repeat_first = repeat.is_some()
-            && self
-                .title
-                .split_whitespace()
-                .any(|word| word.eq_ignore_ascii_case("every"));
-
         let mut parts = Vec::new();
-        if repeat_first {
-            parts.extend(repeat.clone());
-        }
         if !self.title.is_empty() {
             parts.push(self.title.clone());
         }
@@ -155,9 +145,7 @@ impl Parsed {
         if let Some(at) = self.start_date {
             parts.push(DateField::Start.write(at, zone, Wording::Line));
         }
-        if !repeat_first {
-            parts.extend(repeat);
-        }
+        parts.extend(self.repeat.map(Repeat::phrase));
         parts.join(" ")
     }
 
@@ -212,13 +200,14 @@ pub fn name_token(sigil: char, name: &str) -> String {
 
 /// A token's value, bracketed when it would not otherwise read back as itself.
 ///
-/// A space would end the token; a value that starts with an opening quote or bracket, or
-/// that the parser would unwrap, would be read differently. Brackets first, since a shell
-/// leaves them alone; then whichever quotes the value does not contain.
+/// A space would end the token; a value that starts with an opening quote or bracket, that
+/// the parser would unwrap, or that ends in punctuation it would trim, would be read
+/// differently. Brackets first, since a shell leaves them alone; then whichever quotes the
+/// value does not contain.
 fn wrapped(value: &str) -> String {
     let plain = !value.chars().any(char::is_whitespace)
         && !value.starts_with(['"', '\'', '[', '('])
-        && unquote(value) == value;
+        && value_of(value) == value;
     if plain {
         return value.to_string();
     }
@@ -334,11 +323,15 @@ mod tests {
             "fireworks start 2026-12-31 at 11pm due 2027-01-01 at 1am",
             "water the plants every 3 days",
             "check every room every week",
+            "Check every box every week",
             "do it every day every week",
+            "every 2 days check every room",
             "pay the bill due",
             "Café ☕ — 日本語 eom",
             "*[a]b] +#12 standup @x every hour",
             r#"*"[draft" *"'tis'" +"a]b c" memo"#,
+            r#"Tag it *"v1." +[Q3?] @bob,"#,
+            "Buy milk *groceries.",
             // `every` with punctuation is not the parser's `every`, capitalised it is.
             "check every, room every week",
             "Every. single day every 2 days",
@@ -475,10 +468,15 @@ mod tests {
             canonical("Call the dentist +Personal *health !3 due 2026-11-12"),
             "Call the dentist +Personal *health !3 due 2026-11-12"
         );
-        // The parser reads the first `every`, so one in the title puts the repeat first.
+        // The parser takes the last `every` that forms a repeat, so one in the title
+        // leaves the repeat at the end.
         assert_eq!(
             canonical("do it every day every week"),
-            "every day do it every week"
+            "do it every day every week"
+        );
+        assert_eq!(
+            canonical("Check every box every week"),
+            "Check every box every week"
         );
     }
 

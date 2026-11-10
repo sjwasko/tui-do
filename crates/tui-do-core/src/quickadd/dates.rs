@@ -156,8 +156,15 @@ fn phrase<Tz: TimeZone>(
     if let Some(word) = words.get(index) {
         if let Some(value) = word.trimmed().strip_prefix("start:") {
             let date = simple_phrase(&[value.to_string()], today, keyword)?;
-            return Some((at_time(date, field, words, index + 1, now)?, 1));
+            let at = at_time(date, field, words, index + 1, now)?;
+            // A trailing `at 9am` is part of the phrase here too, or it stays in the title.
+            let extra = usize::from(time_at(words, index + 1).is_some()) * 2;
+            return Some((at, 1 + extra));
         }
+    }
+
+    if let Some(at) = in_hours(words, index, now) {
+        return Some((at, 3));
     }
 
     // Try longest first so "next week" wins over "next" and "end of month" over "end".
@@ -174,6 +181,30 @@ fn phrase<Tz: TimeZone>(
         }
     }
     None
+}
+
+/// `in 3 hours`: that long from `now`, as an exact instant rather than a day.
+///
+/// Every other phrase names a day and takes the field's default time, but an hour count
+/// is a time, and resolving it to today at 23:59 put `in 30 hours` at 22:30 eighty-nine
+/// minutes away. Rounded down to the minute, which is all a written date can say, so the
+/// canonical line names it exactly. No trailing `at` is read: the count already says when.
+fn in_hours<Tz: TimeZone>(
+    words: &[Word],
+    index: usize,
+    now: &DateTime<Tz>,
+) -> Option<DateTime<Utc>> {
+    let [first, count, unit_word] = words.get(index..index + 3)? else {
+        return None;
+    };
+    if !first.is("in") || unit(unit_word.trimmed()) != Some(Unit::Hour) {
+        return None;
+    }
+    let hours: u32 = count.trimmed().parse().ok()?;
+    let at = now
+        .with_timezone(&Utc)
+        .checked_add_signed(chrono::TimeDelta::try_hours(i64::from(hours))?)?;
+    at.with_second(0)?.with_nanosecond(0)
 }
 
 /// Apply a trailing `at <time>`, or the field's default time of day.
@@ -249,7 +280,7 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
 
     // `next monday`, `this friday`, `last tuesday`
     if words.len() == 2 {
-        if let Some(weekday) = weekday(&words[1]) {
+        if let Some(weekday) = weekday(&words[1], keyword) {
             return match words[0].as_str() {
                 "next" => next_weekday(today, weekday, false),
                 "this" => next_weekday(today, weekday, true),
@@ -269,8 +300,8 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
             Unit::Year => {
                 today.checked_add_months(Months::new(u32::try_from(amount).ok()?.checked_mul(12)?))
             }
-            // "in 3 hours" is a time, not a date; handled by the caller's default time.
-            Unit::Hour => Some(today),
+            // A time, not a date: `in_hours` reads it.
+            Unit::Hour => None,
         };
     }
 
@@ -284,7 +315,7 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
 
     if words.len() == 1 {
         // A bare weekday means the next one.
-        if let Some(weekday) = weekday(&words[0]) {
+        if let Some(weekday) = weekday(&words[0], keyword) {
             return next_weekday(today, weekday, false);
         }
         if let Some(date) = literal_date(&words[0], today, keyword) {
@@ -351,17 +382,34 @@ pub fn unit(word: &str) -> Option<Unit> {
     }
 }
 
-/// Recognise a weekday name or its three-letter abbreviation.
-fn weekday(word: &str) -> Option<chrono::Weekday> {
+/// Recognise a weekday name, or after `due` or `start` its abbreviation.
+///
+/// A bare abbreviation is too often a word: `in the sun`, `the cat sat`, `get wed` each
+/// lost their last word and gained a due date. So, as with a date in digits alone
+/// ([`Keyword`]), only the full name is a weekday without the keyword.
+fn weekday(word: &str, keyword: Keyword) -> Option<chrono::Weekday> {
     use chrono::Weekday::{Fri, Mon, Sat, Sun, Thu, Tue, Wed};
+    let full = match word {
+        "monday" => Some(Mon),
+        "tuesday" => Some(Tue),
+        "wednesday" => Some(Wed),
+        "thursday" => Some(Thu),
+        "friday" => Some(Fri),
+        "saturday" => Some(Sat),
+        "sunday" => Some(Sun),
+        _ => None,
+    };
+    if full.is_some() || keyword == Keyword::Absent {
+        return full;
+    }
     match word {
-        "monday" | "mon" => Some(Mon),
-        "tuesday" | "tue" | "tues" => Some(Tue),
-        "wednesday" | "wed" => Some(Wed),
-        "thursday" | "thu" | "thur" | "thurs" => Some(Thu),
-        "friday" | "fri" => Some(Fri),
-        "saturday" | "sat" => Some(Sat),
-        "sunday" | "sun" => Some(Sun),
+        "mon" => Some(Mon),
+        "tue" | "tues" => Some(Tue),
+        "wed" => Some(Wed),
+        "thu" | "thur" | "thurs" => Some(Thu),
+        "fri" => Some(Fri),
+        "sat" => Some(Sat),
+        "sun" => Some(Sun),
         _ => None,
     }
 }
@@ -572,14 +620,15 @@ fn month_name(text: &str) -> Option<u32> {
     })
 }
 
-/// The next occurrence of `month`/`day`, this year or next.
+/// The next occurrence of `month`/`day`, today or later.
+///
+/// Usually this year or next, but 29 February can be up to eight years away (2096 to
+/// 2104), and asking only this year was why `due feb 29` in 2026 was not a date at all.
+/// A day no year has, `feb 30`, is still none.
 fn on_or_after(today: NaiveDate, month: u32, day: u32) -> Option<NaiveDate> {
-    let this_year = NaiveDate::from_ymd_opt(today.year(), month, day)?;
-    if this_year >= today {
-        Some(this_year)
-    } else {
-        NaiveDate::from_ymd_opt(today.year() + 1, month, day)
-    }
+    (today.year()..=today.year().checked_add(8)?)
+        .filter_map(|year| NaiveDate::from_ymd_opt(year, month, day))
+        .find(|date| *date >= today)
 }
 
 /// The coming `target` weekday. `include_today` decides whether today counts.
@@ -635,9 +684,11 @@ fn to_utc<Tz: TimeZone>(naive: chrono::NaiveDateTime, now: &DateTime<Tz>) -> Opt
             Some(a.with_timezone(&Utc).min(b.with_timezone(&Utc)))
         }
         chrono::LocalResult::None => {
-            // The hour was skipped. Step forward until a real instant appears.
+            // The hour was skipped. Step forward until a real instant appears, carrying
+            // into the next day: wrapping the hour alone turned a skipped 23:30 into
+            // 00:30 on the same day.
             for extra in 1..=4 {
-                let shifted = naive.with_hour((naive.hour() + extra) % 24)?;
+                let shifted = naive.checked_add_signed(chrono::TimeDelta::try_hours(extra)?)?;
                 if let chrono::LocalResult::Single(dt) = zone.from_local_datetime(&shifted) {
                     return Some(dt.with_timezone(&Utc));
                 }
@@ -1044,6 +1095,32 @@ mod tests {
                     .format("%Y-%m-%d %H:%M")
                     .to_string(),
                 "2027-03-14 01:00"
+            );
+        }
+
+        #[test]
+        fn a_skipped_late_hour_moves_to_the_next_day() {
+            // Nuuk keeps the EU rule at -02:00, so it springs forward at 01:00Z: Saturday
+            // 2027-03-27 23:00 jumps to Sunday 00:00, and 23:30 never happens. Stepping
+            // the hour forward wrapped it to 00:30 on the *same* day, a day early.
+            use chrono_tz::America::Nuuk;
+            let naive = NaiveDate::from_ymd_opt(2027, 3, 27)
+                .unwrap()
+                .and_hms_opt(23, 30, 0)
+                .unwrap();
+            assert!(
+                matches!(Nuuk.from_local_datetime(&naive), chrono::LocalResult::None),
+                "the premise: 23:30 is skipped in Nuuk that night"
+            );
+
+            let now = Nuuk.with_ymd_and_hms(2027, 1, 15, 10, 0, 0).unwrap();
+            let due = at("due 2027-03-27 at 23:30", &now);
+            assert_eq!(due.to_rfc3339(), "2027-03-28T01:30:00+00:00");
+            assert_eq!(
+                due.with_timezone(&Nuuk)
+                    .format("%Y-%m-%d %H:%M %:z")
+                    .to_string(),
+                "2027-03-28 00:30 -01:00"
             );
         }
 

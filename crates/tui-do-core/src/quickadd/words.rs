@@ -30,9 +30,13 @@ impl Word {
     /// sentence: `due tomorrow.` should still find `tomorrow`.
     #[must_use]
     pub fn trimmed(&self) -> &str {
-        self.lower.trim_end_matches(['.', ',', ';', ':', '!', '?'])
+        self.lower.trim_end_matches(TRAILING)
     }
 }
+
+/// The punctuation that ends a sentence or a clause, and that a keyword or a name written
+/// at the end of one is read without.
+pub const TRAILING: [char; 6] = ['.', ',', ';', ':', '!', '?'];
 
 /// Split input into words, recording byte ranges.
 ///
