@@ -2392,8 +2392,10 @@ must exit non-zero and print the message, and must not print `Sent.`.
     `Parsed::server_refusal` refuses a due or start date outside the years 2 to 9999 in UTC,
     so `tui-do add`, its dry run and the interface all refuse it before anything is queued.
     The edit form's Due field and `D` go through `parse_due` and are not checked yet.
-  - The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
-    `Parsed` line already passes it through `printable`.
+  - ~~The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
+    `Parsed` line already passes it through `printable`.~~ **Fixed 2026-11-10** — the title,
+    the created and unknown label names and the "no project called" error all go through
+    `printable` now.
   - A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
     copy-safe: pasted back, it reads as the flag.
   - `-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;

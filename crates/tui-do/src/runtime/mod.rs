@@ -1589,8 +1589,12 @@ fn no_project(
     parsed: &tui_do_core::quickadd::Parsed,
     projects: &[tui_do_core::models::Project],
 ) -> anyhow::Error {
-    match parsed.project.as_deref() {
-        Some(name) => match longer_project(projects, name) {
+    match parsed
+        .project
+        .as_deref()
+        .map(|typed| (typed, printable(typed)))
+    {
+        Some((typed, name)) => match longer_project(projects, typed) {
             // The commonest way to get here by far: `+Dinner Places` names the project
             // `Dinner` and leaves `Places` in the title, because a token ends at the
             // first space. Saying so here is the moment the bracket form is worth
@@ -1848,6 +1852,9 @@ impl Outcome<'_> {
             Tense::Did => "Added",
             Tense::Would => "Would add",
         };
+        // Typed by the user, or read from a file or stdin: as untrusted on a terminal as a
+        // name from the server, so it goes through the same filter the `Parsed` line uses.
+        let title = printable(title);
         let mut lines = Vec::new();
         // On the first line, after the dates, so the line's opening stays the shape
         // people and the skill doc read.
@@ -1886,7 +1893,10 @@ impl Outcome<'_> {
                 Tense::Did => "Created",
                 Tense::Would => "Would create",
             };
-            lines.push(format!("{verb} label {}.", created_labels.join(", ")));
+            lines.push(format!(
+                "{verb} label {}.",
+                printable(&created_labels.join(", "))
+            ));
         }
         if !unknown_labels.is_empty() {
             let one = unknown_labels.len() == 1;
@@ -1896,7 +1906,7 @@ impl Outcome<'_> {
                 "No labels called"
             };
             let object = if one { "it" } else { "them" };
-            let listed = unknown_labels.join(", ");
+            let listed = printable(&unknown_labels.join(", "));
             lines.push(match tense {
                 // Scoped to next time in the *text*, not only in the comment: the natural
                 // reading of a CLI hint is "re-run me with this flag", and the task above
@@ -2341,6 +2351,43 @@ mod tests {
                  tui-do create them.",
             ]
         );
+    }
+
+    /// Every name the user typed goes through `printable`, as the `Parsed` line already
+    /// did: found by the 2026-11-09 smoke test, where ESC and BEL in a title reached the
+    /// terminal from the `Added` and `Would add` lines.
+    #[test]
+    fn the_report_prints_no_control_characters() {
+        let created = vec!["new\u{1b}]52;c;x\u{7}".to_string()];
+        let unknown = vec!["gone\u{1b}[2J".to_string()];
+        let outcome = Outcome {
+            title: "call \u{1b}]52;c;evil\u{7}mom",
+            project: "Inbox".to_string(),
+            project_id: tui_do_core::models::ProjectId(7),
+            ambiguous_project: false,
+            dates: String::new(),
+            backdated: None,
+            created_labels: &created,
+            unknown_labels: &unknown,
+            unknown_users: &[],
+            description: "",
+        };
+        for tense in [Tense::Did, Tense::Would] {
+            let lines = outcome.lines(tense);
+            for line in &lines {
+                assert!(!line.chars().any(char::is_control), "{line:?}");
+            }
+            assert!(
+                lines[0].ends_with("\"call \u{fffd}]52;c;evil\u{fffd}mom\" to Inbox"),
+                "{:?}",
+                lines[0]
+            );
+        }
+
+        // And the error for a project that is not there, which names what was typed.
+        let parsed = tui_do_core::quickadd::parse("x +\u{1b}]52;c;x\u{7}", &now());
+        let said = no_project(&parsed, &[]).to_string();
+        assert!(!said.chars().any(char::is_control), "{said:?}");
     }
 
     /// A description is counted on the first line and never printed; a dry run shows a
