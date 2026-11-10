@@ -783,16 +783,19 @@ impl Sync {
                     assigned: Subject::Label(named),
                 });
             }
-            (Sent::Updated(updated), Mutation::UpdateTask { after, .. }) => {
+            (Sent::Updated(updated), Mutation::UpdateTask { .. }) => {
                 self.store.complete(entry.id).await?;
                 // The server fills in `updated`, `index` and `identifier`, so its answer
                 // is worth keeping -- but only once nothing else is queued for this
                 // task, or storing it would briefly undo an edit already made.
-                if !self.store.is_pending(after.id).await? {
-                    self.store.upsert_tasks(vec![*updated]).await?;
-                }
+                //
+                // Asked and written in one transaction. As two calls, an edit queued
+                // between the check and the write was overwritten on screen by this
+                // answer, which predates it. A pull's write already makes the check
+                // inside its transaction, and this is the same question.
+                self.store.upsert_tasks_from_server(vec![*updated]).await?;
             }
-            (Sent::LabelUpdated(updated), Mutation::UpdateLabel { after, .. }) => {
+            (Sent::LabelUpdated(updated), Mutation::UpdateLabel { .. }) => {
                 self.store.complete(entry.id).await?;
                 // Worth keeping for the same reason the task answer is, and with the same
                 // guard. The answer carries the *merged* label -- including whatever
@@ -800,10 +803,8 @@ impl Sync {
                 // it is how the user's picker learns about the colour someone else set,
                 // instead of waiting for the next pull. And only once nothing else is
                 // queued for this label, or the first of two renames would put its title
-                // back over the second.
-                if !self.store.is_pending_label(after.id).await? {
-                    self.store.upsert_labels(vec![*updated]).await?;
-                }
+                // back over the second. One transaction, as for a task.
+                self.store.upsert_labels_from_server(vec![*updated]).await?;
             }
             _ => self.store.complete(entry.id).await?,
         }
