@@ -13,7 +13,7 @@ agentic tasks and workflows.
 Feel the flow break when you have to tab out of tmux or herdr or your terminal sessions to go
 to a PWA or the web page for your Vikunja instance? I'm with you, tui-do is the answer!
 
-> **Status: 1.1.** `v1.1.0` is published and is what the commands below install. Everything
+> **Status: 1.2.** `v1.2.1` is published and is what the commands below install. Everything
 > documented here works and is used daily against a real Vikunja;
 > [what's planned](#whats-planned--coming) is set out rather than left to be discovered.
 
@@ -78,7 +78,7 @@ Raspberry Pi 5), Ubuntu 24.04 (Raspberry Pi 4 Model B). Your results may vary on
 releases and distributions.
 
 ```sh
-tag=v1.1.0
+tag=v1.2.1
 arch=$(uname -m)          # x86_64 or aarch64
 base=https://github.com/sjwasko/tui-do/releases/download/$tag
 
