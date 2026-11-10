@@ -5166,10 +5166,101 @@ fn a_tick_while_the_due_prompt_is_open_leaves_the_due_date_alone() {
     for later in [pinned_at(5, 9, 0, 10), pinned_at(4, 9, 1, 10)] {
         let mut model = due_in_new_york(due);
         model.now = pinned_at(5, 8, 23, 50);
-        press_code(&mut model, KeyCode::Char('D'));
+        press(&mut model, 'd');
         update(&mut model, Msg::Tick(later));
         let effects = press_code(&mut model, KeyCode::Enter);
         assert!(applied(&effects).is_none(), "after a tick to {later}");
         assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
     }
+}
+
+fn with_keys_notice() -> Model {
+    let mut model = loaded();
+    model
+        .modals
+        .push(Modal::KeysChanged(tui_do_ui::modal::KeysChangedState::new(
+            "https://example.test/notes",
+        )));
+    model
+}
+
+#[test]
+fn u_shows_the_selected_tasks_project_and_keeps_the_task_selected() {
+    let mut model = loaded();
+    press(&mut model, 'j');
+    assert_eq!(model.list.selected, Some(TaskId(2)));
+
+    let effects = press(&mut model, 'u');
+    assert_eq!(model.query.scope, Scope::Project(ProjectId(1)));
+    assert_eq!(model.sidebar.selected, SidebarTarget::Project(ProjectId(1)));
+    assert!(
+        loaded_query(&effects).is_some(),
+        "the project's tasks are asked for"
+    );
+    answer(
+        &mut model,
+        vec![task(9, "other"), task(1, "first"), task(2, "second")],
+    );
+    assert_eq!(
+        model.list.selected,
+        Some(TaskId(2)),
+        "the same task, not the first row"
+    );
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("Alpha"), "{}", toast.text);
+
+    // Pressed again, it says where it is rather than reloading what is on screen.
+    let effects = press(&mut model, 'u');
+    assert!(loaded_query(&effects).is_none());
+    assert!(model
+        .status
+        .toast
+        .as_ref()
+        .unwrap()
+        .text
+        .contains("Already"));
+}
+
+#[test]
+fn the_keys_notice_opens_the_release_notes_and_stays_up() {
+    let mut model = with_keys_notice();
+    model.url_action = tui_do_ui::model::UrlAction::Open;
+    let effects = press(&mut model, 'o');
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::OpenUrl(url) if url == "https://example.test/notes")),
+        "{effects:?}"
+    );
+    assert!(matches!(model.modals.last(), Some(Modal::KeysChanged(_))));
+}
+
+#[test]
+fn the_keys_notice_continues_without_remembering_on_enter() {
+    let mut model = with_keys_notice();
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(model.modals.is_empty());
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::DismissKeysNotice)));
+}
+
+#[test]
+fn the_keys_notice_is_dismissed_for_good_by_d() {
+    let mut model = with_keys_notice();
+    let effects = press(&mut model, 'd');
+    assert!(model.modals.is_empty());
+    assert!(effects
+        .iter()
+        .any(|e| matches!(e, Effect::DismissKeysNotice)));
+}
+
+#[test]
+fn the_keys_notice_swallows_other_keys() {
+    // A `t` aimed at the list must not mark a task done behind the notice that warns
+    // about exactly that.
+    let mut model = with_keys_notice();
+    let effects = press(&mut model, 't');
+    assert!(applied(&effects).is_none());
+    assert!(matches!(model.modals.last(), Some(Modal::KeysChanged(_))));
 }

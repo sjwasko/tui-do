@@ -284,7 +284,8 @@ fn forget_label(model: &mut Model, label: LabelId) {
             | Modal::Add(_)
             | Modal::Priority(_)
             | Modal::Due(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
 }
@@ -344,7 +345,8 @@ fn absorb_labels(model: &mut Model, labels: Vec<Label>) -> Vec<Effect> {
             | Modal::Edit(_)
             | Modal::Priority(_)
             | Modal::Due(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
     resume_confirmed(model)
@@ -554,6 +556,10 @@ fn on_submit(model: &mut Model, submission: Submission) -> Vec<Effect> {
             hex_color,
         } => rename_label(model, *before, title, hex_color),
         Submission::QuickAction(index) => run_quick_action(model, index),
+        Submission::DismissKeysNotice => {
+            model.toast(Toast::info("Won't show that again — ? lists every key"));
+            vec![Effect::DismissKeysNotice]
+        }
         Submission::Picked(Pick::Project(id)) => show(model, Scope::Project(id)),
         Submission::Picked(Pick::Label(id)) => show(model, Scope::Label(id)),
         Submission::Picked(Pick::MoveTo(id)) => move_task(model, id),
@@ -1574,7 +1580,8 @@ fn release_held_labels(model: &mut Model, subject: Subject, kind: &str) -> Vec<E
             | Modal::Priority(_)
             | Modal::Due(_)
             | Modal::LabelEdit(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
     resume_confirmed(model)
@@ -2499,7 +2506,8 @@ fn adopt_label(model: &mut Model, provisional: LabelId, assigned: LabelId) -> Ve
             | Modal::Add(_)
             | Modal::Priority(_)
             | Modal::Due(_)
-            | Modal::QuickActions(_) => {}
+            | Modal::QuickActions(_)
+            | Modal::KeysChanged(_) => {}
         }
     }
     // The store now holds the server's own copy of the label -- its identifier, and
@@ -2628,7 +2636,8 @@ fn apply_locally(model: &mut Model, mutation: &Mutation) {
                     | Modal::Edit(_)
                     | Modal::Priority(_)
                     | Modal::Due(_)
-                    | Modal::QuickActions(_) => {}
+                    | Modal::QuickActions(_)
+                    | Modal::KeysChanged(_) => {}
                 }
             }
         }

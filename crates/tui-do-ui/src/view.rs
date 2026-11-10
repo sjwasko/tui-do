@@ -16,8 +16,9 @@ use crate::geometry;
 use crate::keymap::{help_rows, HelpRow};
 use crate::markdown;
 use crate::modal::{
-    ConfirmLabelsState, DueState, EditField, EditState, LabelEditState, LabelField, LabelsState,
-    Modal, PickerState, PriorityState, QuickActionsState, SearchState, TextInput, MAX_PRIORITY,
+    ConfirmLabelsState, DueState, EditField, EditState, KeysChangedState, LabelEditState,
+    LabelField, LabelsState, Modal, PickerState, PriorityState, QuickActionsState, SearchState,
+    TextInput, MAX_PRIORITY,
 };
 use crate::model::{Focus, Level, Model, SyncStatus};
 use crate::query::Scope;
@@ -680,6 +681,10 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         // Sized to what was configured, plus the border: a menu that cut off the last
         // quick action would be a menu that hid the key the user was reaching for.
         Modal::QuickActions(state) => (48, state.rows.len() as u16 + 2),
+        // Three lines of why, the moved keys, three lines of what to press, two blank
+        // separators and the border. Narrow enough for a phone-sized terminal, so the
+        // notice does not clip the one screen it has to be read on.
+        Modal::KeysChanged(_) => (45, KeysChangedState::moves().len() as u16 + 10),
         // One line per field, the description given room to be a description, plus the
         // border and the hint. Sized to its content for the same reason the help modal
         // is: a fixed height is how a row goes missing.
@@ -715,6 +720,7 @@ fn draw_modal(model: &Model, modal: &Modal, frame: &mut Frame) {
         Modal::LabelEdit(state) => label_edit_body(state, frame, inner, theme),
         Modal::ConfirmLabels(state) => confirm_labels_body(state, frame, inner, theme),
         Modal::QuickActions(state) => quick_actions_body(state, frame, inner, theme),
+        Modal::KeysChanged(_) => keys_changed_body(frame, inner, theme),
     }
 }
 
@@ -1251,6 +1257,43 @@ fn quick_actions_body(state: &QuickActionsState, frame: &mut Frame, area: Rect, 
             ])
         })
         .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The startup notice: why the keys moved, which ones, and what to press now.
+fn keys_changed_body(frame: &mut Frame, area: Rect, theme: Theme) {
+    let mut lines: Vec<Line<'static>> = [
+        " Keys now match Vikunja's web shortcuts",
+        " and the omavikunja panel: a key does the",
+        " same thing in all three.",
+        "",
+    ]
+    .into_iter()
+    .map(|text| Line::from(Span::styled(text, theme.text())))
+    .collect();
+    for (doc, before, after) in KeysChangedState::moves() {
+        let was = if before.is_empty() {
+            "new".to_string()
+        } else {
+            format!("was {before}")
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("   {after:<7}"), theme.accent()),
+            Span::styled(format!("{doc:<25}"), theme.text()),
+            Span::styled(was, theme.muted()),
+        ]));
+    }
+    lines.push(Line::from(""));
+    for (key, doc) in [
+        ("o", "Open the release notes"),
+        ("Enter", "Continue"),
+        ("d", "Don't show this again"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("   {key:<7}"), theme.accent()),
+            Span::styled(doc, theme.text()),
+        ]));
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 

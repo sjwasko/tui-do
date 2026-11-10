@@ -51,6 +51,9 @@ pub enum Effect {
     /// Remember the project to open on next launch. `None` means "everything".
     RememberProject(Option<ProjectId>),
 
+    /// Remember not to show the key-change notice at startup again.
+    DismissKeysNotice,
+
     /// Apply a change locally and queue it for the server.
     ///
     /// One effect for every kind of write, because `Store::queue` already does both

@@ -1313,3 +1313,17 @@ fn a_long_search_scrolls_to_the_caret() {
     assert!(!status.contains("final"), "{status}");
     assert_eq!(caret, Some((1, y)));
 }
+
+#[test]
+fn the_keys_changed_notice() {
+    for (size, name) in [
+        ((120, 40), "120x40-keys-changed.txt"),
+        ((45, 20), "45x20-keys-changed.txt"),
+    ] {
+        let mut model = fixture(size);
+        model.modals.push(tui_do_ui::Modal::KeysChanged(
+            tui_do_ui::modal::KeysChangedState::new("https://example.test/notes"),
+        ));
+        golden(name, &draw(&model));
+    }
+}
