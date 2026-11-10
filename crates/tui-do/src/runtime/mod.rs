@@ -600,9 +600,9 @@ fn perform(effect: Effect, store: &Store, sync: Option<&Arc<Sync>>, tx: &LoopTx)
             // see `open_detached` for why that matters.
             spawn_blocking_effect(tx.clone(), move || {
                 let reported = tx.clone();
+                let begun = std::time::Instant::now();
                 let started = open_detached(URL_OPENER, &url, move |status| {
-                    if !status.success() {
-                        let message = format!("{URL_OPENER} exited with {status}");
+                    if let Some(message) = opener_failure(status, begun.elapsed()) {
                         let _ = reported.send(Msg::EffectFailed(message));
                     }
                 });
@@ -1261,6 +1261,19 @@ pub(crate) fn url_action() -> UrlAction {
 pub(crate) const URL_OPENER: &str = "open";
 #[cfg(not(target_os = "macos"))]
 pub(crate) const URL_OPENER: &str = "xdg-open";
+
+/// How long after `o` an opener's failure is still news.
+///
+/// `xdg-open` that cannot open anything fails at once. One that stayed in the foreground
+/// with the browser it started exits when the browser closes, minutes later and sometimes
+/// non-zero, and an error toast about it then lands in the middle of unrelated work.
+const OPENER_FAILS_WITHIN: Duration = Duration::from_secs(10);
+
+/// What to tell the user about an opener that has exited, if anything.
+fn opener_failure(status: std::process::ExitStatus, after: Duration) -> Option<String> {
+    (!status.success() && after < OPENER_FAILS_WITHIN)
+        .then(|| format!("{URL_OPENER} exited with {status}"))
+}
 
 /// Start `program` with `url` as its one argument, and let it go.
 ///
@@ -3475,6 +3488,18 @@ mod tests {
     }
 
     /// A program that is not there is reported at once, as before.
+    #[test]
+    fn an_opener_failing_late_is_not_reported() {
+        // Found reviewing 1.2.2: an opener that waited on the browser reported its exit
+        // status whenever the browser closed, as an error toast out of nowhere.
+        use std::os::unix::process::ExitStatusExt as _;
+        let failed = std::process::ExitStatus::from_raw(1 << 8);
+        assert!(opener_failure(failed, Duration::from_secs(1)).is_some());
+        assert!(opener_failure(failed, Duration::from_secs(600)).is_none());
+        let fine = std::process::ExitStatus::from_raw(0);
+        assert!(opener_failure(fine, Duration::from_secs(1)).is_none());
+    }
+
     #[test]
     fn an_opener_that_cannot_start_is_an_error() {
         assert!(open_detached("tui-do-no-such-opener", "https://example.com", |_| {}).is_err());
