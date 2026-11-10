@@ -105,7 +105,17 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // answer, and it arrives before the reload so `TasksLoaded` finds the row and
             // leaves the selection alone. The drawn copy learns it too, so a replay over a
             // load that already has the row recognises it rather than adding another.
-            model.unconfirmed.created(write, id);
+            //
+            // The undo and redo stacks learn it here too. `edit` pushed the create's
+            // inverse before the store had allocated anything, so it names the placeholder
+            // `TaskId(0)` -- and adoption only moves the provisional id to the server's, so
+            // an inverse still on `0` deleted nothing on `U` and `C-r` then made a second
+            // task. Once this has run, adoption carries it the rest of the way.
+            if let Some(drawn) = model.unconfirmed.created(write, id) {
+                for stack in [&mut model.undo, &mut model.redo] {
+                    name_created(stack, &drawn, id);
+                }
+            }
             model.list.selected = Some(id);
             model.list.preview_scroll = 0;
             Vec::new()
@@ -897,6 +907,8 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
                 .push(Modal::QuickActions(QuickActionsState::new(rows)));
             Vec::new()
         }
+        Action::Undo if model.undo.last().is_some_and(unnamed) => still_saving(model),
+        Action::Redo if model.redo.last().is_some_and(unnamed) => still_saving(model),
         Action::Undo => match model.undo.pop() {
             Some(mutation) => {
                 // Everything on the undo stack came from `edit`, which only pushes what
@@ -2427,6 +2439,9 @@ fn truncated(title: &str) -> String {
 /// Every edit goes through here, so the undo stack cannot fall out of step with what was
 /// done — and a new edit clears the redo stack, as everywhere else.
 fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
+    if unnamed(&mutation) {
+        return still_saving(model);
+    }
     // A mutation with no inverse -- creating a label -- is simply not remembered, so `U`
     // reaches past it to the last change that can be taken back.
     if let Some(back) = mutation.inverse() {
@@ -2434,6 +2449,41 @@ fn edit(model: &mut Model, mutation: Mutation) -> Vec<Effect> {
     }
     model.redo.clear();
     apply(model, mutation)
+}
+
+/// Whether `mutation` acts on a task the store has not numbered yet.
+///
+/// Between Enter in `n` and `Msg::TaskCreated` the new row carries the placeholder
+/// `TaskId(0)`, which the store reads as "allocate an id here" and nothing else. A write
+/// queued against it names no task anywhere, so it is refused rather than sent. A create
+/// is the exception: `0` is exactly what a create is meant to carry.
+fn unnamed(mutation: &Mutation) -> bool {
+    !matches!(mutation, Mutation::CreateTask { .. })
+        && mutation.subject() == Subject::Task(TaskId(0))
+}
+
+/// Say why a key aimed at a task still being saved did nothing.
+///
+/// The window is one local write, so waiting a moment is the whole remedy.
+fn still_saving(model: &mut Model) -> Vec<Effect> {
+    model.toast(Toast::info("Still saving that task — try again"));
+    Vec::new()
+}
+
+/// Point the inverse of the create that made `drawn` at the id the store gave it.
+///
+/// One entry and the oldest that matches, found by the task it carries rather than by the
+/// placeholder alone: two creates made before either is numbered both hold `TaskId(0)`,
+/// and retargeting every `0` would hand the first one's id to both.
+fn name_created(stack: &mut [Mutation], drawn: &Task, id: TaskId) {
+    let carries = |mutation: &Mutation| match mutation {
+        Mutation::DeleteTask { before } => **before == *drawn,
+        Mutation::CreateTask { task } => **task == *drawn,
+        _ => false,
+    };
+    if let Some(mutation) = stack.iter_mut().find(|mutation| carries(mutation)) {
+        mutation.retarget(drawn.id, id);
+    }
 }
 
 /// Swap a provisional id for the one the server gave it.

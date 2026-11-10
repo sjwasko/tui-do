@@ -5433,3 +5433,108 @@ fn the_keys_notice_swallows_other_keys() {
     assert!(applied(&effects).is_none());
     assert!(matches!(model.modals.last(), Some(Modal::KeysChanged(_))));
 }
+
+/// `n`, a title, Enter: the create as the user makes it, and the write it asked for.
+fn add_by_keys(model: &mut Model, text: &str) -> tui_do_ui::WriteSeq {
+    press(model, 'n');
+    for c in text.chars() {
+        press(model, c);
+    }
+    write_of(&press_code(model, KeyCode::Enter)).0
+}
+
+#[test]
+fn undo_straight_after_a_create_deletes_the_task_the_server_named() {
+    // The inverse of a create is built before the store has allocated an id, so it named
+    // `TaskId(0)`. `TaskCreated` fixed the selection and left the stacks, and adoption only
+    // moves the provisional id -- so `U` deleted nothing and `C-r` made a second task.
+    let mut model = loaded();
+    let write = add_by_keys(&mut model, "buy milk");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    update(
+        &mut model,
+        Msg::Sync(SyncEvent::Adopted {
+            provisional: Subject::Task(TaskId(-1)),
+            assigned: Subject::Task(TaskId(99)),
+        }),
+    );
+    match model.undo.last() {
+        Some(Mutation::DeleteTask { before }) => assert_eq!(before.id, TaskId(99)),
+        other => panic!("the create's inverse is a delete, not {other:?}"),
+    }
+
+    match applied(&press(&mut model, 'U')) {
+        Some(Mutation::DeleteTask { before }) => assert_eq!(before.id, TaskId(99)),
+        other => panic!("`U` deletes the task, not {other:?}"),
+    }
+    match applied(&press_ctrl(&mut model, 'r')) {
+        Some(Mutation::CreateTask { task }) => assert_eq!(
+            task.id,
+            TaskId(99),
+            "a redo re-creates the task it removed, not a fresh one beside it"
+        ),
+        other => panic!("`C-r` re-creates the task, not {other:?}"),
+    }
+}
+
+#[test]
+fn a_second_create_keeps_its_own_undo_when_the_first_is_named() {
+    // Two creates before either is named: each inverse learns its own id, not both the
+    // first one's.
+    let mut model = loaded();
+    let first = add_by_keys(&mut model, "buy milk");
+    let second = add_by_keys(&mut model, "buy eggs");
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write: first,
+            id: TaskId(-1),
+        },
+    );
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write: second,
+            id: TaskId(-2),
+        },
+    );
+    let ids: Vec<(String, TaskId)> = model
+        .undo
+        .iter()
+        .filter_map(|mutation| match mutation {
+            Mutation::DeleteTask { before } => Some((before.title.clone(), before.id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            ("buy milk".to_string(), TaskId(-1)),
+            ("buy eggs".to_string(), TaskId(-2))
+        ]
+    );
+}
+
+#[test]
+fn a_task_key_before_the_store_has_named_a_new_task_does_nothing() {
+    // Between Enter and `TaskCreated` the new row carries the placeholder id, and a write
+    // queued against it names a task no store or server has.
+    let mut model = loaded();
+    add_by_keys(&mut model, "buy milk");
+    assert_eq!(model.list.selected, Some(TaskId(0)));
+    for key in ['t', 'x', 'U'] {
+        let effects = press(&mut model, key);
+        assert!(
+            applied(&effects).is_none(),
+            "`{key}` queued {:?}",
+            applied(&effects)
+        );
+    }
+    assert_eq!(selected_title(&model), "buy milk");
+}
