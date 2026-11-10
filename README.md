@@ -428,6 +428,8 @@ follows it except whitespace, punctuation and other tokens. A date kept mid-sent
 in the title, so the best form keeps it there and writes the date again at the end. Every
 real add whose line differs from its best form says so on a second line,
 `as typed best: …`; a line already written that way, spacing aside, gets no second line.
+A best form starting with `-` is shown after `-- `, which keeps it from being read as a
+flag when pasted back; the `--` goes outside any quotes.
 
 Wrap a name containing spaces in brackets or quotes; brackets are usually easier from a
 shell, which strips quotes before tui-do sees them:
@@ -475,7 +477,8 @@ missing, when either is redirected. Three flags matter:
   adding it. It reads only the local store, so a project created since the last sync is
   unknown to it.
 - **`--create-labels`** creates any label the line names that does not exist yet. The
-  interface asks instead of assuming.
+  interface asks instead of assuming. Without it, an unknown `*label` is left off and its
+  words stay in the title as typed.
 - **`--offline`** skips the send entirely, **but it needs a store that already knows your
   projects**, because a task has to be filed somewhere. On a machine that has never synced
   you get *"no project to add to"*. Without the flag `tui-do add` fetches the project list
@@ -486,7 +489,8 @@ missing, when either is redirected. Three flags matter:
 its tokens; the description is body text, stored exactly as given (Markdown, plain text or
 HTML), with no tokens read out of it. Pick one of three ways:
 
-- **`-d 'text'`** inline, for a line or two. Newlines in the argument are kept.
+- **`-d 'text'`** inline, for a line or two. The argument is kept byte for byte, newlines
+  included.
 - **`--description-file PATH`** reads a file, and **`--description-file -`** reads stdin, for
   anything longer. A quoted heredoc moves several paragraphs without retyping or expanding
   them:
@@ -511,7 +515,8 @@ HTML), with no tokens read out of it. Pick one of three ways:
   kept exactly, `# Heading`s included. Leave it empty for no description, or quit with an
   error (`:cq` in vim) to add nothing. It needs a terminal.
 
-It must be UTF-8 and at most 64 KiB, and one trailing newline is dropped. The confirmation
+It must be UTF-8 and at most 64 KiB. From a file, stdin or the editor, one trailing newline
+is dropped, since a file or a heredoc always ends in one, and CRLF becomes LF. The confirmation
 line counts it rather than printing it:
 
 ```console

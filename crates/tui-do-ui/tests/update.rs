@@ -725,16 +725,59 @@ fn quick_add_assigns_the_users_it_names() {
 }
 
 #[test]
-fn a_task_past_the_servers_limits_is_not_queued() {
+fn quick_add_prefers_the_label_and_project_spelled_exactly() {
+    // Found by the 2026-11-09 smoke test: `*Urgent` attached `urgent` when both existed,
+    // because the case-insensitive match took the first. Exact first, as `@user` does.
     let mut model = loaded();
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(5, "Urgent")]),
+    );
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "home", 0), project(3, "Home", 0)]),
+    );
     press(&mut model, 'n');
-    for c in "water the cactus every 1000 years".chars() {
+    for c in "Fix the door *Urgent *URGENT +Home".chars() {
         press(&mut model, c);
     }
     let effects = press_code(&mut model, KeyCode::Enter);
-    assert!(applied(&effects).is_none(), "{effects:?}");
+    match applied(&effects).expect("a task was queued") {
+        Mutation::CreateTask { task } => {
+            let ids: Vec<i64> = task.labels.iter().map(|l| l.id.get()).collect();
+            // `*URGENT` matches neither exactly, so it falls back to the first.
+            assert_eq!(ids, vec![5, 4]);
+            assert_eq!(task.project_id, ProjectId(3));
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
     let toast = model.status.toast.as_ref().expect("the user is told");
-    assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
+    assert!(
+        !toast.text.contains("more than one project"),
+        "an exact match is not ambiguous: {}",
+        toast.text
+    );
+}
+
+#[test]
+fn a_task_past_the_servers_limits_is_not_queued() {
+    for line in [
+        "water the cactus every 1000 years",
+        // A date the server cannot store. The model's clock is at UTC here, so the year
+        // 10000 cannot be reached from a typed date; the core test covers it.
+        "party due 0001-01-01",
+        "party start 0001-06-01",
+    ] {
+        let mut model = loaded();
+        press(&mut model, 'n');
+        for c in line.chars() {
+            press(&mut model, c);
+        }
+        let effects = press_code(&mut model, KeyCode::Enter);
+        assert!(applied(&effects).is_none(), "{line:?}: {effects:?}");
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(toast.text.starts_with("Not added:"), "{}", toast.text);
+    }
 }
 
 #[test]
@@ -804,6 +847,33 @@ fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
     }
     let toast = model.status.toast.as_ref().expect("the user is told");
     assert!(toast.text.contains("nosuchlabel"), "{}", toast.text);
+}
+
+#[test]
+fn a_label_left_off_keeps_its_words_in_the_title() {
+    // Found by the 2026-11-09 smoke test: `**bold** _md_` was saved as `_md_` and
+    // `*needs review` as `review`, because the label's text left the title and the label
+    // was then left off.
+    for (typed, title) in [
+        ("**bold** _md_", "**bold** _md_"),
+        ("*needs review", "*needs review"),
+        ("pay rent *bills due friday", "pay rent *bills"),
+    ] {
+        let mut model = loaded();
+        press(&mut model, 'n');
+        for c in typed.chars() {
+            press(&mut model, c);
+        }
+        press_code(&mut model, KeyCode::Enter);
+        let effects = press(&mut model, 'n');
+        match applied(&effects).expect("the task was still created") {
+            Mutation::CreateTask { task } => {
+                assert_eq!(task.title, title, "{typed:?}");
+                assert!(task.labels.is_empty(), "{typed:?}");
+            }
+            other => panic!("wrong mutation: {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -3938,7 +4008,8 @@ fn declining_adds_the_task_without_the_label() {
 
     match all_applied(&effects).as_slice() {
         [Mutation::CreateTask { task }] => {
-            assert_eq!(task.title, "Call the VA");
+            // The label left off keeps its words in the title, as typed.
+            assert_eq!(task.title, "Call the VA *waiting");
             assert_eq!(
                 task.labels.iter().map(|l| l.id).collect::<Vec<_>>(),
                 vec![LabelId(4)],
@@ -4114,7 +4185,7 @@ fn escaping_the_question_still_adds_the_task() {
     let (mut model, _) = asked_about_waiting();
     let effects = press_code(&mut model, KeyCode::Esc);
     match all_applied(&effects).as_slice() {
-        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA"),
+        [Mutation::CreateTask { task }] => assert_eq!(task.title, "Call the VA *waiting"),
         other => panic!("wrong mutations: {other:?}"),
     }
     assert!(model.modals.is_empty());

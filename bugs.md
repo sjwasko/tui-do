@@ -85,7 +85,7 @@ throughout, both learned the hard way in this pass:
 | **Found by the BUG-9 sweep** | ~~BUG-26~~ — FIXED 2026-11-08: text input steps, deletes and places its caret per grapheme |
 | **Found fixing BUG-14** | ~~BUG-27~~ — FIXED 2026-11-08: a rejected label create is forgotten from both stacks, the rows and the open forms, and the store refuses an attach or detach naming it; the server's answer is still unmeasured and now unreachable |
 | **Structural** | `push_with`, `runtime::add`, `apply_edit` |
-| **Minor** | 20 remaining, none urgent |
+| **Minor** | 10 remaining, none urgent; the six from the 2026-11-09 `tui-do add` smoke test, the false `done_at` overwrite and a refused retry search fixed 2026-11-10, and two findings closed as not defects |
 
 Every open item needed either a decision or a measurement — that was the point of the
 2026-08-31 pass. **That stopped being true on 2026-09-13:** BUG-21, BUG-22 and BUG-23 are all
@@ -2397,21 +2397,34 @@ must exit non-zero and print the message, and must not print `Sent.`.
   undo's `before` never matched it. `Task::merge_onto` now takes the user's `done_at`
   without reporting a collision on it; a real disagreement shows on `done`. Test:
   `an_undo_of_a_done_is_not_a_collision_on_the_servers_done_at`.
-- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev:
-  - An unknown `*label` takes its text out of the title and is then left off, so the words
+- **Found by the 2026-11-09 `tui-do add` smoke test**, all confirmed against dev, all six fixed 2026-11-10:
+  - ~~An unknown `*label` takes its text out of the title and is then left off, so the words
     are lost: `**bold** _md_` is saved as `_md_`, `*needs review` as `review`. It is warned
-    about, but the task is already queued and re-running adds a second one.
-  - `*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
-    and ignores an exact one.
-  - `due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
+    about, but the task is already queued and re-running adds a second one.~~
+    **Fixed 2026-11-10** — a label left off is re-read as text (`quickadd::parse_keeping`),
+    so its words stay in the title as typed, in `tui-do add`, its dry run and the interface.
+  - ~~`*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
+    and ignores an exact one.~~ **Fixed 2026-11-10** — labels and projects match exactly
+    first and ignore case only when nothing does, as `@user` already did.
+  - ~~`due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
     server ends up with no due date: the first is Go's zero time, which means unset, and the
-    second is year 10000 in UTC once 23:59 local is converted.
-  - The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
-    `Parsed` line already passes it through `printable`.
-  - A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
-    copy-safe: pasted back, it reads as the flag.
-  - `-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;
-    the help says both are stored exactly as given (the server keeps `\r\n` when sent it).
+    second is year 10000 in UTC once 23:59 local is converted.~~ **Fixed 2026-11-10** —
+    `Parsed::server_refusal` refuses a due or start date outside the years 2 to 9999 in UTC,
+    so `tui-do add`, its dry run and the interface all refuse it before anything is queued.
+    The edit form's Due field and `D` go through `parse_due` and are not checked yet.
+  - ~~The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
+    `Parsed` line already passes it through `printable`.~~ **Fixed 2026-11-10** — the title,
+    the created and unknown label names and the "no project called" error all go through
+    `printable` now.
+  - ~~A title starting with `--` (`tui-do add -- '--dry-run x'`) gets a best form that is not
+    copy-safe: pasted back, it reads as the flag.~~ **Fixed 2026-11-10** — a best form
+    starting with `-` is printed after `-- `, in a real add and a dry run.
+  - ~~`-d 'text\n'` loses its trailing newline and `--description-file` turns CRLF into LF;
+    the help says both are stored exactly as given (the server keeps `\r\n` when sent it).~~
+    **Fixed 2026-11-10** — `-d` is checked by `description::check` and kept byte for byte.
+    A file keeps both rules, which the design in `md/TODO.md` chose (a file or heredoc
+    always ends in a newline); its help now names the CRLF rule too. Whether a file's CRLF
+    should survive is a decision, not taken here.
 - `crates/tui-do-api/src/models/task.rs:296` — `Task::repeats()` may over-report for
   `RepeatMode::FromCurrentDate` with `repeat_after == 0`. Cosmetic badge only, unverified.
 - `crates/tui-do-ui/src/theme.rs:248` — `Theme::label` paints a background, the one exception
