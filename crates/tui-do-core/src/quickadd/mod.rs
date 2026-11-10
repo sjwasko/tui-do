@@ -147,6 +147,23 @@ pub const REPEAT_MAX_SECONDS: i64 = 315_360_000;
 /// year 10000 once converted, past what a four-digit year can hold.
 pub const DATE_YEARS: std::ops::RangeInclusive<i32> = 2..=9999;
 
+/// Why Vikunja could not store `at` as the `name` date, if it could not ([`DATE_YEARS`]).
+///
+/// Shared by quick add and by every field that sets a date on its own -- the edit form's
+/// Due and the `d` prompt -- so the three cannot disagree about what the server keeps.
+#[must_use]
+pub fn date_refusal(name: &str, at: DateTime<Utc>) -> Option<String> {
+    let year = chrono::Datelike::year(&at);
+    (!DATE_YEARS.contains(&year)).then(|| {
+        format!(
+            "the {name} date falls in the year {year} in UTC, and Vikunja keeps only dates \
+             between the years {} and {}",
+            DATE_YEARS.start(),
+            DATE_YEARS.end()
+        )
+    })
+}
+
 impl Parsed {
     /// Why the server would refuse this task, if it is known to: a title or a repeat over
     /// Vikunja's limits, or a date it cannot store ([`DATE_YEARS`]).
@@ -172,20 +189,9 @@ impl Parsed {
                 ));
             }
         }
-        for (name, at) in [("due", self.due_date), ("start", self.start_date)] {
-            let Some(year) = at.map(|at| chrono::Datelike::year(&at)) else {
-                continue;
-            };
-            if !DATE_YEARS.contains(&year) {
-                return Some(format!(
-                    "the {name} date falls in the year {year} in UTC, and Vikunja keeps only \
-                     dates between the years {} and {}",
-                    DATE_YEARS.start(),
-                    DATE_YEARS.end()
-                ));
-            }
-        }
-        None
+        [("due", self.due_date), ("start", self.start_date)]
+            .into_iter()
+            .find_map(|(name, at)| at.and_then(|at| date_refusal(name, at)))
     }
 
     /// Whether anything at all was recognised beyond a plain title.

@@ -1405,7 +1405,13 @@ fn set_due(model: &mut Model, due: &Prefilled) -> Vec<Effect> {
         None
     } else {
         match quickadd::parse_due(text, &model.now) {
-            Some(due) => Some(due),
+            Some(due) => {
+                if let Some(refusal) = quickadd::date_refusal("due", due) {
+                    model.toast(Toast::error(format!("Not set: {refusal}")));
+                    return Vec::new();
+                }
+                Some(due)
+            }
             None => {
                 model.toast(Toast::error(format!(
                     "{text:?} is not a date tui-do understands"
@@ -1926,7 +1932,10 @@ fn apply_edit(model: &mut Model, draft: EditDraft, unknown: Unknown) -> Vec<Effe
     } else {
         let parsed = quickadd::parse_due(draft.due.text(), &model.now);
         match parsed {
-            Some(due) => after.due_date = Some(due).into(),
+            Some(due) => match quickadd::date_refusal("due", due) {
+                Some(refusal) => notes.push(format!("Due date kept: {refusal}")),
+                None => after.due_date = Some(due).into(),
+            },
             None => notes.push(format!(
                 "{:?} is not a date tui-do understands",
                 draft.due.text()

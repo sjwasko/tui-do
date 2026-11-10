@@ -2411,7 +2411,8 @@ must exit non-zero and print the message, and must not print `Sent.`.
     second is year 10000 in UTC once 23:59 local is converted.~~ **Fixed 2026-11-10** —
     `Parsed::server_refusal` refuses a due or start date outside the years 2 to 9999 in UTC,
     so `tui-do add`, its dry run and the interface all refuse it before anything is queued.
-    The edit form's Due field and `D` go through `parse_due` and are not checked yet.
+    The edit form's Due field and the `d` prompt share the check since 2026-11-10
+    (`quickadd::date_refusal`): `d` refuses, and the form keeps the old date and says why.
   - ~~The `Would add`/`Added` lines print the title raw, ESC and BEL included, where the
     `Parsed` line already passes it through `printable`.~~ **Fixed 2026-11-10** — the title,
     the created and unknown label names and the "no project called" error all go through

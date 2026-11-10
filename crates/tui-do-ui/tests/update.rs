@@ -5133,6 +5133,50 @@ fn an_edited_due_field_is_read_as_a_local_date() {
 }
 
 #[test]
+fn the_due_prompt_refuses_a_date_the_server_cannot_store() {
+    // The `d` half of the 2026-11-09 smoke finding quick add already refuses: 23:59 on
+    // 9999-12-31 in New York is the year 10000 in UTC, and the server keeps no due date.
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    for typed in ["9999-12-31", "0001-01-01"] {
+        let mut model = due_in_new_york(due);
+        press(&mut model, 'd');
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+        );
+        for c in typed.chars() {
+            press(&mut model, c);
+        }
+        let effects = press_code(&mut model, KeyCode::Enter);
+        assert!(applied(&effects).is_none(), "{typed}: {effects:?}");
+        assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
+        let toast = model.status.toast.as_ref().expect("the user is told");
+        assert!(toast.text.starts_with("Not set:"), "{}", toast.text);
+    }
+}
+
+#[test]
+fn the_edit_form_keeps_the_due_date_when_the_new_one_cannot_be_stored() {
+    let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
+    let mut model = due_in_new_york(due);
+
+    let state = open_edit(&mut model);
+    state.focus = tui_do_ui::modal::EditField::Due;
+    for _ in 0..40 {
+        state.handle(Key::plain(KeyCode::Backspace));
+    }
+    type_into(state, "9999-12-31");
+    let effects = save(&mut model);
+
+    if let Some(Mutation::UpdateTask { after, .. }) = applied(&effects) {
+        assert_eq!(after.due_date.get(), Some(due), "the refused date was sent");
+    }
+    assert_eq!(model.selected_task().unwrap().due_date.get(), Some(due));
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(toast.text.contains("year 10000"), "{}", toast.text);
+}
+
+#[test]
 fn an_emptied_due_field_still_clears_the_date() {
     let due = Utc.with_ymd_and_hms(2027, 3, 11, 4, 59, 0).unwrap();
     let mut model = due_in_new_york(due);
