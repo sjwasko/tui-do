@@ -5947,3 +5947,55 @@ fn an_undo_that_removes_the_selected_row_moves_to_the_one_below() {
     press(&mut model, 'U');
     assert_eq!(selected_title(&model), "first");
 }
+
+#[test]
+fn a_create_the_store_never_wrote_leaves_nothing_to_undo() {
+    // Found reviewing 1.2.2: the create's inverse named the placeholder id 0 and stayed on
+    // the stack when the write failed, so `U` answered "still saving" for good.
+    let mut model = loaded();
+    press(&mut model, 'n');
+    for c in "buy milk".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    update(
+        &mut model,
+        Msg::WriteFailed {
+            write,
+            message: "disk full".to_string(),
+        },
+    );
+    assert!(model.undo.is_empty(), "{:?}", model.undo);
+    press(&mut model, 'U');
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert_eq!(toast.text, "Nothing to undo");
+}
+
+#[test]
+fn a_dialog_opened_on_a_new_task_follows_it_when_the_store_names_it() {
+    // Found reviewing 1.2.2: `p` on the new row before `TaskCreated` held id 0, and Enter
+    // then said "That task is gone" about the task just made.
+    let mut model = loaded();
+    press(&mut model, 'n');
+    for c in "buy milk".chars() {
+        press(&mut model, c);
+    }
+    let (write, _) = write_of(&press_code(&mut model, KeyCode::Enter));
+    press(&mut model, 'p');
+    update(
+        &mut model,
+        Msg::TaskCreated {
+            write,
+            id: TaskId(-1),
+        },
+    );
+    press(&mut model, '4');
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the priority was set") {
+        Mutation::UpdateTask { after, .. } => {
+            assert_eq!(after.id, TaskId(-1));
+            assert_eq!(after.priority, 4);
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}

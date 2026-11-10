@@ -110,8 +110,18 @@ impl Overlay {
     }
 
     /// The store refused `write`. Nothing will ever hold it, so the next load is right.
-    pub fn failed(&mut self, write: WriteSeq) {
+    ///
+    /// Answers the task a failed create had drawn, placeholder id and all, so a caller
+    /// holding the create's inverse can drop it: it names a task that will never exist.
+    pub fn failed(&mut self, write: WriteSeq) -> Option<Task> {
+        let drawn = self.entries.iter().find_map(|entry| match &entry.mutation {
+            Mutation::CreateTask { task } if entry.write == write && entry.created.is_none() => {
+                Some((**task).clone())
+            }
+            _ => None,
+        });
         self.entries.retain(|entry| entry.write != write);
+        drawn
     }
 
     /// The store gave the task `write` created this id; it was drawn without one.

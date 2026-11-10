@@ -115,6 +115,15 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 for stack in [&mut model.undo, &mut model.redo] {
                     name_created(stack, &drawn, id);
                 }
+                // The row on screen and a dialog opened on it before this arrived hold the
+                // placeholder too; left alone, the dialog would answer "That task is gone"
+                // about the task just made, until the reload renumbered the row.
+                if let Some(row) = model.data.tasks.iter_mut().find(|row| **row == drawn) {
+                    row.id = id;
+                }
+                for modal in &mut model.modals {
+                    modal.retarget_task(drawn.id, id);
+                }
             }
             model.list.selected = Some(id);
             model.list.preview_scroll = 0;
@@ -125,7 +134,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::WriteFailed { write, message } => {
-            model.unconfirmed.failed(write);
+            // A create the store never wrote leaves its inverse on the undo stack naming
+            // the placeholder `TaskId(0)`, which `U` refuses as still saving -- for good,
+            // and with every older entry stuck behind it. It undoes nothing, so it goes.
+            if let Some(drawn) = model.unconfirmed.failed(write) {
+                for stack in [&mut model.undo, &mut model.redo] {
+                    stack.retain(|mutation| !carries_create(mutation, &drawn));
+                }
+            }
             update(model, Msg::StoreFailed(message))
         }
         Msg::EffectFailed(message) => {
@@ -2622,13 +2638,20 @@ fn still_saving(model: &mut Model) -> Vec<Effect> {
 /// placeholder alone: two creates made before either is numbered both hold `TaskId(0)`,
 /// and retargeting every `0` would hand the first one's id to both.
 fn name_created(stack: &mut [Mutation], drawn: &Task, id: TaskId) {
-    let carries = |mutation: &Mutation| match mutation {
+    if let Some(mutation) = stack
+        .iter_mut()
+        .find(|mutation| carries_create(mutation, drawn))
+    {
+        mutation.retarget(drawn.id, id);
+    }
+}
+
+/// Whether `mutation` is the inverse (or the redo) of the create that drew `drawn`.
+fn carries_create(mutation: &Mutation, drawn: &Task) -> bool {
+    match mutation {
         Mutation::DeleteTask { before } => **before == *drawn,
         Mutation::CreateTask { task } => **task == *drawn,
         _ => false,
-    };
-    if let Some(mutation) = stack.iter_mut().find(|mutation| carries(mutation)) {
-        mutation.retarget(drawn.id, id);
     }
 }
 
