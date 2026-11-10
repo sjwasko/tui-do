@@ -470,7 +470,8 @@ impl Sync {
 
     /// Push, then pull only what changed.
     ///
-    /// What `r` asks for. Measured against dev: an unfiltered pull is 78 pages and 15
+    /// What `r` asks for, and what the runtime's timer runs between its hourly full
+    /// pulls. Measured against dev: an unfiltered pull is 78 pages and 15
     /// seconds, and the same instance filtered to three days of changes is one page.
     ///
     /// # Errors
@@ -482,7 +483,8 @@ impl Sync {
     /// A pass the user asked for, which retries everything queued.
     ///
     /// The one caller is a keystroke — `r` with [`Reach::Incremental`], `R` with
-    /// [`Reach::Full`]. The timer and startup call [`Self::once`] instead, so a server
+    /// [`Reach::Full`]. Startup calls [`Self::once`], and the timer calls
+    /// [`Self::delta`] or, hourly, [`Self::once`] instead, so a server
     /// that is genuinely down still gets the retreating schedule rather than a request
     /// every five minutes.
     ///

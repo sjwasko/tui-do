@@ -682,13 +682,15 @@ enum Pass {
     /// Send queued changes and nothing else. What an edit asks for: it is one request per
     /// entry, where a pull of this instance is seventy-eight pages.
     Push,
-    /// Push, then pull only what the server says has changed. What `r` asks for.
+    /// Push, then pull only what the server says has changed. What `r` asks for, and what
+    /// the timer runs between hourly full passes (see [`timer_pass`]).
     ///
     /// Between a push and a full pass in every sense: it costs a page rather than
     /// seventy-eight, and it sees everything a full pass does except deletions.
     Delta,
-    /// Push, then pull everything, removing what the server no longer has. What startup,
-    /// the timer, and `R` ask for.
+    /// Push, then pull everything, removing what the server no longer has. What startup
+    /// and `R` ask for, and what the timer runs once [`FULL_PULL_EVERY`] has passed
+    /// without one.
     Full,
 }
 
@@ -1086,14 +1088,16 @@ const FULL_PULL_EVERY: chrono::TimeDelta = chrono::TimeDelta::hours(1);
 /// The first tick is startup and always pulls in full. After that, full only when no full
 /// pull -- the timer's or `R`'s -- has reconciled within [`FULL_PULL_EVERY`]; a store that
 /// cannot say when one last did gets a full one, because that is the pass that is never
-/// wrong, only slow.
+/// wrong, only slow. A stamp in the future means the clock has gone back since it was
+/// written, and counts as stale: read as fresh, it would hold off every full pull until
+/// the clock caught up.
 fn timer_pass(
     first: bool,
     last_reconcile: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Pass {
     match last_reconcile {
-        Some(at) if !first && now - at < FULL_PULL_EVERY => Pass::Delta,
+        Some(at) if !first && at <= now && now - at < FULL_PULL_EVERY => Pass::Delta,
         _ => Pass::Full,
     }
 }
@@ -2741,6 +2745,12 @@ mod tests {
             "an hour has passed"
         );
         assert_eq!(timer_pass(false, None, now), Pass::Full, "never reconciled");
+        let ahead = Some(now + chrono::TimeDelta::hours(5));
+        assert_eq!(
+            timer_pass(false, ahead, now),
+            Pass::Full,
+            "the clock went back"
+        );
     }
 
     #[test]
