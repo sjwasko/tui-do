@@ -246,21 +246,7 @@ impl Store {
     /// # Errors
     /// [`crate::CoreError::Store`] on any SQL failure.
     pub async fn task(&self, id: TaskId) -> Result<Option<Task>> {
-        self.read(move |connection| {
-            let Some(mut task) = connection
-                .query_row(
-                    &format!("{SELECT} WHERE tasks.id = ?1"),
-                    params![id.get()],
-                    row_to_task,
-                )
-                .optional()?
-            else {
-                return Ok(None);
-            };
-            fill_children(connection, std::slice::from_mut(&mut task))?;
-            Ok(Some(task))
-        })
-        .await
+        self.read(move |connection| read_task(connection, id)).await
     }
 
     /// Read tasks matching `filter`, ordered by `sort`.
@@ -438,6 +424,22 @@ impl Store {
         })
         .await
     }
+}
+
+/// One task, with its labels, assignees and reminders. The body of [`Store::task`].
+pub(super) fn read_task(connection: &Connection, id: TaskId) -> Result<Option<Task>> {
+    let Some(mut task) = connection
+        .query_row(
+            &format!("{SELECT} WHERE tasks.id = ?1"),
+            params![id.get()],
+            row_to_task,
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    fill_children(connection, std::slice::from_mut(&mut task))?;
+    Ok(Some(task))
 }
 
 /// Write one task and its links.

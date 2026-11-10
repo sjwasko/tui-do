@@ -3242,3 +3242,140 @@ async fn an_entry_held_back_by_its_label_still_holds_back_its_task() {
         "the delete overtook the attach on the next pass"
     );
 }
+
+#[tokio::test]
+async fn a_task_deleted_before_its_create_was_sent_does_not_come_back() {
+    // Created and deleted offline, then the network returns. The create lands as 100,
+    // the settle wrote the server's row 100, and the delete then succeeded on the server
+    // and left that row on screen until the next full pull: a ghost of a task the user
+    // deleted and the server no longer has.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(100, "typo")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{API}/tasks/100")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "typo")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+    store
+        .queue(Mutation::DeleteTask {
+            before: Box::new(task(provisional.get(), "typo")),
+        })
+        .await
+        .unwrap();
+    assert!(store.task(provisional).await.unwrap().is_none());
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.sent, 2);
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    assert!(
+        store.task(TaskId(100)).await.unwrap().is_none(),
+        "the deleted task came back under the id the server gave it"
+    );
+}
+
+#[tokio::test]
+async fn a_task_deleted_before_its_create_comes_back_if_the_delete_is_refused() {
+    // The other half: skipping the server's row must not lose the task when the delete
+    // is rolled back. The rollback restores `before`, retargeted to the real id.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(100, "keep")))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{API}/tasks/100")))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(json!({"code": 4001, "message": "no"})),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "keep")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+    store
+        .queue(Mutation::DeleteTask {
+            before: Box::new(task(provisional.get(), "keep")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+
+    assert_eq!(report.rejected, 1);
+    assert_eq!(
+        store.task(TaskId(100)).await.unwrap().map(|t| t.title),
+        Some("keep".to_string()),
+        "a refused delete must put the task back"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_queued_behind_a_create_stays_on_screen_when_the_create_settles() {
+    // The create's answer is the task as it was created, before the rename queued behind
+    // it. Writing that answer over the local row showed the old title until the rename
+    // was sent -- and here the rename is deferred, so it stayed until the next pass.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(task_json(100, "buy milk")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{API}/tasks/100")))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({"message": "busy"})))
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "buy milk")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(provisional.get(), "buy milk")),
+            after: Box::new(task(provisional.get(), "buy oat milk")),
+        })
+        .await
+        .unwrap();
+
+    let (sync, _rx) = engine(&server, &store);
+    let report = sync.push().await.unwrap();
+    assert_eq!(report.sent, 1);
+    assert_eq!(report.deferred, 1);
+
+    let shown = store.task(TaskId(100)).await.unwrap().expect("the task");
+    assert_eq!(
+        shown.title, "buy oat milk",
+        "the settle put the server's pre-edit copy over a queued edit"
+    );
+    assert!(store.task(provisional).await.unwrap().is_none());
+}
