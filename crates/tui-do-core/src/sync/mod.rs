@@ -683,7 +683,11 @@ impl Sync {
                         .await?
                         .into_iter()
                         .filter(|queued| {
-                            queued.id <= queue.seen()
+                            // A refused create's id will never be issued, so what names it
+                            // goes however recently it was queued. An edit made while the
+                            // create was on the wire otherwise went out against the
+                            // provisional id, and its rollback put back a phantom.
+                            (queued.id <= queue.seen() || entry.mutation.is_create())
                                 && (queued.mutation.subject() == subject
                                     || created_label
                                         .is_some_and(|id| references(&queued.mutation, id)))

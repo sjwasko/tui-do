@@ -3423,3 +3423,74 @@ async fn a_pull_does_not_overwrite_a_label_rename_that_has_not_been_sent() {
         "the task still carries the label, whatever its row says"
     );
 }
+
+/// Refuses every request with a `400`, holding the first until the test lets it go.
+struct HeldRefusal {
+    arrived: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl wiremock::Respond for HeldRefusal {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let first = self.arrived.lock().unwrap().take();
+        if let Some(arrived) = first {
+            arrived.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        ResponseTemplate::new(400).set_body_json(json!({"code": 4001, "message": "invalid"}))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_queued_mid_pass_goes_with_its_rejected_create() {
+    // The rejection discarded only what the pass had already seen. An edit made while
+    // the create was on the wire survived it, went out as `GET /tasks/-1`, and its own
+    // rollback put back a task that never existed anywhere.
+    let server = MockServer::start().await;
+    let (arrived_tx, arrived) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    Mock::given(method("PUT"))
+        .and(path(format!("{API}/projects/1/tasks")))
+        .respond_with(HeldRefusal {
+            arrived: std::sync::Mutex::new(Some(arrived_tx)),
+            release: std::sync::Mutex::new(release_rx),
+        })
+        .mount(&server)
+        .await;
+
+    let store = Store::in_memory().unwrap();
+    let created = store
+        .queue(Mutation::CreateTask {
+            task: Box::new(task(0, "too long")),
+        })
+        .await
+        .unwrap();
+    let provisional = created.mutation.subject().task().unwrap();
+    let (sync, _rx) = engine(&server, &store);
+    let push = tokio::spawn(async move { sync.push().await.unwrap() });
+
+    tokio::task::spawn_blocking(move || arrived.recv().unwrap())
+        .await
+        .unwrap();
+    store
+        .queue(Mutation::UpdateTask {
+            before: Box::new(task(provisional.get(), "too long")),
+            after: Box::new(task(provisional.get(), "still too long")),
+        })
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+
+    let report = push.await.unwrap();
+    assert_eq!(
+        report.rejected, 2,
+        "the edit outlived the create it was built on"
+    );
+    assert_eq!(store.pending_count().await.unwrap(), 0);
+    assert!(
+        store.task(provisional).await.unwrap().is_none(),
+        "a task the server refused to create is back on screen"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "something was sent for a provisional id");
+}
