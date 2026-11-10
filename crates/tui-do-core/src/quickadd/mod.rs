@@ -222,6 +222,45 @@ pub fn parse<Tz: TimeZone>(input: &str, now: &DateTime<Tz>) -> Parsed {
 /// the title that would have left it (see [`ends_the_line`]): only the label's own text
 /// stays, so whether a label exists changes nothing else about the task.
 pub fn parse_keeping<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: &[String]) -> Parsed {
+    parse_kept(
+        input,
+        now,
+        Kept {
+            labels: kept,
+            users: &[],
+        },
+    )
+}
+
+/// Names a line is read with as plain text rather than as tokens, because they were left
+/// off the task: a `*label` that does not exist, or an `@user` nobody here has seen.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Kept<'a> {
+    /// `*label` names to keep in the title.
+    pub labels: &'a [String],
+    /// `@user` names to keep in the title.
+    pub users: &'a [String],
+}
+
+impl Kept<'_> {
+    /// Whether nothing is kept, so the line reads exactly as [`parse`] reads it.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.users.is_empty()
+    }
+}
+
+/// Whether `value` is one of `names`, ignoring ASCII case as the lookups do.
+fn is_kept(names: &[String], value: &str) -> bool {
+    names
+        .iter()
+        .any(|name| name.trim().eq_ignore_ascii_case(value.trim()))
+}
+
+/// Read one line as [`parse_keeping`] does, for unknown users as well as labels: every
+/// name in `kept` stays in the title exactly as typed. An unknown `@user` used to be taken
+/// out and then left off, so `call @mom about rent` was saved as `call about rent`.
+pub fn parse_kept<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: Kept<'_>) -> Parsed {
     let mut parsed = Parsed::default();
     let mut consumed: Vec<Range<usize>> = Vec::new();
     // Kept labels: in the title, but no more a reason to keep a date there than a label.
@@ -238,11 +277,11 @@ pub fn parse_keeping<Tz: TimeZone>(input: &str, now: &DateTime<Tz>, kept: &[Stri
                 let range = word.range.clone();
                 match kind {
                     // Neither consumed nor offered to the date reader: text, as typed.
-                    TokenKind::Label
-                        if kept
-                            .iter()
-                            .any(|name| name.trim().eq_ignore_ascii_case(value.trim())) =>
-                    {
+                    TokenKind::Label if is_kept(kept.labels, &value) => {
+                        passed.push(range);
+                        continue;
+                    }
+                    TokenKind::Assignee if is_kept(kept.users, &value) => {
                         passed.push(range);
                         continue;
                     }

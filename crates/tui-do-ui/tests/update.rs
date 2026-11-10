@@ -791,7 +791,8 @@ fn a_user_nobody_has_seen_is_reported_rather_than_dropped() {
     let effects = press_code(&mut model, KeyCode::Enter);
     match applied(&effects).expect("the task was still created") {
         Mutation::CreateTask { task } => {
-            assert_eq!(task.title, "Thing");
+            // The unknown name keeps its words in the title, as a left-off label does.
+            assert_eq!(task.title, "Thing @nobody");
             assert_eq!(task.assignees.len(), 1);
         }
         other => panic!("wrong mutation: {other:?}"),
@@ -847,6 +848,59 @@ fn a_label_that_does_not_exist_is_reported_rather_than_dropped() {
     }
     let toast = model.status.toast.as_ref().expect("the user is told");
     assert!(toast.text.contains("nosuchlabel"), "{}", toast.text);
+}
+
+#[test]
+fn a_user_left_off_keeps_their_name_in_the_title() {
+    // Found by the 2026-11-10 review: the label fix did not cover `@user`, so a name the
+    // store had never seen was taken out of the title and then left off.
+    let mut model = loaded();
+    press(&mut model, 'n');
+    for c in "call @mom about rent".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("the task was created") {
+        Mutation::CreateTask { task } => {
+            assert_eq!(task.title, "call @mom about rent");
+            assert!(task.assignees.is_empty());
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_line_that_is_only_an_unknown_label_is_its_own_title() {
+    // `*needs review` was added as `*needs review`, but `*Groceries` alone answered
+    // "Nothing to add": the emptiness check ran before the label was known to be left off.
+    let mut model = loaded();
+    press(&mut model, 'n');
+    for c in "*Groceries".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(
+        model.modals.is_empty(),
+        "no question about a label nobody asked for"
+    );
+    match applied(&effects).expect("the task was created") {
+        Mutation::CreateTask { task } => assert_eq!(task.title, "*Groceries"),
+        other => panic!("wrong mutation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_line_that_names_only_a_known_label_is_still_nothing_to_add() {
+    let mut model = loaded();
+    update(&mut model, Msg::LabelsLoaded(vec![label(4, "urgent")]));
+    press(&mut model, 'n');
+    for c in "*urgent".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    assert!(applied(&effects).is_none(), "{effects:?}");
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert_eq!(toast.text, "Nothing to add");
 }
 
 #[test]

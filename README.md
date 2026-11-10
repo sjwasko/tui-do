@@ -390,7 +390,7 @@ while one at the end still comes out.
 |---|---|
 | `+project` | File it in a project, by title or id: `+Legal`, `+#12` |
 | `*label` | Attach a label: `*urgent` |
-| `@user` | Assign someone: `@admin` |
+| `@user` | Assign someone: `@admin`. A name tui-do has not seen on a task stays in the title |
 | `!1` … `!5` | Priority, 1 lowest to 5 highest |
 | a date | `tomorrow`, `next friday`, `27aug26`, `aug 27`, `2026-08-27`, `27/08/2026` |
 | `due <date>` / `start <date>` | The same, said explicitly, and also `27.8`, `27/08`, `27/08/26` |

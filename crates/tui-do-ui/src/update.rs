@@ -1246,6 +1246,34 @@ impl QuickAdd {
         self.task.title.clone_from(&parsed.title);
         parsed
     }
+
+    /// What is being left off and so kept as text: the unknown users always, and the
+    /// unknown labels unless they are about to be created (`creating_labels`).
+    #[must_use]
+    pub fn left_off(&self, creating_labels: bool) -> quickadd::Kept<'_> {
+        quickadd::Kept {
+            labels: if creating_labels {
+                &[]
+            } else {
+                &self.unknown_labels
+            },
+            users: &self.unknown_users,
+        }
+    }
+
+    /// As [`Self::keep_unknown_labels`], for unknown users too: every name left off keeps
+    /// its words in the title, as typed. `call @mom about rent` with no user `mom` was
+    /// saved as `call about rent`.
+    pub fn keep_left_off<Tz: chrono::TimeZone>(
+        &mut self,
+        text: &str,
+        now: &DateTime<Tz>,
+        creating_labels: bool,
+    ) -> quickadd::Parsed {
+        let parsed = quickadd::parse_kept(text, now, self.left_off(creating_labels));
+        self.task.title.clone_from(&parsed.title);
+        parsed
+    }
 }
 
 /// Build a task from parsed quick-add text, if a project can be found for it.
@@ -2081,7 +2109,9 @@ enum Unknown {
 /// created first and labelled second would be half done if the answer were no.
 fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
     let parsed = quickadd::parse(text, &model.now);
-    if parsed.title.trim().is_empty() {
+    // Only a line that names nothing at all is empty: one that is only an unknown label or
+    // user keeps those words as its title, so it is judged once they are known.
+    if parsed.title.trim().is_empty() && parsed.labels.is_empty() && parsed.assignees.is_empty() {
         model.toast(Toast::info("Nothing to add"));
         return Vec::new();
     }
@@ -2110,7 +2140,9 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
         return Vec::new();
     };
 
-    if unknown == Unknown::Ask && !built.unknown_labels.is_empty() {
+    // With no title of its own, an unknown label is the title, not a label to create.
+    let untitled = parsed.title.trim().is_empty();
+    if unknown == Unknown::Ask && !built.unknown_labels.is_empty() && !untitled {
         model
             .modals
             .push(Modal::ConfirmLabels(ConfirmLabelsState::new(
@@ -2120,12 +2152,16 @@ fn add_task(model: &mut Model, text: &str, unknown: Unknown) -> Vec<Effect> {
         return Vec::new();
     }
     // Left off, so their words stay in the title -- which can take it past the limit.
-    if !built.unknown_labels.is_empty() {
-        let kept = built.keep_unknown_labels(text, &model.now);
+    if !built.left_off(false).is_empty() {
+        let kept = built.keep_left_off(text, &model.now, false);
         if let Some(refusal) = kept.server_refusal() {
             model.toast(Toast::error(format!("Not added: {refusal}")));
             return Vec::new();
         }
+    }
+    if built.task.title.trim().is_empty() {
+        model.toast(Toast::info("Nothing to add"));
+        return Vec::new();
     }
 
     let title = built.task.title.clone();

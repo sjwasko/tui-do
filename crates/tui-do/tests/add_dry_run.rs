@@ -120,7 +120,9 @@ async fn a_dry_run_leaves_the_store_untouched() {
             &["--dry-run"][..],
             "Call the dentist *nope",
             "title \"Call the dentist *nope\" · +Personal · *health · !3 · due Mon 5 Jan 2099",
-            None,
+            // Read back with `nope` kept as text, as it was added; it used to come back
+            // as a label, and the hint was dropped for every add that left one off.
+            Some("Call the dentist *nope +Personal *health !3 due 2099-01-05"),
         ),
         (
             &["--dry-run", "--create-labels"][..],

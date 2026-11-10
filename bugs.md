@@ -2407,6 +2407,10 @@ must exit non-zero and print the message, and must not print `Sent.`.
     about, but the task is already queued and re-running adds a second one.~~
     **Fixed 2026-11-10** — a label left off is re-read as text (`quickadd::parse_keeping`),
     so its words stay in the title as typed, in `tui-do add`, its dry run and the interface.
+    **Widened 2026-11-10, from review:** an unknown `@user` keeps its words too
+    (`quickadd::parse_kept`), a line that is only an unknown label is added with it as the
+    title instead of "Nothing to add", and `as typed best:` reads the line back with the
+    same names kept, so it is no longer dropped whenever one was left off.
   - ~~`*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
     and ignores an exact one.~~ **Fixed 2026-11-10** — labels and projects match exactly
     first and ignore case only when nothing does, as `@user` already did.

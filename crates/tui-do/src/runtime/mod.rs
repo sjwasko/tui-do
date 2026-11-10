@@ -1439,7 +1439,9 @@ pub async fn add(
 ) -> anyhow::Result<()> {
     let clock = now();
     let parsed = tui_do_core::quickadd::parse(text, &clock);
-    if parsed.title.trim().is_empty() {
+    // A line that is only an unknown label or user keeps those words as its title, so
+    // only one that names nothing at all is empty here; `left_off` judges the rest.
+    if parsed.title.trim().is_empty() && parsed.labels.is_empty() && parsed.assignees.is_empty() {
         anyhow::bail!("nothing to add");
     }
     // Before either branch, so a dry run refuses what the real add would (BUG-35).
@@ -1535,7 +1537,11 @@ pub async fn add(
         println!("{first}");
     }
     // Second, straight under the line it rewrites.
-    if let Some(best) = better_phrasing(text, &parsed, &clock) {
+    let kept = tui_do_core::quickadd::Kept {
+        labels: &queued.unknown_labels,
+        users: &queued.unknown_users,
+    };
+    if let Some(best) = better_phrasing(text, &parsed, &clock, kept) {
         println!("{}", best_line(&best));
     }
     for line in lines {
@@ -1756,15 +1762,20 @@ async fn rehearse(
         println!("{line}");
     }
     println!("Parsed: {}", printable(&parsed.summary(&clock.timezone())));
-    if let Some(best) = checked_canonical(parsed, clock) {
+    let kept = tui_do_core::quickadd::Kept {
+        labels: &unknown_labels,
+        users: &built.unknown_users,
+    };
+    if let Some(best) = checked_canonical(parsed, clock, kept) {
         println!("{}", best_line(&best));
     }
     println!("Dry run: nothing was queued or sent.");
     Ok(())
 }
 
-/// The line as it will be added, once the labels `--create-labels` will not make are
-/// known to be left off: their words go back in the title, as typed.
+/// The line as it will be added, once the labels `--create-labels` will not make and the
+/// users nobody here has seen are known to be left off: their words go back in the title,
+/// as typed.
 ///
 /// `parsed` unchanged when every label resolves or is to be created. Otherwise re-read
 /// with the unknown names kept as text, which is what the `Parsed:` line and the
@@ -1780,10 +1791,16 @@ fn left_off(
     clock: &tui_do_core::ZonedTime,
     mode: &AddMode,
 ) -> anyhow::Result<tui_do_core::quickadd::Parsed> {
-    if mode.create_labels || built.unknown_labels.is_empty() {
+    if built.left_off(mode.create_labels).is_empty() {
+        if built.task.title.trim().is_empty() {
+            anyhow::bail!("nothing to add");
+        }
         return Ok(parsed);
     }
-    let kept = built.keep_unknown_labels(text, clock);
+    let kept = built.keep_left_off(text, clock, mode.create_labels);
+    if built.task.title.trim().is_empty() {
+        anyhow::bail!("nothing to add");
+    }
     if let Some(refusal) = kept.server_refusal() {
         anyhow::bail!("not added: {refusal}");
     }
@@ -2026,9 +2043,10 @@ fn better_phrasing(
     text: &str,
     parsed: &tui_do_core::quickadd::Parsed,
     clock: &tui_do_core::ZonedTime,
+    kept: tui_do_core::quickadd::Kept<'_>,
 ) -> Option<String> {
     let typed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    checked_canonical(parsed, clock).filter(|best| *best != printable(&typed))
+    checked_canonical(parsed, clock, kept).filter(|best| *best != printable(&typed))
 }
 
 /// The `as typed best:` line, written so it can be pasted back after `tui-do add`.
@@ -2045,12 +2063,16 @@ fn best_line(best: &str) -> String {
 ///
 /// `None` otherwise, with a debug line saying so: a recommendation that changes the task
 /// is worse than none, and a suppression nobody can see is hard to debug.
+///
+/// Read back with the same names `kept` as text that `parsed` was, or a left-off
+/// `*label` kept in the title turns back into a label and the line is never offered.
 fn checked_canonical(
     parsed: &tui_do_core::quickadd::Parsed,
     clock: &tui_do_core::ZonedTime,
+    kept: tui_do_core::quickadd::Kept<'_>,
 ) -> Option<String> {
     let best = parsed.canonical(&clock.timezone());
-    if tui_do_core::quickadd::parse(&best, clock).same_fields(parsed) {
+    if tui_do_core::quickadd::parse_kept(&best, clock, kept).same_fields(parsed) {
         Some(printable(&best))
     } else {
         tracing::debug!(
@@ -2576,6 +2598,28 @@ mod tests {
     fn echo(text: &str, clock: &tui_do_core::ZonedTime) -> String {
         let parsed = tui_do_core::quickadd::parse(text, clock);
         dates_suffix(parsed.due_date, parsed.start_date, &clock.timezone())
+    }
+
+    #[test]
+    fn the_best_form_is_offered_for_a_line_with_a_label_left_off() {
+        // Found by the 2026-11-10 review: the kept `*bills` in the title read back as a
+        // label, the round trip failed, and the hint vanished for every such add.
+        use chrono::TimeZone as _;
+        let clock = tui_do_core::zone::pinned(
+            chrono::FixedOffset::west_opt(5 * 3600)
+                .and_then(|zone| zone.with_ymd_and_hms(2026, 8, 26, 10, 0, 0).single())
+                .expect("a fixed now"),
+        );
+        let labels = vec!["bills".to_string()];
+        let kept = tui_do_core::quickadd::Kept {
+            labels: &labels,
+            users: &[],
+        };
+        let text = "pay rent *bills due friday";
+        let parsed = tui_do_core::quickadd::parse_kept(text, &clock, kept);
+        assert_eq!(parsed.title, "pay rent *bills");
+        let best = better_phrasing(text, &parsed, &clock, kept).expect("a best form");
+        assert!(best.starts_with("pay rent *bills"), "{best}");
     }
 
     #[test]
