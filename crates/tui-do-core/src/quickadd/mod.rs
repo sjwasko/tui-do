@@ -612,6 +612,44 @@ mod tests {
     }
 
     #[test]
+    fn a_weekday_abbreviation_needs_a_keyword() {
+        // `sun`, `sat` and `wed` are words, and taken bare they cut the end off a title and
+        // set a due date nobody asked for. The mirror of BUG-24's digits rule.
+        let clock = evening();
+        for input in [
+            "Water plants in the sun",
+            "the cat sat",
+            "get wed",
+            "c'mon mon",
+            "next sat",
+            "this sun",
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, input, "{input:?} lost text to a weekday");
+            assert_eq!(on_evening(parsed.due_date), "none", "{input:?}");
+            assert!(!parsed.has_magic(), "{input:?}");
+        }
+
+        // After `due` or `start` an abbreviation is a weekday. `evening()` is a Thursday.
+        for (input, due, start) in [
+            ("Water plants due sun", "2026-11-08 23:59", "none"),
+            ("Water plants due sat at 9am", "2026-11-07 09:00", "none"),
+            ("Water plants due next fri", "2026-11-06 23:59", "none"),
+            ("Water plants start mon", "none", "2026-11-09 00:00"),
+            ("Water plants start:wed", "none", "2026-11-11 00:00"),
+            // A full name needs nothing, in every form the README shows.
+            ("Water plants sunday", "2026-11-08 23:59", "none"),
+            ("Water plants next friday", "2026-11-06 23:59", "none"),
+            ("Water plants due friday", "2026-11-06 23:59", "none"),
+        ] {
+            let parsed = parse(input, &clock);
+            assert_eq!(parsed.title, "Water plants", "{input:?}");
+            assert_eq!(on_evening(parsed.due_date), due, "{input:?}");
+            assert_eq!(on_evening(parsed.start_date), start, "{input:?}");
+        }
+    }
+
+    #[test]
     fn a_plain_title_stays_a_plain_title() {
         let parsed = p("Buy milk");
         assert_eq!(parsed.title, "Buy milk");

@@ -249,7 +249,7 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
 
     // `next monday`, `this friday`, `last tuesday`
     if words.len() == 2 {
-        if let Some(weekday) = weekday(&words[1]) {
+        if let Some(weekday) = weekday(&words[1], keyword) {
             return match words[0].as_str() {
                 "next" => next_weekday(today, weekday, false),
                 "this" => next_weekday(today, weekday, true),
@@ -284,7 +284,7 @@ fn simple_phrase(words: &[String], today: NaiveDate, keyword: Keyword) -> Option
 
     if words.len() == 1 {
         // A bare weekday means the next one.
-        if let Some(weekday) = weekday(&words[0]) {
+        if let Some(weekday) = weekday(&words[0], keyword) {
             return next_weekday(today, weekday, false);
         }
         if let Some(date) = literal_date(&words[0], today, keyword) {
@@ -351,17 +351,34 @@ pub fn unit(word: &str) -> Option<Unit> {
     }
 }
 
-/// Recognise a weekday name or its three-letter abbreviation.
-fn weekday(word: &str) -> Option<chrono::Weekday> {
+/// Recognise a weekday name, or after `due` or `start` its abbreviation.
+///
+/// A bare abbreviation is too often a word: `in the sun`, `the cat sat`, `get wed` each
+/// lost their last word and gained a due date. So, as with a date in digits alone
+/// ([`Keyword`]), only the full name is a weekday without the keyword.
+fn weekday(word: &str, keyword: Keyword) -> Option<chrono::Weekday> {
     use chrono::Weekday::{Fri, Mon, Sat, Sun, Thu, Tue, Wed};
+    let full = match word {
+        "monday" => Some(Mon),
+        "tuesday" => Some(Tue),
+        "wednesday" => Some(Wed),
+        "thursday" => Some(Thu),
+        "friday" => Some(Fri),
+        "saturday" => Some(Sat),
+        "sunday" => Some(Sun),
+        _ => None,
+    };
+    if full.is_some() || keyword == Keyword::Absent {
+        return full;
+    }
     match word {
-        "monday" | "mon" => Some(Mon),
-        "tuesday" | "tue" | "tues" => Some(Tue),
-        "wednesday" | "wed" => Some(Wed),
-        "thursday" | "thu" | "thur" | "thurs" => Some(Thu),
-        "friday" | "fri" => Some(Fri),
-        "saturday" | "sat" => Some(Sat),
-        "sunday" | "sun" => Some(Sun),
+        "mon" => Some(Mon),
+        "tue" | "tues" => Some(Tue),
+        "wed" => Some(Wed),
+        "thu" | "thur" | "thurs" => Some(Thu),
+        "fri" => Some(Fri),
+        "sat" => Some(Sat),
+        "sun" => Some(Sun),
         _ => None,
     }
 }
