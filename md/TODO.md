@@ -65,20 +65,20 @@ is the actual order. Items keep their stable numbers — nothing is renumbered, 
 notes cite them — so this says *what order*, not *what number*.
 
 ```
-  NOW      8(macOS)   DROPPED 2026-11-09 -- measured, every upgrade loses access
+  NOW      v1.2.0     the key remap, BUG-33, the add fixes, the hourly full
+                      pull. Owed before the tag: see "Owed at the next publish"
            ------------------------------------------------------------
-           Phase A shipped (tap pours v1.1.0, macOS supported, CI gates).
-           What goes NOW in its place is open: see DECIDE.
+           8(macOS) DROPPED 2026-11-09. Phase A shipped.
 
-  NEXT     3a         tui_do_core::agent + list/show --json
+  NEXT     lead 2     measure on dev whether a label or assignee change moves
+                      a task's `updated`, then guard the upsert on it
+           3a         DEFERRED 2026-11-10 -- until someone asks for it
            3b         DROPPED 2026-11-09 -- Vikunja ships its own MCP server
 
-  DECIDE   What is NOW after item 8. The 2026-11-09 handoff lists BUG-33
-           (fixed 2026-11-10), the six `tui-do add` findings, crates.io, and a
-           cheaper full sync.
-           BUG-20 before November. The --json contract before 3a ships.
-           Whether 3a is still wanted without 3b (see item 3).
-           BUG-9 needs a decision, not work. BUG-7 is fixed.
+  DECIDED  2026-11-10: BUG-33, the six `tui-do add` findings and the false
+           done_at overwrite fixed; CRLF stays converted; WSL left as is;
+           enum Screen kept; crates.io from v1.2.0; timer full pull hourly;
+           3a deferred. BUG-7, BUG-9 and BUG-20 are fixed.
 
   DEFER    4 (Kanban), standalone mode, comments, subtasks
 ```
@@ -205,9 +205,10 @@ lands, and the order matters.
 upstream, so a second one in tui-do would duplicate it. There will be no `tui-do mcp`, no
 `crates/tui-do-mcp` and no `rmcp` dependency. **What is left is 3a:** `tui-do list` and
 `tui-do show` with `--json`, read from the local store. The "veans can read and tui-do
-cannot" argument below never depended on MCP and still holds. Nobody has decided yet whether
-it is still worth building now that agents have a first-party route into Vikunja; it is on
-the DECIDE line. The rest of this entry is as written. Read "one contract through two
+cannot" argument below never depended on MCP and still holds. *Decided 2026-11-10: deferred
+until someone asks for it.* Vikunja's MCP server and API cover reading; what 3a adds is
+offline reads from the local store, and the JSON shape becomes a public contract the moment
+anything depends on it, so it waits for a user to design it for. The rest of this entry is as written. Read "one contract through two
 doors" as one door now.
 Design taken in `md/2026-09-08-mcp-server-design.md`. `tui-do list` and `tui-do show` are
 still the item — today `add` is the entire agent surface, and the real gap against veans is
