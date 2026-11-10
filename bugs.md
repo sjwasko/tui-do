@@ -2383,8 +2383,9 @@ must exit non-zero and print the message, and must not print `Sent.`.
     about, but the task is already queued and re-running adds a second one.~~
     **Fixed 2026-11-10** — a label left off is re-read as text (`quickadd::parse_keeping`),
     so its words stay in the title as typed, in `tui-do add`, its dry run and the interface.
-  - `*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
-    and ignores an exact one.
+  - ~~`*Urgent` attaches `urgent` when both exist: the case-insensitive match takes the first
+    and ignores an exact one.~~ **Fixed 2026-11-10** — labels and projects match exactly
+    first and ignore case only when nothing does, as `@user` already did.
   - `due 0001-01-01` and `due 9999-12-31` are reported by the dry run and the echo, and the
     server ends up with no due date: the first is Go's zero time, which means unset, and the
     second is year 10000 in UTC once 23:59 local is converted.

@@ -1245,20 +1245,23 @@ pub fn quickadd_task(
         ambiguous_project: parsed
             .project
             .as_deref()
-            .is_some_and(|name| matches_by_name(projects, name).count() > 1),
+            .is_some_and(|name| matches_by_name(projects, name).len() > 1),
     })
 }
 
 /// Real projects answering to `name`.
-fn matches_by_name<'a>(
-    projects: &'a [Project],
-    name: &'a str,
-) -> impl Iterator<Item = &'a Project> {
-    projects.iter().filter(move |project| {
-        project.id.get() > 0
-            && !project.is_archived
-            && project.title.eq_ignore_ascii_case(name.trim())
-    })
+///
+/// Exactly as typed if any is, so `+Home` beside a `home` is neither ambiguous nor the
+/// wrong one; ignoring case otherwise (see [`named`]).
+fn matches_by_name<'a>(projects: &'a [Project], name: &str) -> Vec<&'a Project> {
+    let real: Vec<&Project> = projects
+        .iter()
+        .filter(|project| project.id.get() > 0 && !project.is_archived)
+        .collect();
+    named(&real, name.trim(), |project| &project.title)
+        .into_iter()
+        .copied()
+        .collect()
 }
 
 /// The task itself, once the project and labels are settled.
@@ -1818,12 +1821,9 @@ fn run_quick_action(model: &mut Model, index: usize) -> Vec<Effect> {
             }
         },
         QuickActionKind::Label(name) => {
-            match model
-                .data
-                .labels
-                .iter()
-                .find(|label| label.title.eq_ignore_ascii_case(name.trim()))
-                .cloned()
+            match named(&model.data.labels, name.trim(), |label| &label.title)
+                .first()
+                .map(|label| (*label).clone())
             {
                 Some(label) => toggle_label(model, &label),
                 None => {
@@ -2184,8 +2184,8 @@ fn resolve_project(projects: &[Project], spec: &str) -> Option<ProjectId> {
             return Some(project.id);
         }
     }
-    real()
-        .find(|project| project.title.eq_ignore_ascii_case(spec))
+    matches_by_name(projects, spec)
+        .first()
         .map(|project| project.id)
 }
 
@@ -2212,8 +2212,10 @@ pub fn past_due_note(due: Option<DateTime<Utc>>, now: ZonedTime) -> Option<Strin
 
 /// Match label names against the ones that exist, and report the ones that do not.
 ///
-/// `missing` is deduplicated the same way `known` is matched -- `eq_ignore_ascii_case` on
-/// the trimmed title -- so `*waiting *Waiting` is one unresolved name, not two. Without
+/// A name is matched exactly first and then ignoring case (see [`named`]). A name is
+/// missing only when no title matches it even ignoring case, so `missing` is deduplicated
+/// with that fold -- `eq_ignore_ascii_case` on the trimmed name -- and
+/// `*waiting *Waiting` is one unresolved name, not two. Without
 /// this, two spellings of one typo became two `CreateLabel`s: a title is not unique to
 /// Vikunja, so both answer `201` and the pool gets a permanent duplicate, which is exactly
 /// the pollution this whole confirmation exists to prevent. First spelling wins, since
@@ -2223,11 +2225,8 @@ fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String
     let mut missing: Vec<String> = Vec::new();
     for name in wanted {
         let trimmed = name.trim();
-        match known
-            .iter()
-            .find(|label| label.title.eq_ignore_ascii_case(trimmed))
-        {
-            Some(label) => found.push(label.clone()),
+        match named(known, trimmed, |label| &label.title).first() {
+            Some(label) => found.push((*label).clone()),
             None => {
                 let already_missing = missing
                     .iter()
@@ -2239,6 +2238,24 @@ fn resolve_labels(known: &[Label], wanted: &[String]) -> (Vec<Label>, Vec<String
         }
     }
     (found, missing)
+}
+
+/// What a typed name means among `items`: every one titled exactly so, or, only when none
+/// is, every one titled so ignoring ASCII case.
+///
+/// Exact first, so `*Urgent` is `Urgent` and not `urgent` when both exist -- the
+/// case-insensitive match alone took whichever came first. The fallback keeps `*urgent`
+/// reaching `Urgent` when that is the only spelling. `title` is compared untrimmed;
+/// `name` is the caller's to trim.
+fn named<'a, T>(items: &'a [T], name: &str, title: fn(&T) -> &str) -> Vec<&'a T> {
+    let exact: Vec<&T> = items.iter().filter(|item| title(item) == name).collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    items
+        .iter()
+        .filter(|item| title(item).eq_ignore_ascii_case(name))
+        .collect()
 }
 
 /// The users `wanted` names, and the names nobody here answers to.

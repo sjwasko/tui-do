@@ -723,6 +723,41 @@ fn quick_add_assigns_the_users_it_names() {
 }
 
 #[test]
+fn quick_add_prefers_the_label_and_project_spelled_exactly() {
+    // Found by the 2026-11-09 smoke test: `*Urgent` attached `urgent` when both existed,
+    // because the case-insensitive match took the first. Exact first, as `@user` does.
+    let mut model = loaded();
+    update(
+        &mut model,
+        Msg::LabelsLoaded(vec![label(4, "urgent"), label(5, "Urgent")]),
+    );
+    update(
+        &mut model,
+        Msg::ProjectsLoaded(vec![project(1, "home", 0), project(3, "Home", 0)]),
+    );
+    press(&mut model, 'a');
+    for c in "Fix the door *Urgent *URGENT +Home".chars() {
+        press(&mut model, c);
+    }
+    let effects = press_code(&mut model, KeyCode::Enter);
+    match applied(&effects).expect("a task was queued") {
+        Mutation::CreateTask { task } => {
+            let ids: Vec<i64> = task.labels.iter().map(|l| l.id.get()).collect();
+            // `*URGENT` matches neither exactly, so it falls back to the first.
+            assert_eq!(ids, vec![5, 4]);
+            assert_eq!(task.project_id, ProjectId(3));
+        }
+        other => panic!("wrong mutation: {other:?}"),
+    }
+    let toast = model.status.toast.as_ref().expect("the user is told");
+    assert!(
+        !toast.text.contains("more than one project"),
+        "an exact match is not ambiguous: {}",
+        toast.text
+    );
+}
+
+#[test]
 fn a_task_past_the_servers_limits_is_not_queued() {
     let mut model = loaded();
     press(&mut model, 'a');

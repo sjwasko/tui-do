@@ -516,6 +516,8 @@ pub fn landing_scope(
             .strip_prefix('#')
             .and_then(|n| n.parse::<i64>().ok())
             .and_then(|id| real().find(|project| project.id.get() == id))
+            // Exactly as written first, as quick-add's `+project` matches.
+            .or_else(|| real().find(|project| project.title == spec))
             .or_else(|| real().find(|project| project.title.eq_ignore_ascii_case(spec)));
         if let Some(project) = found {
             return Scope::Project(project.id);
