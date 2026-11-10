@@ -577,7 +577,7 @@ fn act(model: &mut Model, action: Action) -> Vec<Effect> {
     // over two screens of tasks for every one it showed.
     let page = rows::fit(
         &model.data.tasks,
-        &rows::measure(model.layout(), model.frames().list.width),
+        &rows::measure(model.layout(), model.frames().list_text().width),
         row_context(model),
         model.list.offset,
         body_height(model),
@@ -1009,8 +1009,11 @@ fn quit(model: &mut Model) -> Vec<Effect> {
 fn step(model: &mut Model, delta: isize) -> Vec<Effect> {
     match model.focus {
         Focus::Preview => {
+            // Bounded by the content, not by u16: past the last line is an empty pane and
+            // as many presses of `k` again to come back from it.
+            let max = crate::view::preview_max_scroll(model);
             let scroll = i64::from(model.list.preview_scroll) + delta as i64;
-            model.list.preview_scroll = scroll.clamp(0, i64::from(u16::MAX)) as u16;
+            model.list.preview_scroll = scroll.clamp(0, i64::from(max)) as u16;
             Vec::new()
         }
         Focus::List => {
@@ -1052,9 +1055,11 @@ fn step(model: &mut Model, delta: isize) -> Vec<Effect> {
 fn jump(model: &mut Model, first: bool) -> Vec<Effect> {
     match model.focus {
         Focus::Preview => {
-            if first {
-                model.list.preview_scroll = 0;
-            }
+            model.list.preview_scroll = if first {
+                0
+            } else {
+                crate::view::preview_max_scroll(model)
+            };
             Vec::new()
         }
         Focus::List => {
@@ -2931,7 +2936,7 @@ fn keep_selection_visible(model: &mut Model) {
     // that had decided it was already showing everything.
     let first = rows::first_visible(
         &model.data.tasks,
-        &rows::measure(model.layout(), model.frames().list.width),
+        &rows::measure(model.layout(), model.frames().list_text().width),
         row_context(model),
         index,
         body_height(model),

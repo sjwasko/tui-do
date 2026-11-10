@@ -962,6 +962,57 @@ fn the_selection_stays_on_screen_when_rows_wrap() {
     );
 }
 
+#[test]
+fn the_scroll_maths_measures_rows_at_the_width_they_are_drawn() {
+    // The list draws one column in from its edge, for the gutter, and the scroll maths
+    // measured at the full width. A title that fits in eighty columns and not in
+    // seventy-nine was one line to the maths and two on screen, so the selection walked
+    // off the bottom with the offset still at zero.
+    let mut model = fixture((80, 24));
+    model.layouts = vec![ColumnLayout {
+        name: "wrapping".to_string(),
+        description: None,
+        columns: vec![ColumnSpec {
+            wrap: true,
+            ..ColumnSpec::new(Column::Title)
+        }],
+    }];
+    model.layout_ix = 0;
+    let width = model.frames().list.width as usize;
+    model.data.tasks = (1..=30)
+        .map(|n| {
+            let mut title = format!("T{n:02}");
+            while title.len() + 5 <= width {
+                title.push_str(" word");
+            }
+            title.push_str(&"x".repeat(width - title.len()));
+            assert_eq!(title.len(), width);
+            Task {
+                id: TaskId(n),
+                project_id: ProjectId(1),
+                title,
+                ..Task::default()
+            }
+        })
+        .collect();
+    model.list.selected = Some(TaskId(1));
+    model.list.offset = 0;
+
+    for _ in 0..15 {
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
+        );
+    }
+    assert_eq!(model.list.selected, Some(TaskId(16)));
+    let screen = draw(&model);
+    assert!(
+        screen.contains("T16 word"),
+        "the selected task is off screen at offset {}:\n{screen}",
+        model.list.offset
+    );
+}
+
 /// The style of the row containing `needle`, searched inside one pane only.
 ///
 /// Scoped to a pane on purpose: the preview draws the selected task's title too, so a
@@ -1088,6 +1139,90 @@ fn the_edit_form_draws_a_description_on_the_lines_the_user_typed() {
         first + 1,
         "the two paragraphs must be on consecutive rows, not joined:\n{screen}"
     );
+}
+
+#[test]
+fn preview_scrolling_stops_at_the_end_of_the_content() {
+    // `j` in the preview scrolled up to u16::MAX: past the last line into an empty pane,
+    // and then as many presses of `k` again to come back. `G` did nothing at all there.
+    let mut model = fixture((160, 40));
+    let description: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+    model.data.tasks[0].description = description;
+    let key = |model: &mut Model, code: KeyCode| {
+        update(model, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+    key(&mut model, KeyCode::Enter);
+    assert_eq!(model.focus, Focus::Preview);
+
+    key(&mut model, KeyCode::Char('G'));
+    let bottom = model.list.preview_scroll;
+    assert!(bottom > 0, "G reached the end of the preview");
+    let screen = draw(&model);
+    assert!(screen.contains("line 100"), "{screen}");
+    assert!(!screen.contains("line 50\n"), "{screen}");
+
+    for _ in 0..150 {
+        key(&mut model, KeyCode::Char('j'));
+    }
+    assert_eq!(model.list.preview_scroll, bottom, "j stops at the end");
+    assert!(draw(&model).contains("line 100"));
+
+    key(&mut model, KeyCode::Char('k'));
+    assert_eq!(
+        model.list.preview_scroll,
+        bottom - 1,
+        "one k is one line back"
+    );
+
+    // A task whose preview fits does not scroll at all.
+    model.data.tasks[0].description = "short".to_string();
+    key(&mut model, KeyCode::Char('g'));
+    key(&mut model, KeyCode::Char('g'));
+    key(&mut model, KeyCode::Char('j'));
+    assert_eq!(model.list.preview_scroll, 0);
+    key(&mut model, KeyCode::Char('G'));
+    assert_eq!(model.list.preview_scroll, 0);
+}
+
+#[test]
+fn a_clipped_edit_form_scrolls_to_the_focused_field() {
+    // At 80x10 the form is clipped from the bottom and Labels went with it, while Tab
+    // still focused it and typing landed somewhere nobody could see.
+    let mut model = fixture((80, 10));
+    let task = tui_do_core::models::Task {
+        id: tui_do_core::models::TaskId(1),
+        project_id: tui_do_core::models::ProjectId(1),
+        title: "short screen".to_string(),
+        ..Default::default()
+    };
+    model.modals.push(tui_do_ui::modal::Modal::Edit(Box::new(
+        tui_do_ui::modal::EditState::new(&task, "Alpha", &model.now),
+    )));
+    let key = |model: &mut Model, code: KeyCode| {
+        update(model, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+    for _ in 0..5 {
+        key(&mut model, KeyCode::Tab);
+    }
+    for c in "zzq".chars() {
+        key(&mut model, KeyCode::Char(c));
+    }
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    terminal.draw(|frame| view(&model, frame)).unwrap();
+    let screen = draw(&model);
+    let row = screen
+        .lines()
+        .position(|line| line.contains("Labels") && line.contains("zzq"))
+        .unwrap_or_else(|| panic!("the focused Labels field is off screen:\n{screen}"));
+    let cursor = terminal.get_cursor_position().unwrap();
+    assert_eq!(usize::from(cursor.y), row, "the caret is on the Labels row");
+    assert!(cursor.x < 80, "{cursor:?}");
+
+    // And back to the top: the title is reachable again.
+    key(&mut model, KeyCode::Tab);
+    let screen = draw(&model);
+    assert!(screen.contains("short screen"), "{screen}");
 }
 
 #[test]
@@ -1347,4 +1482,40 @@ fn the_due_prompt_says_a_date_cannot_be_stored_before_enter_does() {
         "{screen}"
     );
     assert!(!screen.contains("Enter:set"), "{screen}");
+}
+
+#[test]
+fn a_terminal_one_or_two_rows_tall_keeps_the_prompt_and_caret_inside_it() {
+    // The status row sat below the header, and at heights 1-2 that is below the frame:
+    // a prompt drew nowhere and the caret went outside the buffer.
+    for (width, height) in [(1, 1), (2, 1), (80, 1), (1, 2), (80, 2), (80, 3), (3, 3)] {
+        for keys in ["", "/", "n", "d", "e", ":", "?", "p", "/xq", "nabc"] {
+            let mut model = fixture((width, height));
+            for c in keys.chars() {
+                update(
+                    &mut model,
+                    Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                );
+            }
+            let status = model.frames().status;
+            assert!(
+                status.bottom() <= height,
+                "{width}x{height}: status at {status:?}"
+            );
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| view(&model, frame)).unwrap();
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(
+                cursor.x < width && cursor.y < height,
+                "{width}x{height} after {keys:?}: caret at {cursor:?}"
+            );
+            if width >= 80 && keys == "/xq" {
+                let screen = draw(&model);
+                assert!(
+                    screen.contains("xq"),
+                    "{width}x{height}: the prompt drew nowhere:\n{screen}"
+                );
+            }
+        }
+    }
 }

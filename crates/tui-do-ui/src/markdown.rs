@@ -250,12 +250,17 @@ impl TextDecorator for Deco {
         true
     }
 
+    // ASCII, and redrawn as `│ ` and `• ` by `redraw_prefixes` once the lines are laid
+    // out. html2text 0.17.1 sizes a block by display width and then subtracts the prefix's
+    // *byte* length, so a two-column, four-byte prefix underflowed on any item narrower
+    // than two characters: a `debug_assert` in a debug build and zero lines in a release
+    // one. A one-byte-per-column prefix is the only kind it measures correctly.
     fn quote_prefix(&self) -> String {
-        "│ ".to_string()
+        format!("{QUOTE_ASCII} ")
     }
 
     fn unordered_item_prefix(&self) -> String {
-        "• ".to_string()
+        format!("{BULLET_ASCII} ")
     }
 
     fn ordered_item_prefix(&self, i: i64) -> String {
@@ -268,6 +273,89 @@ impl TextDecorator for Deco {
 }
 
 use ratatui::text::{Line, Span};
+
+/// What html2text is handed for a quote's bar, and what it is drawn as.
+const QUOTE_ASCII: char = '|';
+const QUOTE_GLYPH: char = '│';
+/// What html2text is handed for a list item's bullet, and what it is drawn as.
+const BULLET_ASCII: char = '*';
+const BULLET_GLYPH: char = '•';
+
+/// How many leading characters of `text` are list and quote prefixes.
+///
+/// A prefix run is what html2text put in front of a line's content: quote bars, bullets,
+/// ordered-list numbers and the spaces that indent a continuation. It stops at the first
+/// thing that is none of those, so a `*` or `|` in the content itself is never redrawn.
+fn prefix_run(text: &[char]) -> usize {
+    let mut at = 0;
+    while at < text.len() {
+        let ends_token = |i: usize| text.get(i).is_none_or(|c| *c == ' ');
+        match text[at] {
+            ' ' => at += 1,
+            c if (c == QUOTE_ASCII || c == BULLET_ASCII) && ends_token(at + 1) => at += 1,
+            c if c.is_ascii_digit() => {
+                let digits = text[at..].iter().take_while(|c| c.is_ascii_digit()).count();
+                if text.get(at + digits) == Some(&'.') && ends_token(at + digits + 1) {
+                    at += digits + 1;
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    at
+}
+
+/// Draw the ASCII prefixes html2text laid out as the glyphs the preview shows.
+///
+/// One character for one character, each one column wide, so nothing html2text measured
+/// moves. Only the prefix run at the start of a line is touched.
+fn redraw_prefixes(line: Line<'static>) -> Line<'static> {
+    let chars: Vec<char> = line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars())
+        .collect();
+    let mut left = prefix_run(&chars);
+    if left == 0 {
+        return line;
+    }
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            if left == 0 {
+                return span;
+            }
+            let content: String = span
+                .content
+                .chars()
+                .map(|c| {
+                    if left == 0 {
+                        return c;
+                    }
+                    left -= 1;
+                    match c {
+                        QUOTE_ASCII => QUOTE_GLYPH,
+                        BULLET_ASCII => BULLET_GLYPH,
+                        other => other,
+                    }
+                })
+                .collect();
+            Span::styled(content, span.style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans).style(line.style)
+}
+
+/// A description as bare lines, for when the renderer cannot lay it out at all.
+fn plain_lines(description: &str, theme: Theme) -> Vec<Line<'static>> {
+    description
+        .lines()
+        .map(|line| Line::from(Span::styled(line.to_string(), theme.text())))
+        .collect()
+}
 
 /// The narrowest pane worth rendering into.
 ///
@@ -339,21 +427,25 @@ pub fn render(description: &str, width: u16, theme: Theme) -> Vec<Line<'static>>
         comrak::markdown_to_html(description, &options)
     };
 
-    let config = html2text::config::with_decorator(Deco { theme });
+    // Overflow allowed: nesting deeper than the pane is wide is otherwise `TooNarrow`, and
+    // the whole description vanished with it. A line too wide is clipped by the pane; a
+    // description that is not drawn at all is lost.
+    let config = html2text::config::with_decorator(Deco { theme }).allow_width_overflow();
     let config = match config.add_agent_css(&agent_css(theme)) {
         Ok(config) => config,
         // A stylesheet this module wrote failing to parse is a bug here, not bad input,
         // and it costs colour rather than correctness -- render without it.
-        Err(_) => html2text::config::with_decorator(Deco { theme }),
+        Err(_) => html2text::config::with_decorator(Deco { theme }).allow_width_overflow(),
     };
     let Ok(lines) = config.lines_from_read(html.as_bytes(), usize::from(width.max(FLOOR))) else {
-        return Vec::new();
+        // Never nothing for a description that has text: unrendered beats invisible.
+        return plain_lines(description, theme);
     };
 
     let mut rendered: Vec<Line<'static>> = lines
         .iter()
         .map(|line| {
-            Line::from(
+            redraw_prefixes(Line::from(
                 line.tagged_strings()
                     .map(|tagged| {
                         // Annotations nest, outermost first, so `<strong><em>` arrives as
@@ -365,7 +457,7 @@ pub fn render(description: &str, width: u16, theme: Theme) -> Vec<Line<'static>>
                         Span::styled(tagged.s.clone(), style)
                     })
                     .collect::<Vec<Span<'static>>>(),
-            )
+            ))
         })
         .collect();
 
@@ -559,10 +651,13 @@ mod tests {
     fn list_and_quote_prefixes_are_the_ones_the_preview_pane_already_uses() {
         let d = deco();
         // `rows::plain_text` used "• " for a list item; the preview should not change
-        // shape just because the renderer under it did.
-        assert_eq!(d.unordered_item_prefix(), "• ");
+        // shape just because the renderer under it did. html2text is handed ASCII, one
+        // byte per column, and the glyphs are drawn over it afterwards.
+        assert_eq!(d.unordered_item_prefix(), "* ");
         assert_eq!(d.ordered_item_prefix(3), "3. ");
-        assert_eq!(d.quote_prefix(), "│ ");
+        assert_eq!(d.quote_prefix(), "| ");
+        assert_eq!(rendered("- item", 40), vec!["• item"]);
+        assert_eq!(rendered("> quoted", 40), vec!["│ quoted"]);
     }
 
     #[test]
@@ -792,6 +887,90 @@ mod tests {
             row.contains('│'),
             "html table cells had no visible separator: {html_lines:?}"
         );
+    }
+
+    #[test]
+    fn a_list_with_short_items_renders_with_its_bullets() {
+        // A one-letter item is narrower than the bullet is *bytes*: html2text sized the
+        // block by display width and then subtracted the prefix's byte length, which
+        // underflowed -- a debug panic, and zero lines in a release build.
+        for width in [20, 40] {
+            let lines = rendered("Options:\n\n- A\n- B", width);
+            assert!(lines.iter().any(|l| l == "• A"), "{width}: {lines:?}");
+            assert!(lines.iter().any(|l| l == "• B"), "{width}: {lines:?}");
+        }
+        let tight = rendered("Options:\n- A\n- B", 40);
+        assert!(tight.iter().any(|l| l.contains("• A")), "{tight:?}");
+    }
+
+    #[test]
+    fn a_nested_list_renders_every_level() {
+        let lines = rendered("- a\n  - b\n    - c\n      - d", 20);
+        for item in ["a", "b", "c", "d"] {
+            assert!(
+                lines.iter().any(|l| l.trim_start() == format!("• {item}")),
+                "{item} missing: {lines:?}"
+            );
+        }
+        let ordered = rendered("1. one\n   - x\n2. two", 20);
+        assert!(ordered.iter().any(|l| l == "1. one"), "{ordered:?}");
+        assert!(
+            ordered.iter().any(|l| l.trim_start() == "• x"),
+            "{ordered:?}"
+        );
+    }
+
+    #[test]
+    fn a_quote_renders_with_its_bar() {
+        let lines = rendered("> a\n\nreply text", 20);
+        assert!(lines.iter().any(|l| l == "│ a"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "reply text"), "{lines:?}");
+    }
+
+    #[test]
+    fn an_email_style_nested_quote_renders_every_level() {
+        let lines = rendered("> > > deepest\n> >\n> > middle\n>\n> top\n\nreply", 20);
+        assert!(lines.iter().any(|l| l == "│ │ │ deepest"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "│ │ middle"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "│ top"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "reply"), "{lines:?}");
+    }
+
+    #[test]
+    fn text_that_merely_looks_like_a_prefix_is_left_alone() {
+        // The bullet and bar are drawn after rendering, over the ASCII html2text was
+        // given. Only the prefix columns are redrawn, never the content.
+        let lines = rendered("- a * b | c\n\n> x | y", 40);
+        assert!(lines.iter().any(|l| l == "• a * b | c"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "│ x | y"), "{lines:?}");
+        assert_eq!(rendered("a * b", 40), vec!["a * b"]);
+    }
+
+    #[test]
+    fn nesting_deeper_than_the_width_still_renders() {
+        // Deeper than the pane is wide: html2text answers TooNarrow, and the whole
+        // description used to vanish with it.
+        let deep = format!("{}deep", "> ".repeat(12));
+        let lines = rendered(&deep, 20);
+        let text: String = lines
+            .iter()
+            .map(|l| l.trim_start_matches(['│', ' ']))
+            .collect();
+        assert_eq!(text, "deep", "{lines:?}");
+        let list: String = (0..12)
+            .map(|i| format!("{}- level{i}\n", "  ".repeat(i)))
+            .collect();
+        let lines = rendered(&list, 20);
+        assert_eq!(
+            lines.iter().filter(|l| l.contains('•')).count(),
+            12,
+            "{lines:?}"
+        );
+        let text: String = lines
+            .iter()
+            .map(|l| l.trim_start_matches(['•', ' ']))
+            .collect();
+        assert!(text.ends_with("level11"), "{lines:?}");
     }
 
     #[test]

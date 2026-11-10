@@ -472,9 +472,23 @@ fn cell(
 }
 
 /// How many terminal cells a string occupies.
+///
+/// A grapheme holding a control character -- a tab, a stray `\r`, an escape -- is zero,
+/// because that is what ratatui draws for it: `Buffer::set_stringn` drops every such
+/// grapheme. `UnicodeWidthStr` counts each as one, so a title with three tabs drew four
+/// columns short of where the caret and the cell padding thought it ended. Every width in
+/// this crate comes through here, so measuring and drawing agree everywhere at once.
 #[must_use]
 pub fn display_width(text: &str) -> u16 {
-    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
+    let width = if text.chars().any(char::is_control) {
+        text.graphemes(true)
+            .filter(|grapheme| !grapheme.contains(char::is_control))
+            .map(UnicodeWidthStr::width)
+            .sum()
+    } else {
+        UnicodeWidthStr::width(text)
+    };
+    u16::try_from(width).unwrap_or(u16::MAX)
 }
 
 /// Cut `text` to `width`, ending in an ellipsis when something was lost.
@@ -862,6 +876,37 @@ mod tests {
         assert!(display_width(&truncate("日本語だよ", 6)) <= 6);
     }
 
+    /// What ratatui actually puts in a buffer for `text`, one cell per column.
+    fn drawn(text: &str) -> String {
+        let area = ratatui::layout::Rect::new(0, 0, 40, 1);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        buffer.set_string(0, 0, text, ratatui::style::Style::new());
+        let row: String = (0..40)
+            .map(|x| buffer.cell((x, 0)).map_or(" ", |c| c.symbol()).to_string())
+            .collect();
+        row.trim_end().to_string()
+    }
+
+    #[test]
+    fn a_tab_is_measured_as_the_nothing_ratatui_draws_for_it() {
+        // ratatui drops any grapheme holding a control character, so `x\t\t\tend` draws as
+        // `xend` -- and measuring each tab as a column put the caret three cells past it.
+        let title = "x\t\t\tend";
+        assert_eq!(drawn(title), "xend");
+        assert_eq!(display_width(title), 4);
+        assert_eq!(input_window(title, title.len(), 20).caret_x, 4);
+        assert_eq!(edit_layout(title, 20, 3, title.len()).1, (0, 4));
+        assert_eq!(truncate("a\tb", 2), "a\tb");
+        for control in ["\t", "\r", "\u{7}", "\u{1b}"] {
+            let text = format!("a{control}b");
+            assert_eq!(
+                usize::from(display_width(&text)),
+                drawn(&text).chars().count(),
+                "{text:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_date_is_read_in_the_users_own_zone() {
         // 2026-08-27T02:00Z is still the evening of the 26th in New York. A reader there,
@@ -1130,7 +1175,9 @@ pub fn edit_layout(
         let mut current = String::new();
         let mut used = 0_u16;
         for (offset, grapheme) in paragraph.grapheme_indices(true) {
-            let w = display_width(grapheme).max(1);
+            // Not floored at one: a grapheme ratatui draws nothing for takes no cell, and
+            // counting one put the caret past the text it followed.
+            let w = display_width(grapheme);
             // A glyph wider than the whole box still takes a row of its own rather than
             // leaving an empty one ahead of it.
             if used > 0 && used.saturating_add(w) > width {
